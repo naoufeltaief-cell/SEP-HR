@@ -1,0 +1,107 @@
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+class ApiClient {
+  constructor() {
+    this.token = localStorage.getItem('sep_token') || null;
+    this.user = JSON.parse(localStorage.getItem('sep_user') || 'null');
+  }
+
+  setAuth(token, user) {
+    this.token = token;
+    this.user = user;
+    localStorage.setItem('sep_token', token);
+    localStorage.setItem('sep_user', JSON.stringify(user));
+  }
+
+  clearAuth() {
+    this.token = null;
+    this.user = null;
+    localStorage.removeItem('sep_token');
+    localStorage.removeItem('sep_user');
+  }
+
+  isAuthenticated() {
+    return !!this.token;
+  }
+
+  isAdmin() {
+    return this.user?.role === 'admin';
+  }
+
+  async request(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', ...options.headers };
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+
+    const resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
+
+    if (resp.status === 401) {
+      this.clearAuth();
+      window.location.href = '/login';
+      throw new Error('Session expirée');
+    }
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Erreur serveur' }));
+      throw new Error(err.detail || `Erreur ${resp.status}`);
+    }
+
+    return resp.json();
+  }
+
+  get(path) { return this.request(path); }
+  post(path, data) { return this.request(path, { method: 'POST', body: JSON.stringify(data) }); }
+  put(path, data) { return this.request(path, { method: 'PUT', body: JSON.stringify(data) }); }
+  del(path) { return this.request(path, { method: 'DELETE' }); }
+
+  // Auth
+  login(email, password) { return this.post('/auth/login', { email, password }); }
+  requestMagicLink(email) { return this.post('/auth/magic-link', { email }); }
+  verifyMagicLink(token) { return this.post(`/auth/magic-verify?token=${token}`, {}); }
+  register(data) { return this.post('/auth/register', data); }
+  getMe() { return this.get('/auth/me'); }
+
+  // Employees
+  getEmployees() { return this.get('/employees/'); }
+  getEmployee(id) { return this.get(`/employees/${id}`); }
+  createEmployee(data) { return this.post('/employees/', data); }
+  updateEmployee(id, data) { return this.put(`/employees/${id}`, data); }
+  addEmployeeNote(id, data) { return this.post(`/employees/${id}/notes`, data); }
+
+  // Schedules
+  getSchedules(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.get(`/schedules/${qs ? '?' + qs : ''}`);
+  }
+  createSchedule(data) { return this.post('/schedules/', data); }
+  updateSchedule(id, data) { return this.put(`/schedules/${id}`, data); }
+  deleteSchedule(id) { return this.del(`/schedules/${id}`); }
+  publishAll() { return this.post('/schedules/publish-all', {}); }
+
+  // Timesheets
+  getTimesheets() { return this.get('/timesheets/'); }
+  submitTimesheet(data) { return this.post('/timesheets/', data); }
+  approveTimesheet(id) { return this.put(`/timesheets/${id}/approve`, {}); }
+  rejectTimesheet(id) { return this.put(`/timesheets/${id}/reject`, {}); }
+
+  // Invoices
+  getInvoices() { return this.get('/invoices/'); }
+  getInvoice(id) { return this.get(`/invoices/${id}`); }
+  createInvoice(data) { return this.post('/invoices/', data); }
+  updateInvoice(id, data) { return this.put(`/invoices/${id}`, data); }
+  markPaid(id) { return this.put(`/invoices/${id}/paid`, {}); }
+
+  // Accommodations
+  getAccommodations() { return this.get('/accommodations/'); }
+  createAccommodation(data) { return this.post('/accommodations/', data); }
+
+  // Clients
+  getClients() { return this.get('/clients/'); }
+  createClient(data) { return this.post('/clients/', data); }
+  updateClient(id, data) { return this.put(`/clients/${id}`, data); }
+
+  // Chatbot
+  chat(message, history = []) { return this.post('/chatbot/chat', { message, history }); }
+}
+
+export const api = new ApiClient();
+export default api;

@@ -28,7 +28,7 @@ app = FastAPI(
 # CORS — allow frontend origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
+   allow_origins=["*"],
         "http://localhost:5173",  # Vite dev
         "http://localhost:3000",
         os.getenv("FRONTEND_URL", "https://soins-expert-plus.com"),

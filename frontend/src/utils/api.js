@@ -82,6 +82,7 @@ class ApiClient {
   submitTimesheet(data) { return this.post('/timesheets/', data); }
   approveTimesheet(id) { return this.put(`/timesheets/${id}/approve`, {}); }
   rejectTimesheet(id) { return this.put(`/timesheets/${id}/reject`, {}); }
+  deleteTimesheet(id) { return this.del(`/timesheets/${id}`); }
 
   // Invoices
   getInvoices() { return this.get('/invoices/'); }
@@ -93,6 +94,7 @@ class ApiClient {
   // Accommodations
   getAccommodations() { return this.get('/accommodations/'); }
   createAccommodation(data) { return this.post('/accommodations/', data); }
+  deleteAccommodation(id) { return this.del(`/accommodations/${id}`); }
 
   // Clients
   getClients() { return this.get('/clients/'); }

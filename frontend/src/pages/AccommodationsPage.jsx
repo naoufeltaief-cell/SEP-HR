@@ -59,6 +59,12 @@ export default function AccommodationsPage({ toast }) {
     });
   };
 
+  const deleteAccom = async (id) => {
+    if (!confirm('Supprimer cet hébergement ?')) return;
+    try { await api.deleteAccommodation(id); toast?.('Hébergement supprimé'); reload(); }
+    catch (err) { toast?.('Erreur: ' + err.message); }
+  };
+
   const save = async () => {
     if (!modal.employee_id || !modal.start_date || !modal.end_date || !modal.total_cost) {
       toast?.('Remplir tous les champs'); return;
@@ -123,6 +129,10 @@ export default function AccommodationsPage({ toast }) {
             </div>
           )}
           {a.notes && <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text3)' }}>{a.notes}</div>}
+          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+            <button className="btn btn-outline btn-sm" style={{ color: 'var(--red)', fontSize: 11 }}
+              onClick={(ev) => { ev.stopPropagation(); deleteAccom(a.id); }}>Supprimer</button>
+          </div>
         </div>
       ))}
 

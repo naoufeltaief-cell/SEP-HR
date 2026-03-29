@@ -13,7 +13,6 @@ from .routers import auth, employees, schedules, timesheets, invoices, accommoda
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create tables on startup
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
@@ -25,20 +24,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS — allow frontend origins
 app.add_middleware(
     CORSMiddleware,
-   allow_origins=["*"],
-        "http://localhost:5173",  # Vite dev
-        "http://localhost:3000",
-        os.getenv("FRONTEND_URL", "https://soins-expert-plus.com"),
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Routes
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(employees.router, prefix="/api/employees", tags=["Employees"])
 app.include_router(schedules.router, prefix="/api/schedules", tags=["Schedules"])

@@ -63,3 +63,18 @@ async def reject_timesheet(tid: str, db: AsyncSession = Depends(get_db), user=De
     ts.status = "rejected"
     await db.commit()
     return {"message": "FDT refusée"}
+
+
+@router.delete("/{tid}")
+async def delete_timesheet(tid: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    result = await db.execute(select(Timesheet).where(Timesheet.id == tid))
+    ts = result.scalar_one_or_none()
+    if not ts:
+        raise HTTPException(status_code=404, detail="FDT introuvable")
+    # Delete associated shifts first
+    shifts_result = await db.execute(select(TimesheetShift).where(TimesheetShift.timesheet_id == tid))
+    for shift in shifts_result.scalars().all():
+        await db.delete(shift)
+    await db.delete(ts)
+    await db.commit()
+    return {"message": "FDT supprimée"}

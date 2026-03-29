@@ -141,12 +141,36 @@ export default function InvoicesPage({ toast }) {
       if (cnt > (clientCounts[defaultClientId] || 0)) defaultClientId = Number(cid);
     });
 
+    // Auto-include accommodation lines
+    const accomLines = [];
+    accommodations.forEach(a => {
+      const matchingShifts = allShifts.filter(sh => {
+        const empObj = employees.find(e => e.name === sh.employee);
+        return empObj && empObj.id === a.employee_id && sh.date >= (a.start_date || '') && sh.date <= (a.end_date || '');
+      });
+      if (matchingShifts.length > 0) {
+        const billedDays = matchingShifts.length;
+        const cpd = a.cost_per_day || (a.days_worked > 0 ? Math.round(a.total_cost / a.days_worked * 100) / 100 : 0);
+        const billedAmt = Math.round(cpd * billedDays * 100) / 100;
+        const eName = employees.find(e => e.id === a.employee_id)?.name || '?';
+        accomLines.push({
+          id: Date.now() + Math.random(), employee: eName,
+          description: 'Hébergement — ' + eName,
+          hoursWorked: 0, rate: cpd, serviceAmt: billedAmt, gardeAmt: 0, rappelAmt: 0,
+          lineTotal: billedAmt, date: a.start_date, location: '',
+          start: '', end: '', pause: 0,
+          note: 'Héberg. ' + a.start_date + ' au ' + a.end_date + ' — Total ' + a.total_cost + '$ / ' + a.days_worked + 'j = ' + cpd + '$/j x ' + billedDays + 'j facturés',
+          _isAccom: true,
+        });
+      }
+    });
+
     setCreateModal({
       _isDraft: true,
       number: num, date: new Date().toISOString().slice(0, 10),
       period_start: periodStart, period_end: periodEnd,
       client_id: defaultClientId, include_tax: true, notes: '', status: 'draft',
-      lines: allShifts.map((l, i) => ({ id: i + 1, ...l })),
+      lines: [...allShifts.map((l, i) => ({ id: i + 1, ...l })), ...accomLines],
       frais: [],
       _approvedIds: approved.map(t => t.id),
     });
@@ -488,6 +512,16 @@ export default function InvoicesPage({ toast }) {
                     </div>
                   </div>
                 </div>
+                {/* Show date, start-end, location, note for draft lines */}
+                {(l.date || l.start || l.location || l.note) && (
+                  <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {l.date && <span>{l.date}</span>}
+                    {l.start && l.end && <span>{l.start}–{l.end}</span>}
+                    {l.location && <span>{l.location.slice(0, 25)}</span>}
+                    {l.note && <span style={{ color: 'var(--amber)', fontStyle: 'italic' }}>{l.note}</span>}
+                    {l._isAccom && <span style={{ color: 'var(--purple)', fontWeight: 600 }}>🏨 Hébergement</span>}
+                  </div>
+                )}
                 {/* Show garde/rappel for draft lines */}
                 {(l.gardeAmt > 0 || l.rappelAmt > 0) && (
                   <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 10 }}>
@@ -769,7 +803,6 @@ function InvoicePreview({ inv }) {
 function ClientsList({ clients, invoices, toast, reload }) {
   const [editModal, setEditModal] = useState(null);
   const [addModal, setAddModal] = useState(null);
-  const [detailClient, setDetailClient] = useState(null);
   const [detailClient, setDetailClient] = useState(null);
 
   const clientStats = useMemo(() => clients.map(cl => {

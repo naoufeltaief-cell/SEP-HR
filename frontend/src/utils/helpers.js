@@ -29,23 +29,22 @@ export function getWeekDates(refDate, offset = 0) {
 export function getMonthDates(refDate) {
   const y = refDate.getFullYear();
   const m = refDate.getMonth();
-  const first = new Date(y, m, 1);
   const last = new Date(y, m + 1, 0);
   const dates = [];
-  for (let d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
-    dates.push(new Date(d));
+  for (let d = 1; d <= last.getDate(); d++) {
+    dates.push(new Date(y, m, d));
   }
   return dates;
 }
 
 export const statusColors = {
-  draft: { bg: '#f3f4f6', text: '#6b7280', label: 'Brouillon' },
-  published: { bg: '#dbeafe', text: '#1d4ed8', label: 'Publié' },
-  submitted: { bg: '#fef3c7', text: '#d97706', label: 'Soumis' },
-  approved: { bg: '#d1fae5', text: '#059669', label: 'Approuvé' },
-  rejected: { bg: '#fee2e2', text: '#dc2626', label: 'Refusé' },
-  invoiced: { bg: '#ede9fe', text: '#7c3aed', label: 'Facturé' },
-  sent: { bg: '#ccfbf1', text: '#0d9488', label: 'Envoyée' },
-  paid: { bg: '#d1fae5', text: '#059669', label: 'Payée' },
-  overdue: { bg: '#fee2e2', text: '#dc2626', label: 'En retard' },
+  draft: { bg: '#EDF2F2', text: '#5F6877', label: 'Brouillon' },
+  published: { bg: '#E0F2F4', text: '#2A7B88', label: 'Publié' },
+  submitted: { bg: '#FEF3C7', text: '#92400E', label: 'Soumis' },
+  approved: { bg: '#DCFCE7', text: '#166534', label: 'Approuvé' },
+  rejected: { bg: '#FEE2E2', text: '#991B1B', label: 'Refusé' },
+  invoiced: { bg: '#EDE9FE', text: '#5B21B6', label: 'Facturé' },
+  sent: { bg: '#CCFBF1', text: '#115E59', label: 'Envoyée' },
+  paid: { bg: '#DCFCE7', text: '#166534', label: 'Payée' },
+  overdue: { bg: '#FEE2E2', text: '#991B1B', label: 'En retard' },
 };

@@ -79,7 +79,7 @@ function getRecurrenceDates(startDate, mode, endDate, customDays = []) {
 // ══════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════
-export default function SchedulesPage({ toast }) {
+export default function SchedulesPage({ toast, onNavigate }) {
   const [schedules, setSchedules] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [clients, setClients] = useState([]);
@@ -449,7 +449,9 @@ export default function SchedulesPage({ toast }) {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <Avatar name={e.name} size={30} />
                         <div>
-                          <div style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</div>
+                          <div style={{ fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--brand-d)' }}
+                              onClick={(ev) => { ev.stopPropagation(); if (onNavigate) onNavigate('employees'); }}
+                              title="Voir le profil">{e.name}</div>
                           <div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div>
                         </div>
                       </div>

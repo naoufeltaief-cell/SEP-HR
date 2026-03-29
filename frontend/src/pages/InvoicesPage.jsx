@@ -494,13 +494,19 @@ export default function InvoicesPage({ toast }) {
                     </select>
                   </div>
                   <div className="field" style={{ margin: 0 }}>
-                    <label style={{ fontSize: 10 }}>Heures</label>
-                    <input className="input" type="number" style={{ padding: '5px 8px', fontSize: 12 }}
-                      value={l.hoursWorked || l.hours || 0} min={0} step={0.25}
-                      onChange={e => updateLine(l.id, 'hours', parseFloat(e.target.value) || 0)} />
+                    <label style={{ fontSize: 10 }}>{l._isAccom ? 'Jours' : 'Heures'}</label>
+                    {l._isAccom ? (
+                      <div style={{ padding: '5px 8px', fontSize: 12, fontWeight: 600, color: 'var(--purple)' }}>
+                        {l.lineTotal && l.rate ? Math.round(l.lineTotal / l.rate) : 0} jour(s)
+                      </div>
+                    ) : (
+                      <input className="input" type="number" style={{ padding: '5px 8px', fontSize: 12 }}
+                        value={l.hoursWorked || l.hours || 0} min={0} step={0.25}
+                        onChange={e => updateLine(l.id, 'hours', parseFloat(e.target.value) || 0)} />
+                    )}
                   </div>
                   <div className="field" style={{ margin: 0 }}>
-                    <label style={{ fontSize: 10 }}>Taux ($/h)</label>
+                    <label style={{ fontSize: 10 }}>{l._isAccom ? 'Coût/jour' : 'Taux ($/h)'}</label>
                     <input className="input" type="number" style={{ padding: '5px 8px', fontSize: 12 }}
                       value={l.rate || 0} min={0} step={0.01}
                       onChange={e => updateLine(l.id, 'rate', parseFloat(e.target.value) || 0)} />

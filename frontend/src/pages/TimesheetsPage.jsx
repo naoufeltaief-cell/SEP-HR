@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import api from '../utils/api';
 import { fmtDay, fmtISO, fmtMoney, getWeekDates, DAYS, RATE_KM } from '../utils/helpers';
 import { Avatar, Badge, Modal } from '../components/UI';
-import { Check, X, Upload, Clock, FileText, ChevronDown, ChevronUp, DollarSign, AlertTriangle } from 'lucide-react';
+import { Check, X, Upload, Clock, FileText, ChevronDown, ChevronUp, DollarSign, AlertTriangle, Trash2 } from 'lucide-react';
 
 const GARDE_RATE = 86.23; // $/h facturable pour la garde
 
@@ -84,6 +84,12 @@ export default function TimesheetsPage({ toast }) {
     try { await api.approveTimesheet(id); toast?.('FDT approuvée'); reload(); }
     catch (err) { toast?.('Erreur: ' + err.message); }
   };
+  const deleteTS = async (id) => {
+    if (!confirm('Supprimer cette FDT ? Cette action est irréversible.')) return;
+    try { await api.deleteTimesheet(id); toast?.('FDT supprimée'); reload(); }
+    catch (err) { toast?.('Erreur: ' + err.message); }
+  };
+
   const reject = async (id) => {
     try { await api.rejectTimesheet(id); toast?.('FDT refusée'); reload(); }
     catch (err) { toast?.('Erreur: ' + err.message); }
@@ -283,6 +289,9 @@ export default function TimesheetsPage({ toast }) {
                     <button className="btn btn-success btn-sm" onClick={() => approve(ts.id)}><Check size={14} /> Approuver</button>
                     <button className="btn btn-danger btn-sm" onClick={() => reject(ts.id)}><X size={14} /> Refuser</button>
                   </>
+                )}
+                {(ts.status === 'approved' || ts.status === 'submitted' || ts.status === 'rejected') && (
+                  <button className="btn btn-outline btn-sm" style={{ color: 'var(--red)' }} onClick={() => deleteTS(ts.id)}>Supprimer</button>
                 )}
               </div>
             </div>

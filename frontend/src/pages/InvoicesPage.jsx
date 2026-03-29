@@ -174,7 +174,7 @@ export default function InvoicesPage({ toast }) {
   // ── Frais management ──
   const addFrais = (type) => {
     setCreateModal(m => ({
-      ...m, frais: [...m.frais, { id: Date.now(), type, montant: 0, km: 0, description: '' }]
+      ...m, frais: [...m.frais, { id: Date.now(), type, montant: 0, km: 0, description: '', heures: 0, taux: 0 }]
     }));
   };
   const removeFrais = (id) => setCreateModal(m => ({ ...m, frais: m.frais.filter(f => f.id !== id) }));
@@ -184,6 +184,7 @@ export default function InvoicesPage({ toast }) {
         if (f.id !== id) return f;
         const updated = { ...f, [field]: field === 'description' ? val : (parseFloat(val) || 0) };
         if (field === 'km') updated.montant = Math.round(updated.km * RATE_KM * 100) / 100;
+        if (field === 'heures' || field === 'taux') updated.montant = Math.round((updated.heures || 0) * (updated.taux || 0) * 100) / 100;
         return updated;
       })
     }));
@@ -232,6 +233,7 @@ export default function InvoicesPage({ toast }) {
     const stR = createModal.lines.reduce((s, l) => s + (l.rappelAmt || 0), 0);
     const totalFrais = (createModal.frais || []).reduce((s, f) => {
       if (f.type === 'kilometrage') return s + Math.round((f.km || 0) * RATE_KM * 100) / 100;
+      if (f.type === 'deplacement') return s + Math.round((f.heures || 0) * (f.taux || 0) * 100) / 100;
       return s + (f.montant || 0);
     }, 0);
     const sub = stS + stG + stR + totalFrais;
@@ -516,10 +518,16 @@ export default function InvoicesPage({ toast }) {
                 {f.type === 'deplacement' && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
                     <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--amber)', whiteSpace: 'nowrap' }}>🚗 Déplacement</span>
-                    <input type="number" className="input" style={{ padding: '5px 8px', fontSize: 12, width: 120 }}
-                      placeholder="Montant $" value={f.montant || ''} min={0} step={0.01}
-                      onChange={e => updateFrais(f.id, 'montant', e.target.value)} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--brand)' }}>{fmtMoney(f.montant || 0)}</span>
+                    <input type="number" className="input" style={{ padding: '5px 8px', fontSize: 12, width: 80 }}
+                      placeholder="Heures" value={f.heures || ''} min={0} max={8} step={0.5}
+                      onChange={e => updateFrais(f.id, 'heures', e.target.value)} />
+                    <span style={{ fontSize: 10, color: 'var(--text3)' }}>h (max 8h)</span>
+                    <span style={{ fontSize: 10, color: 'var(--text3)' }}>×</span>
+                    <input type="number" className="input" style={{ padding: '5px 8px', fontSize: 12, width: 80 }}
+                      placeholder="Taux" value={f.taux || ''} min={0} step={0.01}
+                      onChange={e => updateFrais(f.id, 'taux', e.target.value)} />
+                    <span style={{ fontSize: 10, color: 'var(--text3)' }}>$/h</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--brand)' }}>{fmtMoney((f.heures || 0) * (f.taux || 0))}</span>
                   </div>
                 )}
                 {f.type === 'kilometrage' && (
@@ -761,6 +769,8 @@ function InvoicePreview({ inv }) {
 function ClientsList({ clients, invoices, toast, reload }) {
   const [editModal, setEditModal] = useState(null);
   const [addModal, setAddModal] = useState(null);
+  const [detailClient, setDetailClient] = useState(null);
+  const [detailClient, setDetailClient] = useState(null);
 
   const clientStats = useMemo(() => clients.map(cl => {
     const clientInv = invoices.filter(inv => inv.client_id === cl.id);
@@ -822,8 +832,11 @@ function ClientsList({ clients, invoices, toast, reload }) {
                     : <span style={{ fontSize: 10, color: 'var(--text3)' }}>TPS+TVQ</span>}
                 </td>
                 <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                  <button className="btn btn-outline btn-sm" onClick={() => setEditModal(cl)}>
+                  <button className="btn btn-outline btn-sm" style={{ marginRight: 4 }} onClick={(e) => { e.stopPropagation(); setEditModal(cl); }}>
                     <Edit3 size={12} />
+                  </button>
+                  <button className="btn btn-outline btn-sm" onClick={(e) => { e.stopPropagation(); setDetailClient(cl); }}>
+                    <Eye size={12} />
                   </button>
                 </td>
               </tr>
@@ -831,6 +844,33 @@ function ClientsList({ clients, invoices, toast, reload }) {
           </tbody>
         </table>
       </div>
+
+      {/* Client Detail - Invoices */}
+      {detailClient && (
+        <Modal title={`Factures — ${detailClient.name}`} onClose={() => setDetailClient(null)} wide>
+          {(() => {
+            const clientInv = invoices.filter(inv => inv.client_id === detailClient.id);
+            if (!clientInv.length) return <div style={{ padding: 20, textAlign: 'center', color: 'var(--text3)' }}>Aucune facture pour ce client</div>;
+            return clientInv.map(inv => (
+              <div key={inv.id} style={{ padding: 12, borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>{inv.number}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>{inv.date} {inv.period_start ? `— Période: ${inv.period_start} au ${inv.period_end}` : ''}</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 700, color: 'var(--brand)' }}>{fmtMoney(inv.total)}</span>
+                  <span className="badge" style={{ background: inv.status === 'paid' ? 'var(--green-l)' : inv.status === 'sent' ? '#CCFBF1' : 'var(--surface2)', color: inv.status === 'paid' ? 'var(--green)' : inv.status === 'sent' ? 'var(--teal)' : 'var(--text2)', fontSize: 10 }}>{inv.status === 'paid' ? 'Payée' : inv.status === 'sent' ? 'Envoyée' : 'Brouillon'}</span>
+                  {inv.status !== 'paid' && (
+                    <button className="btn btn-success btn-sm" onClick={async () => { try { await api.markPaid(inv.id); toast?.('Facture marquée payée'); reload(); setDetailClient(null); } catch(err) { toast?.('Erreur'); } }}>
+                      Payée ✓
+                    </button>
+                  )}
+                </div>
+              </div>
+            ));
+          })()}
+        </Modal>
+      )}
 
       {/* Add/Edit Client Modal */}
       {(editModal || addModal) && (

@@ -47,7 +47,7 @@ export default function App() {
 
   const pages = {
     dashboard: <DashboardPage onNavigate={setPage} />,
-    schedules: <SchedulesPage toast={toast} />,
+    schedules: <SchedulesPage toast={toast} onNavigate={setPage} />,
     employees: <EmployeesPage toast={toast} />,
     candidates: <CandidatesPage toast={toast} />,
     timesheets: <TimesheetsPage toast={toast} />,

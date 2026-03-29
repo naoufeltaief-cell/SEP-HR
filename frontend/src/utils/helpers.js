@@ -11,6 +11,28 @@ export const GARDE_RATE = 86.23;
 export const TPS_RATE = 0.05;
 export const TVQ_RATE = 0.09975;
 
+/**
+ * Calcule les heures nettes d'un quart de travail.
+ * Gère les quarts de nuit (ex: 22:00 à 06:00) et déduit les pauses en minutes.
+ */
+export function calcNetHours(start, end, pauseMinutes = 0) {
+  if (!start || !end) return 0;
+  const s = new Date(`2000-01-01T${start}:00`);
+  let e = new Date(`2000-01-01T${end}:00`);
+  if (e <= s) e.setDate(e.getDate() + 1); // Gestion du passage à minuit
+  const diffHours = (e - s) / 3600000;
+  return Math.max(0, diffHours - (pauseMinutes / 60));
+}
+
+/**
+ * Vérifie si une facture est en retard (plus de 30 jours).
+ */
+export function isOverdue(invoiceDate, status) {
+  if (status === 'paid') return false;
+  const diffDays = (new Date() - new Date(invoiceDate)) / 86400000;
+  return diffDays > 30;
+}
+
 export function getWeekDates(refDate, offset = 0) {
   const d = new Date(refDate);
   d.setDate(d.getDate() + offset * 7);

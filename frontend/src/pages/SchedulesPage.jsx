@@ -87,6 +87,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [filterText, setFilterText] = useState('');
   const [modal, setModal] = useState(null);
+  const [empDetail, setEmpDetail] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // ── Data Loading ──
@@ -450,7 +451,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                         <Avatar name={e.name} size={30} />
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 12, cursor: 'pointer', color: 'var(--brand-d)' }}
-                              onClick={(ev) => { ev.stopPropagation(); if (onNavigate) onNavigate('employees'); }}
+                              onClick={(ev) => { ev.stopPropagation(); setEmpDetail(e); }}
                               title="Voir le profil">{e.name}</div>
                           <div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div>
                         </div>
@@ -716,7 +717,35 @@ export default function SchedulesPage({ toast, onNavigate }) {
           </div>
         </Modal>
       )}
-    </>
+    
+      {/* Employee Quick Profile Modal */}
+      {empDetail && (
+        <Modal title={empDetail.name} onClose={() => setEmpDetail(null)}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
+            <Avatar name={empDetail.name} size={56} />
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 700 }}>{empDetail.name}</div>
+              <div style={{ fontSize: 13, color: 'var(--text2)' }}>{empDetail.position}</div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16, fontSize: 13 }}>
+            <div><span style={{ fontSize: 11, color: 'var(--text3)' }}>Taux horaire</span><div style={{ fontWeight: 600 }}>{empDetail.rate ? fmtMoney(empDetail.rate) + '/h' : '—'}</div></div>
+            <div><span style={{ fontSize: 11, color: 'var(--text3)' }}>Courriel</span><div>{empDetail.email || '—'}</div></div>
+            <div><span style={{ fontSize: 11, color: 'var(--text3)' }}>Téléphone</span><div>{empDetail.phone || '—'}</div></div>
+            <div><span style={{ fontSize: 11, color: 'var(--text3)' }}>Heures (période)</span>
+              <div style={{ fontWeight: 700, color: 'var(--brand)' }}>
+                {schedules.filter(s => s.employee_id === empDetail.id).reduce((sum, s) => sum + s.hours, 0).toFixed(1)}h
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-outline" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setEmpDetail(null)}>Fermer</button>
+            <button className="btn btn-primary" style={{ flex: 1, justifyContent: 'center' }} onClick={() => { setEmpDetail(null); if (onNavigate) onNavigate('employees'); }}>Voir profil complet →</button>
+          </div>
+        </Modal>
+      )}
+
+</>
   );
 }
 

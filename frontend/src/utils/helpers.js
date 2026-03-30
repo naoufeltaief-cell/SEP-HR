@@ -69,4 +69,5 @@ export const statusColors = {
   sent: { bg: '#CCFBF1', text: '#115E59', label: 'Envoyée' },
   paid: { bg: '#DCFCE7', text: '#166534', label: 'Payée' },
   overdue: { bg: '#FEE2E2', text: '#991B1B', label: 'En retard' },
+  cancelled: { bg: '#f3f4f6', text: '#6b7280', label: 'Annulée' },
 };

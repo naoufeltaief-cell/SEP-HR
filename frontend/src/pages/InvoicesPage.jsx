@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 
-const API = import.meta.env.VITE_API_URL || 'https://sep-hr.onrender.com';
+const API = import.meta.env.VITE_API_URL || '/api';
 
 // ─────────────────────────────────────────────
 // Helpers
@@ -22,7 +22,7 @@ const fmtDateTime = (d) => {
   return new Date(d).toLocaleString('fr-CA');
 };
 
-const getToken = () => localStorage.getItem('token');
+const getToken = () => localStorage.getItem('sep_token');
 
 const apiFetch = async (path, opts = {}) => {
   const token = getToken();

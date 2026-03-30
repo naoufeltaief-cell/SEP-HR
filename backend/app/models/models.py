@@ -124,51 +124,6 @@ class TimesheetShift(Base):
     timesheet = relationship("Timesheet", back_populates="shifts")
 
 
-class Invoice(Base):
-    __tablename__ = "invoices"
-    id = Column(String, primary_key=True, default=new_id)
-    number = Column(String, nullable=False, unique=True)
-    date = Column(Date, nullable=False)
-    period_start = Column(Date, nullable=True)
-    period_end = Column(Date, nullable=True)
-    client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
-    client_name = Column(String, default="")
-    client_address = Column(String, default="")
-    client_email = Column(String, default="")
-    client_phone = Column(String, default="")
-    subtotal_services = Column(Float, default=0)
-    subtotal_garde = Column(Float, default=0)
-    subtotal_rappel = Column(Float, default=0)
-    subtotal_accom = Column(Float, default=0)
-    subtotal_frais = Column(Float, default=0)
-    subtotal = Column(Float, default=0)
-    tps = Column(Float, default=0)
-    tvq = Column(Float, default=0)
-    total = Column(Float, default=0)
-    include_tax = Column(Boolean, default=True)
-    status = Column(String, default="draft")  # draft, sent, paid
-    notes = Column(Text, default="")
-    lines = Column(JSON, default=list)  # array of line items
-    accommodation_lines = Column(JSON, default=list)
-    frais_additionnels = Column(JSON, default=list)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class CreditNote(Base):
-    __tablename__ = "credit_notes"
-    id = Column(String, primary_key=True, default=new_id)
-    number = Column(String, nullable=False)
-    client_name = Column(String, default="")
-    invoice_ref = Column(String, default="")
-    date = Column(Date, nullable=False)
-    reason = Column(Text, default="")
-    amount = Column(Float, default=0)
-    tps = Column(Float, default=0)
-    tvq = Column(Float, default=0)
-    total = Column(Float, default=0)
-    include_tax = Column(Boolean, default=True)
-
-
 class Accommodation(Base):
     __tablename__ = "accommodations"
     id = Column(String, primary_key=True, default=new_id)
@@ -180,3 +135,7 @@ class Accommodation(Base):
     cost_per_day = Column(Float, default=0)
     pdf_name = Column(String, default="")
     notes = Column(Text, default="")
+
+
+# Phase 1 Invoice models (new tables: payments, invoice_audit_log, enhanced invoices, credit_notes)
+from app.models.models_invoice import Invoice, Payment, InvoiceAuditLog, CreditNote

@@ -3,6 +3,7 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
 
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -74,3 +75,37 @@ async def _send_email(to: str, subject: str, html: str):
         print(f"[EMAIL OK] Sent to {to}: {subject}")
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send to {to}: {e}")
+
+
+async def send_email_with_attachment(
+    to_email: str,
+    subject: str,
+    body: str,
+    attachment: bytes,
+    attachment_name: str = "document.pdf"
+):
+    """Send email with PDF attachment via Gmail SMTP"""
+    if not SMTP_PASS:
+        print(f"[EMAIL SKIP] No SMTP_PASS set. Would send to {to_email}: {subject} with attachment {attachment_name}")
+        return
+
+    msg = MIMEMultipart()
+    msg["From"] = f"Soins Expert Plus <{SMTP_USER}>"
+    msg["To"] = to_email
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(body, "plain"))
+
+    pdf_attachment = MIMEApplication(attachment, _subtype="pdf")
+    pdf_attachment.add_header("Content-Disposition", "attachment", filename=attachment_name)
+    msg.attach(pdf_attachment)
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+        print(f"[EMAIL OK] Sent to {to_email}: {subject} with {attachment_name}")
+    except Exception as e:
+        print(f"[EMAIL ERROR] Failed to send to {to_email}: {e}")
+        raise

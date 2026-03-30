@@ -1,4 +1,5 @@
 """Invoice routes — create, update, preview, mark paid"""
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -136,3 +137,66 @@ async def next_invoice_number(db: AsyncSession = Depends(get_db), user=Depends(r
     result = await db.execute(select(func.count(Invoice.id)))
     count = result.scalar() or 0
     return {"number": f"GTI-2026-{str(count + 1).zfill(3)}"}
+
+
+@router.delete("/{iid}")
+async def delete_invoice(iid: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    result = await db.execute(select(Invoice).where(Invoice.id == iid))
+    inv = result.scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Facture introuvable")
+    await db.delete(inv)
+    await db.commit()
+    return {"message": f"Facture {inv.number} supprimée"}
+
+
+@router.post("/{iid}/duplicate")
+async def duplicate_invoice(iid: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    result = await db.execute(select(Invoice).where(Invoice.id == iid))
+    inv = result.scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Facture introuvable")
+    # Generate new number
+    count_result = await db.execute(select(func.count(Invoice.id)))
+    count = count_result.scalar() or 0
+    new_num = f"GTI-2026-{str(count + 1).zfill(3)}" if hasattr(str, 'padStart') else f"GTI-2026-{str(count + 1).zfill(3)}"
+    new_inv = Invoice(
+        id=new_id(), number=new_num, date=date.today(),
+        period_start=inv.period_start, period_end=inv.period_end,
+        client_id=inv.client_id, client_name=inv.client_name,
+        client_address=inv.client_address, client_email=inv.client_email,
+        client_phone=inv.client_phone,
+        subtotal_services=inv.subtotal_services, subtotal_garde=inv.subtotal_garde,
+        subtotal_rappel=inv.subtotal_rappel, subtotal_accom=inv.subtotal_accom,
+        subtotal_frais=inv.subtotal_frais, subtotal=inv.subtotal,
+        tps=inv.tps, tvq=inv.tvq, total=inv.total,
+        include_tax=inv.include_tax, status="draft",
+        notes=f"Copie de {inv.number}. {inv.notes or ''}",
+        lines=inv.lines, accommodation_lines=inv.accommodation_lines,
+        frais_additionnels=inv.frais_additionnels,
+    )
+    db.add(new_inv)
+    await db.commit()
+    return {"message": f"Facture dupliquée: {new_num}", "id": new_inv.id, "number": new_num}
+
+
+@router.put("/{iid}/unpaid")
+async def mark_unpaid(iid: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    result = await db.execute(select(Invoice).where(Invoice.id == iid))
+    inv = result.scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Facture introuvable")
+    inv.status = "sent"
+    await db.commit()
+    return {"message": "Facture marquée impayée"}
+
+
+@router.put("/{iid}/cancel")
+async def cancel_invoice(iid: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    result = await db.execute(select(Invoice).where(Invoice.id == iid))
+    inv = result.scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Facture introuvable")
+    inv.status = "cancelled"
+    await db.commit()
+    return {"message": f"Facture {inv.number} annulée"}

@@ -100,19 +100,22 @@ export default function InvoicesPage({ toast }) {
     const approved = timesheets.filter(t => t.status === 'approved');
     if (!approved.length) { toast?.('Aucune FDT approuvée'); return; }
 
-    const allShifts = []; const dates = [];
+    // Group approved FDTs by employee → one invoice per employee
+    const byEmployee = {};
     approved.forEach(ts => {
+      const emp = employees.find(e => e.id === ts.employee_id);
+      if (!emp) return;
+      if (!byEmployee[emp.id]) byEmployee[emp.id] = { emp, timesheets: [], shifts: [] };
+      byEmployee[emp.id].timesheets.push(ts);
       (ts.shifts || []).forEach(sh => {
         const sched = schedules.find(s => s.id === sh.schedule_id);
-        const emp = employees.find(e => e.id === ts.employee_id);
         if (!sched) return;
-        dates.push(sh.date);
         const serviceAmt = Math.round(sh.hours_worked * (sched.billable_rate || 0) * 100) / 100;
         const gardeFacturable = Math.round((sh.garde_hours || 0) / 8 * 100) / 100;
         const gardeAmt = Math.round(gardeFacturable * GARDE_RATE * 100) / 100;
         const rappelAmt = Math.round((sh.rappel_hours || 0) * (sched.billable_rate || 0) * 100) / 100;
-        allShifts.push({
-          employee: emp?.name || '', date: sh.date, location: sched.location || '',
+        byEmployee[emp.id].shifts.push({
+          employee: emp.name, date: sh.date, location: sched.location || '',
           start: sched.start, end: sched.end,
           hoursWorked: sh.hours_worked, pause: sh.pause,
           gardeHours: sh.garde_hours || 0, gardeFacturable,
@@ -125,54 +128,54 @@ export default function InvoicesPage({ toast }) {
       });
     });
 
-    dates.sort();
+    const empGroups = Object.values(byEmployee);
+    if (empGroups.length === 1) {
+      // Single employee → generate directly
+      generateDraftForEmployee(empGroups[0], approved);
+    } else {
+      // Multiple employees → let user choose: individual or combined
+      setDraftChoice({ groups: empGroups, approved });
+    }
+  };
+
+  const [draftChoice, setDraftChoice] = useState(null);
+
+  const generateDraftForEmployee = (group, approvedList) => {
+    const { emp, shifts } = group;
+    const dates = shifts.map(s => s.date).sort();
     const periodStart = dates[0];
     const periodEnd = dates[dates.length - 1];
-    const num = `GTI-2026-${String(invoices.length + 1).padStart(3, '0')}`;
+    const num = 'GTI-2026-' + String(invoices.length + 1).padStart(3, '0');
 
-    // Auto-detect client from employees
-    const clientCounts = {};
-    approved.forEach(ts => {
-      const emp = employees.find(e => e.id === ts.employee_id);
-      if (emp?.client_id) clientCounts[emp.client_id] = (clientCounts[emp.client_id] || 0) + 1;
-    });
-    let defaultClientId = 0;
-    Object.entries(clientCounts).forEach(([cid, cnt]) => {
-      if (cnt > (clientCounts[defaultClientId] || 0)) defaultClientId = Number(cid);
-    });
-
-    // Auto-include accommodation lines
+    // Accommodation for this employee
     const accomLines = [];
     accommodations.forEach(a => {
-      const matchingShifts = allShifts.filter(sh => {
-        const empObj = employees.find(e => e.name === sh.employee);
-        return empObj && empObj.id === a.employee_id && sh.date >= (a.start_date || '') && sh.date <= (a.end_date || '');
-      });
+      if (a.employee_id !== emp.id) return;
+      const matchingShifts = shifts.filter(sh => sh.date >= (a.start_date || '') && sh.date <= (a.end_date || ''));
       if (matchingShifts.length > 0) {
         const billedDays = matchingShifts.length;
         const cpd = a.cost_per_day || (a.days_worked > 0 ? Math.round(a.total_cost / a.days_worked * 100) / 100 : 0);
-        const billedAmt = Math.round(cpd * billedDays * 100) / 100;
-        const eName = employees.find(e => e.id === a.employee_id)?.name || '?';
         accomLines.push({
-          id: Date.now() + Math.random(), employee: eName,
-          description: 'Hébergement — ' + eName,
-          hoursWorked: 0, rate: cpd, serviceAmt: billedAmt, gardeAmt: 0, rappelAmt: 0,
-          lineTotal: billedAmt, date: a.start_date, location: '',
-          start: '', end: '', pause: 0,
-          note: 'Héberg. ' + a.start_date + ' au ' + a.end_date + ' — Total ' + a.total_cost + '$ / ' + a.days_worked + 'j = ' + cpd + '$/j x ' + billedDays + 'j facturés',
+          id: Date.now() + Math.random(), employee: emp.name,
+          description: 'Hébergement — ' + emp.name,
+          hoursWorked: 0, rate: cpd, serviceAmt: Math.round(cpd * billedDays * 100) / 100,
+          gardeAmt: 0, rappelAmt: 0, lineTotal: Math.round(cpd * billedDays * 100) / 100,
+          date: a.start_date, location: '', start: '', end: '', pause: 0,
+          note: 'Héberg. ' + a.start_date + ' au ' + a.end_date + ' — ' + billedDays + 'j × ' + cpd + '$/j',
           _isAccom: true,
         });
       }
     });
 
+    setDraftChoice(null);
     setCreateModal({
       _isDraft: true,
       number: num, date: new Date().toISOString().slice(0, 10),
       period_start: periodStart, period_end: periodEnd,
-      client_id: defaultClientId, include_tax: true, notes: '', status: 'draft',
-      lines: [...allShifts.map((l, i) => ({ id: i + 1, ...l })), ...accomLines],
+      client_id: emp.client_id || 0, include_tax: true, notes: 'Ressource: ' + emp.name, status: 'draft',
+      lines: [...shifts.map((l, i) => ({ id: i + 1, ...l })), ...accomLines],
       frais: [],
-      _approvedIds: approved.map(t => t.id),
+      _approvedIds: (approvedList || []).map(t => t.id),
     });
   };
 
@@ -339,6 +342,9 @@ export default function InvoicesPage({ toast }) {
               onPreview={() => setPreview(inv)}
               onEdit={() => openEdit(inv)}
               onMarkPaid={() => markPaid(inv.id)}
+              onMarkUnpaid={async () => { try { await api.markUnpaid(inv.id); toast?.('Facture marquée impayée'); reload(); } catch(e) { toast?.('Erreur'); } }}
+              onDuplicate={async () => { try { const r = await api.duplicateInvoice(inv.id); toast?.('Facture dupliquée: ' + r.number); reload(); } catch(e) { toast?.('Erreur'); } }}
+              onCancel={async () => { if (!confirm('Annuler cette facture?')) return; try { await api.cancelInvoice(inv.id); toast?.('Facture annulée'); reload(); } catch(e) { toast?.('Erreur'); } }}
               onSendReminder={() => setReminderModal(inv)}
             />
           ))}
@@ -401,6 +407,40 @@ export default function InvoicesPage({ toast }) {
             onClick={() => { toast?.(`Rappel envoyé pour facture ${reminderModal.number}`); setReminderModal(null); }}>
             <Send size={14} /> Envoyer le rappel
           </button>
+        </Modal>
+      )}
+
+
+      {/* Draft Choice - Individual vs Combined */}
+      {draftChoice && (
+        <Modal title="Générer les factures" onClose={() => setDraftChoice(null)} wide>
+          <div style={{ background: 'var(--brand-xl)', padding: 14, borderRadius: 'var(--r)', marginBottom: 16, fontSize: 13, color: 'var(--brand)' }}>
+            <strong>{draftChoice.groups.length} employé(s)</strong> ont des FDT approuvées. La facturation doit être <strong>unique par ressource</strong>.
+          </div>
+          {draftChoice.groups.map(g => {
+            const totalHrs = g.shifts.reduce((s, sh) => s + sh.hoursWorked, 0);
+            const totalAmt = g.shifts.reduce((s, sh) => s + sh.lineTotal, 0);
+            const clientName = clients.find(c => c.id === g.emp.client_id)?.name || 'Non assigné';
+            return (
+              <div key={g.emp.id} className="card" style={{ marginBottom: 8, cursor: 'pointer' }}
+                onClick={() => generateDraftForEmployee(g, draftChoice.approved)}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14 }}>{g.emp.name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text3)' }}>{g.emp.position} — {clientName}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 4 }}>{g.shifts.length} quarts · {totalHrs.toFixed(1)}h</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--brand)' }}>{fmtMoney(totalAmt)}</div>
+                    <div style={{ fontSize: 11, color: 'var(--brand)' }}>Cliquer pour générer →</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 8, textAlign: 'center' }}>
+            Cliquez sur un employé pour générer sa facture individuelle
+          </div>
         </Modal>
       )}
 
@@ -660,8 +700,9 @@ export default function InvoicesPage({ toast }) {
 // ══════════════════════════════════════════
 // INVOICE CARD
 // ══════════════════════════════════════════
-function InvoiceCard({ inv, clients, onPreview, onEdit, onMarkPaid, onSendReminder }) {
+function InvoiceCard({ inv, clients, onPreview, onEdit, onMarkPaid, onMarkUnpaid, onDuplicate, onCancel, onSendReminder }) {
   const overdue = isOverdue(inv);
+  const cancelled = inv.status === 'cancelled';
   const cl = clients.find(c => c.id === inv.client_id);
 
   return (
@@ -675,7 +716,7 @@ function InvoiceCard({ inv, clients, onPreview, onEdit, onMarkPaid, onSendRemind
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--brand)' }}>{fmtMoney(inv.total)}</div>
-          <Badge status={overdue ? 'overdue' : inv.status} />
+          <Badge status={cancelled ? 'cancelled' : overdue ? 'overdue' : inv.status} />
         </div>
       </div>
 
@@ -712,10 +753,17 @@ function InvoiceCard({ inv, clients, onPreview, onEdit, onMarkPaid, onSendRemind
       {/* Actions */}
       <div style={{ display: 'flex', gap: 6, marginTop: 12, flexWrap: 'wrap' }}>
         <button className="btn btn-outline btn-sm" onClick={onPreview}><Eye size={14} /> Aperçu</button>
-        {inv.status !== 'paid' && <button className="btn btn-outline btn-sm" style={{ color: 'var(--amber)' }} onClick={onEdit}><Edit3 size={14} /> Modifier</button>}
+        {inv.status !== 'paid' && inv.status !== 'cancelled' && <button className="btn btn-outline btn-sm" style={{ color: 'var(--amber)' }} onClick={onEdit}><Edit3 size={14} /> Modifier</button>}
         {overdue && <button className="btn btn-danger btn-sm" onClick={onSendReminder}><Send size={14} /> Rappel</button>}
-        {(inv.status === 'sent' || inv.status === 'draft' || overdue) && inv.status !== 'paid' && (
+        {(inv.status === 'sent' || inv.status === 'draft' || overdue) && inv.status !== 'paid' && inv.status !== 'cancelled' && (
           <button className="btn btn-success btn-sm" onClick={onMarkPaid}><Check size={14} /> Payée</button>
+        )}
+        {inv.status === 'paid' && (
+          <button className="btn btn-outline btn-sm" onClick={onMarkUnpaid}>Marquer impayée</button>
+        )}
+        <button className="btn btn-outline btn-sm" onClick={onDuplicate}><Plus size={12} /> Dupliquer</button>
+        {inv.status !== 'cancelled' && (
+          <button className="btn btn-outline btn-sm" style={{ color: 'var(--red)' }} onClick={onCancel}>Annuler</button>
         )}
       </div>
     </div>

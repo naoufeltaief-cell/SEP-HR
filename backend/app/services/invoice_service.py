@@ -10,13 +10,13 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.orm import selectinload
 import uuid
 
-from app.models.models_invoice import (
+from ..models.models_invoice import (
     Invoice, Payment, InvoiceAuditLog, CreditNote,
     InvoiceStatus, AuditAction
 )
 
 # Import existing models from main models file
-from app.models.models import Employee, Client, Schedule, Accommodation
+from ..models.models import Employee, Client, Schedule, Accommodation
 
 
 # ──────────────────────────────────────────────

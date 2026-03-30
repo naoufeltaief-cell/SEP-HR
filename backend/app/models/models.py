@@ -138,4 +138,4 @@ class Accommodation(Base):
 
 
 # Phase 1 Invoice models (new tables: payments, invoice_audit_log, enhanced invoices, credit_notes)
-from app.models.models_invoice import Invoice, Payment, InvoiceAuditLog, CreditNote
+from .models_invoice import Invoice, Payment, InvoiceAuditLog, CreditNote

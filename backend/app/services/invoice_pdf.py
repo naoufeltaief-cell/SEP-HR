@@ -19,7 +19,7 @@ from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
-from app.services.invoice_service import COMPANY_INFO
+from .invoice_service import COMPANY_INFO
 
 # ──────────────────────────────────────────────
 # Colors (SEP teal theme)

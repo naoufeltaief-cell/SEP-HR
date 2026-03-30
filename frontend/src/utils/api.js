@@ -90,6 +90,10 @@ class ApiClient {
   createInvoice(data) { return this.post('/invoices/', data); }
   updateInvoice(id, data) { return this.put(`/invoices/${id}`, data); }
   markPaid(id) { return this.put(`/invoices/${id}/paid`, {}); }
+  deleteInvoice(id) { return this.del(\`/invoices/\${id}\`); }
+  duplicateInvoice(id) { return this.post(\`/invoices/\${id}/duplicate\`, {}); }
+  markUnpaid(id) { return this.put(\`/invoices/\${id}/unpaid\`, {}); }
+  cancelInvoice(id) { return this.put(\`/invoices/\${id}/cancel\`, {}); }
 
   // Accommodations
   getAccommodations() { return this.get('/accommodations/'); }

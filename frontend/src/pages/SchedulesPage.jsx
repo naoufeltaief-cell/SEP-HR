@@ -90,6 +90,10 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [empDetail, setEmpDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [approvals, setApprovals] = useState([]);
+  const [expandedEmp, setExpandedEmp] = useState(null); // { empId, clientId }
+  const [empAttachments, setEmpAttachments] = useState([]); // attachments for expanded emp's invoice
+  const [empInvoice, setEmpInvoice] = useState(null); // existing invoice for expanded emp
+  const [billingLoading, setBillingLoading] = useState(false);
 
   // ── Data Loading ──
   const reload = useCallback(async () => {
@@ -295,6 +299,92 @@ export default function SchedulesPage({ toast, onNavigate }) {
       await api.revokeWeek({ employee_id: employeeId, client_id: clientId, week_start: ws });
       toast?.('Approbation révoquée');
       reload();
+    } catch (err) { toast?.('Erreur: ' + err.message); }
+  };
+
+  // ── Billing Panel ──
+  const toggleBillingPanel = async (empId, clientId) => {
+    if (expandedEmp?.empId === empId && expandedEmp?.clientId === clientId) {
+      setExpandedEmp(null);
+      return;
+    }
+    setExpandedEmp({ empId, clientId });
+    setBillingLoading(true);
+    setEmpInvoice(null);
+    setEmpAttachments([]);
+
+    try {
+      const ws = getWeekStart();
+      if (!ws) return;
+      const we = fmtISO(viewDates[6]);
+      // Check if invoice already exists for this emp/client/week
+      const invoices = await api.getInvoices();
+      const existing = (invoices || []).find(inv =>
+        inv.employee_id === empId && inv.client_id === clientId &&
+        inv.period_start === ws && inv.period_end === we &&
+        inv.status !== 'cancelled'
+      );
+      if (existing) {
+        setEmpInvoice(existing);
+        // Load attachments
+        try {
+          const atts = await api.getAttachments(existing.id);
+          setEmpAttachments(atts || []);
+        } catch(e) { /* no attachments */ }
+      }
+    } catch (e) { console.error(e); }
+    finally { setBillingLoading(false); }
+  };
+
+  const generateInvoice = async (empId, clientId) => {
+    const ws = getWeekStart();
+    if (!ws) return;
+    const we = fmtISO(viewDates[6]);
+    try {
+      setBillingLoading(true);
+      const result = await api.generateFromSchedules({
+        employee_id: empId, client_id: clientId,
+        period_start: ws, period_end: we,
+      });
+      toast?.(`Facture ${result.number} générée — ${fmtMoney(result.total)}`);
+      // Reload billing panel
+      toggleBillingPanel(empId, clientId);
+      // Re-expand
+      setTimeout(() => toggleBillingPanel(empId, clientId), 300);
+    } catch (err) { toast?.('Erreur: ' + err.message); }
+    finally { setBillingLoading(false); }
+  };
+
+  const approveAndGenerate = async (empId, clientId) => {
+    const ws = getWeekStart();
+    if (!ws) return;
+    try {
+      await api.approveWeek({ employee_id: empId, client_id: clientId, week_start: ws });
+      toast?.('Semaine approuvée');
+      await generateInvoice(empId, clientId);
+      reload();
+    } catch (err) { toast?.('Erreur: ' + err.message); }
+  };
+
+  const handleBillingAttUpload = async (e, invoiceId) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      await api.uploadAttachment(invoiceId, file, 'hebergement', file.name);
+      toast?.('Pièce jointe ajoutée');
+      const atts = await api.getAttachments(invoiceId);
+      setEmpAttachments(atts || []);
+    } catch (err) { toast?.('Erreur: ' + err.message); }
+    finally { e.target.value = ''; }
+  };
+
+  const deleteBillingAtt = async (invoiceId, attId) => {
+    if (!confirm('Supprimer cette pièce jointe?')) return;
+    try {
+      await api.deleteAttachment(invoiceId, attId);
+      toast?.('Pièce jointe supprimée');
+      const atts = await api.getAttachments(invoiceId);
+      setEmpAttachments(atts || []);
     } catch (err) { toast?.('Erreur: ' + err.message); }
   };
 
@@ -523,7 +613,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                         </td>
                       );
                     })}
-                    <td style={{ minWidth: 100, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}>
+                    <td style={{ minWidth: 130, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}>
                       <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>
                       {totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}
                       {totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}
@@ -531,22 +621,135 @@ export default function SchedulesPage({ toast, onNavigate }) {
                         const appr = getWeekApprovalStatus(e.id, cid);
                         const isApproved = appr && appr.status === 'approved';
                         return (
-                          <button key={cid}
-                            style={{
-                              display: 'block', width: '100%', marginTop: 4, padding: '2px 6px',
-                              fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer',
-                              background: isApproved ? '#28A745' : '#FFC107',
-                              color: isApproved ? '#fff' : '#000',
-                            }}
-                            onClick={() => isApproved ? revokeWeek(e.id, cid) : approveWeek(e.id, cid)}
-                            title={isApproved ? 'Cliquer pour révoquer' : 'Approuver cette semaine'}
-                          >
-                            {isApproved ? '✓ Approuvé' : '⏳ Approuver'}
-                          </button>
+                          <div key={cid} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
+                            <button
+                              style={{
+                                display: 'block', width: '100%', padding: '2px 6px',
+                                fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer',
+                                background: isApproved ? '#28A745' : '#FFC107',
+                                color: isApproved ? '#fff' : '#000',
+                              }}
+                              onClick={() => isApproved ? revokeWeek(e.id, cid) : approveAndGenerate(e.id, cid)}
+                              title={isApproved ? 'Cliquer pour révoquer' : 'Approuver + Générer facture'}
+                            >
+                              {isApproved ? '✓ Approuvé' : '✓ Approuver + Facturer'}
+                            </button>
+                            <button
+                              style={{
+                                display: 'block', width: '100%', padding: '2px 6px',
+                                fontSize: 9, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer',
+                                background: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'var(--brand)' : 'var(--surface)',
+                                color: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? '#fff' : 'var(--text2)',
+                              }}
+                              onClick={() => toggleBillingPanel(e.id, cid)}
+                            >
+                              📋 {expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'Fermer' : 'Détails'}
+                            </button>
+                          </div>
                         );
                       })}
                     </td>
                   </tr>
+                  {/* ── Billing Expansion Row ── */}
+                  {viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && (
+                    <tr>
+                      <td colSpan={viewDates.length + 2} style={{ padding: 0 }}>
+                        <div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>
+                          {billingLoading ? (
+                            <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div>
+                          ) : (
+                            <>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--brand-d)' }}>
+                                  📋 Facturation — {e.name} / {clients.find(c => c.id === expandedEmp.clientId)?.name || ''}
+                                  <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text3)', marginLeft: 8 }}>
+                                    Sem. {getWeekStart()} → {fmtISO(viewDates[6])}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Summary stats */}
+                              <div style={{ display: 'flex', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
+                                <div style={{ background: '#fff', borderRadius: 8, padding: '8px 14px', border: '1px solid var(--border)', minWidth: 100 }}>
+                                  <div style={{ fontSize: 10, color: 'var(--text3)' }}>Heures</div>
+                                  <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>
+                                </div>
+                                <div style={{ background: '#fff', borderRadius: 8, padding: '8px 14px', border: '1px solid var(--border)', minWidth: 100 }}>
+                                  <div style={{ fontSize: 10, color: 'var(--text3)' }}>Frais</div>
+                                  <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--purple)' }}>{fmtMoney(totalFrais)}</div>
+                                </div>
+                                {empInvoice && (
+                                  <>
+                                    <div style={{ background: '#fff', borderRadius: 8, padding: '8px 14px', border: '1px solid #28A745', minWidth: 120 }}>
+                                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>Facture</div>
+                                      <div style={{ fontSize: 14, fontWeight: 700, color: '#28A745' }}>{empInvoice.number}</div>
+                                      <div style={{ fontSize: 11, color: 'var(--text2)' }}>{fmtMoney(empInvoice.total)}</div>
+                                    </div>
+                                    <div style={{ background: '#fff', borderRadius: 8, padding: '8px 14px', border: '1px solid var(--border)', minWidth: 100 }}>
+                                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>Statut</div>
+                                      <div style={{ fontSize: 13, fontWeight: 600, color: empInvoice.status === 'paid' ? '#28A745' : empInvoice.status === 'draft' ? '#6C757D' : 'var(--brand)' }}>
+                                        {{ draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', cancelled: 'Annulée', partially_paid: 'Partiel' }[empInvoice.status] || empInvoice.status}
+                                      </div>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+
+                              {/* Actions */}
+                              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+                                {!empInvoice && (
+                                  <button className="btn btn-primary btn-sm" onClick={() => generateInvoice(e.id, expandedEmp.clientId)}>
+                                    🧾 Générer la facture
+                                  </button>
+                                )}
+                                {empInvoice && (
+                                  <>
+                                    <button className="btn btn-outline btn-sm" onClick={() => { if (onNavigate) onNavigate('invoices'); }}>
+                                      📄 Voir / Modifier la facture →
+                                    </button>
+                                    <button className="btn btn-outline btn-sm" onClick={() => window.open(`${api.getPdfWithAttachments ? '/api' : ''}/invoices/${empInvoice.id}/pdf-with-attachments`, '_blank')}>
+                                      📥 PDF + Pièces jointes
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+
+                              {/* Attachments section */}
+                              {empInvoice && (
+                                <div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}>
+                                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>📎 Pièces jointes ({empAttachments.length})</div>
+                                  {empAttachments.map(att => (
+                                    <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                                      <span>{att.file_type === 'pdf' ? '📄' : '🖼️'}</span>
+                                      <span style={{ flex: 1 }}>{att.filename}</span>
+                                      <span style={{ background: '#e9ecef', borderRadius: 4, padding: '1px 6px', fontSize: 10 }}>
+                                        {{ hebergement: 'Héberg.', deplacement: 'Déplac.', kilometrage: 'KM', autre: 'Autre' }[att.category] || att.category}
+                                      </span>
+                                      <button className="btn btn-sm" style={{ padding: '2px 6px', fontSize: 10, color: '#DC3545', border: '1px solid #DC3545', background: 'transparent' }}
+                                        onClick={() => deleteBillingAtt(empInvoice.id, att.id)}>🗑️</button>
+                                    </div>
+                                  ))}
+                                  <div style={{ marginTop: 8 }}>
+                                    <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }}>
+                                      📤 Ajouter pièce jointe (héberg., reçu, etc.)
+                                      <input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }}
+                                        onChange={(ev) => handleBillingAttUpload(ev, empInvoice.id)} />
+                                    </label>
+                                  </div>
+                                </div>
+                              )}
+
+                              {!empInvoice && (
+                                <div style={{ background: '#fff8e1', borderRadius: 8, padding: 12, border: '1px solid #FFC107', fontSize: 12, color: '#856404' }}>
+                                  💡 Approuvez et générez d'abord la facture pour ajouter des pièces jointes.
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                 );
               })}
               {otherEmps.length > 0 && viewMode === 'week' && (

@@ -82,6 +82,7 @@ class ApiClient {
     const qs = new URLSearchParams(params).toString();
     return this.get(`/schedules/approvals${qs ? '?' + qs : ''}`);
   }
+  generateFromSchedules(data) { return this.post('/invoices/generate-from-schedules', data); }
 
   // Timesheets
   getTimesheets() { return this.get('/timesheets/'); }

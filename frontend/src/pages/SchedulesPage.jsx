@@ -98,16 +98,19 @@ export default function SchedulesPage({ toast, onNavigate }) {
   // ── Data Loading ──
   const reload = useCallback(async () => {
     try {
-      const [scheds, emps, cls, apprs] = await Promise.all([
+      const [scheds, emps, cls] = await Promise.all([
         api.getSchedules(),
         api.getEmployees(),
         api.getClients(),
-        api.getApprovals(),
       ]);
       setSchedules(scheds);
       setEmployees(emps);
       setClients(cls);
-      setApprovals(apprs || []);
+      // Load approvals separately (non-blocking)
+      try {
+        const apprs = await api.getApprovals();
+        setApprovals(apprs || []);
+      } catch (e) { console.warn('Approvals not available:', e.message); }
     } catch (err) { toast?.('Erreur: ' + err.message); }
     finally { setLoading(false); }
   }, [toast]);

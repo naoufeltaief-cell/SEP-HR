@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import api from '../utils/api';
 import { fmtDay, fmtISO, fmtMoney, getWeekDates, getMonthDates, DAYS, RATE_KM } from '../utils/helpers';
 import { Avatar, Badge, Modal } from '../components/UI';
@@ -575,7 +575,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
                 // Get unique client IDs for this employee's shifts this week
                 const empClientIds = [...new Set(periodShifts.map(s => s.client_id).filter(Boolean))];
                 return (
-                  <tr key={e.id}>
+                  <React.Fragment key={e.id}>
+                  <tr>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <Avatar name={e.name} size={30} />
@@ -753,6 +754,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                       </td>
                     </tr>
                   )}
+                  </React.Fragment>
                 );
               })}
               {otherEmps.length > 0 && viewMode === 'week' && (

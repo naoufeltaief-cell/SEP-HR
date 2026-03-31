@@ -163,11 +163,13 @@ async def generate_invoices_from_timesheets(
     period_start: date,
     period_end: date,
     client_id: Optional[int] = None,
+    employee_id: Optional[int] = None,
     user_email: str = ""
 ) -> List[Invoice]:
     """
     Generate 1 invoice per employee per client for the given period.
     Pulls data from schedules, timesheets, and accommodations.
+    If employee_id is provided, generates only for that employee.
     Returns list of created draft invoices.
     """
     # 1. Get all schedules for the period
@@ -178,15 +180,10 @@ async def generate_invoices_from_timesheets(
             Schedule.status != "cancelled"
         )
     )
+    if employee_id:
+        query = query.where(Schedule.employee_id == employee_id)
     if client_id:
-        # Filter by employees assigned to this client
-        emp_query = select(Employee.id).where(Employee.client_id == client_id)
-        emp_result = await db.execute(emp_query)
-        emp_ids = [r[0] for r in emp_result.fetchall()]
-        if emp_ids:
-            query = query.where(Schedule.employee_id.in_(emp_ids))
-        else:
-            return []
+        query = query.where(Schedule.client_id == client_id)
 
     result = await db.execute(query)
     schedules = result.scalars().all()
@@ -194,24 +191,26 @@ async def generate_invoices_from_timesheets(
     if not schedules:
         return []
 
-    # 2. Group schedules by employee_id
-    emp_schedules: Dict[int, List] = {}
+    # 2. Group schedules by (employee_id, client_id) — uses schedule's client_id
+    from collections import defaultdict
+    pair_schedules: Dict[tuple, List] = defaultdict(list)
     for s in schedules:
-        emp_schedules.setdefault(s.employee_id, []).append(s)
+        cid = s.client_id or 0
+        pair_schedules[(s.employee_id, cid)].append(s)
 
-    # 3. Load employees and their clients
-    emp_ids = list(emp_schedules.keys())
+    # 3. Load employees
+    emp_ids = list(set(eid for eid, _ in pair_schedules.keys()))
     emp_result = await db.execute(
         select(Employee).where(Employee.id.in_(emp_ids))
     )
     employees = {e.id: e for e in emp_result.scalars().all()}
 
-    # Load clients
-    client_ids = list(set(e.client_id for e in employees.values() if e.client_id))
+    # Load all relevant clients (from schedules, not employees)
+    all_client_ids = list(set(cid for _, cid in pair_schedules.keys() if cid))
     clients_map = {}
-    if client_ids:
+    if all_client_ids:
         client_result = await db.execute(
-            select(Client).where(Client.id.in_(client_ids))
+            select(Client).where(Client.id.in_(all_client_ids))
         )
         clients_map = {c.id: c for c in client_result.scalars().all()}
 
@@ -232,7 +231,7 @@ async def generate_invoices_from_timesheets(
     for a in accommodations:
         emp_accoms.setdefault(a.employee_id, []).append(a)
 
-    # 5. Check for duplicates
+    # 5. Check for duplicates (by employee + client + period)
     existing = await db.execute(
         select(Invoice).where(
             and_(
@@ -243,20 +242,20 @@ async def generate_invoices_from_timesheets(
             )
         )
     )
-    existing_emp_ids = {inv.employee_id for inv in existing.scalars().all()}
+    existing_pairs = {(inv.employee_id, inv.client_id or 0) for inv in existing.scalars().all()}
 
-    # 6. Create one invoice per employee
+    # 6. Create one invoice per employee per client
     created_invoices = []
 
-    for emp_id, scheds in emp_schedules.items():
-        if emp_id in existing_emp_ids:
+    for (emp_id, cid), scheds in pair_schedules.items():
+        if (emp_id, cid) in existing_pairs:
             continue  # Skip duplicate
 
         employee = employees.get(emp_id)
         if not employee:
             continue
 
-        client = clients_map.get(employee.client_id) if employee.client_id else None
+        client = clients_map.get(cid) if cid else None
         client_name = client.name if client else "Non assigné"
 
         # Determine tax inclusion
@@ -268,10 +267,8 @@ async def generate_invoices_from_timesheets(
         for s in sorted(scheds, key=lambda x: x.date):
             hours = getattr(s, "hours", 0) or 0
             pause = getattr(s, "pause", 0) or 0
-            # Garde and rappel come from TimesheetShift, not Schedule
-            # Default to 0 when generating from schedules
-            garde_h = 0
-            rappel_h = 0
+            garde_h = getattr(s, "garde_hours", 0) or 0
+            rappel_h = getattr(s, "rappel_hours", 0) or 0
 
             # Garde: 8h = 1h facturable
             garde_billable = garde_h / 8.0 if garde_h else 0

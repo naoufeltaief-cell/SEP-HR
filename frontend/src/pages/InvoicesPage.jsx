@@ -162,6 +162,8 @@ export default function InvoicesPage() {
   const sun = getLastSunday();
   const [genStart, setGenStart] = useState(toISO(sun));
   const [genEnd, setGenEnd] = useState(toISO(getSaturday(sun)));
+  const [genEmployeeId, setGenEmployeeId] = useState('');
+  const [genClientId, setGenClientId] = useState('');
 
   // Clients & employees for dropdowns
   const [clients, setClients] = useState([]);
@@ -293,9 +295,12 @@ export default function InvoicesPage() {
   const generateInvoices = async () => {
     setLoading(true);
     try {
+      const payload = { period_start: genStart, period_end: genEnd };
+      if (genEmployeeId) payload.employee_id = Number(genEmployeeId);
+      if (genClientId) payload.client_id = Number(genClientId);
       const data = await apiFetch('/invoices/generate', {
         method: 'POST',
-        body: JSON.stringify({ period_start: genStart, period_end: genEnd }),
+        body: JSON.stringify(payload),
       });
       setSuccess(`${data.length} facture(s) générée(s)`);
       loadInvoices(); loadStats();
@@ -538,6 +543,26 @@ export default function InvoicesPage() {
               <input type="date" style={S.input} value={genEnd} onChange={e => setGenEnd(e.target.value)} />
             </div>
           </div>
+          <div style={{ ...S.flexRow, marginBottom: 16 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Employé (optionnel)</label>
+              <select style={{ ...S.select, width: '100%' }} value={genEmployeeId} onChange={e => setGenEmployeeId(e.target.value)}>
+                <option value="">— Tous les employés —</option>
+                {employees.sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(emp => (
+                  <option key={emp.id} value={emp.id}>{emp.name} ({emp.position || '—'})</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Client (optionnel)</label>
+              <select style={{ ...S.select, width: '100%' }} value={genClientId} onChange={e => setGenClientId(e.target.value)}>
+                <option value="">— Tous les clients —</option>
+                {clients.sort((a, b) => (a.name || '').localeCompare(b.name || '')).map(cl => (
+                  <option key={cl.id} value={cl.id}>{cl.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
           <div style={S.flexRow}>
             <button style={S.btn('primary', 'md')} onClick={generateInvoices} disabled={loading}>
               {loading ? 'Génération en cours...' : '⚡ Générer les factures'}
@@ -550,6 +575,7 @@ export default function InvoicesPage() {
             <ul style={{ margin: '8px 0 0 16px', lineHeight: 1.8 }}>
               <li>1 facture par employé par client pour la période</li>
               <li>Les doublons (même employé + même période) sont ignorés</li>
+              <li>Sélectionner un employé et/ou client pour générer une seule facture</li>
               <li>Taux: Inf. 86.23$/h, Inf. aux. 57.18$/h, PAB 50.35$/h</li>
               <li>Garde: 8h = 1h facturable à 86.23$/h</li>
               <li>Km: 0.525$/km (max 750km), Déplacement: heures × taux</li>

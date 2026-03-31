@@ -111,6 +111,7 @@ class InvoiceGenerateRequest(BaseModel):
     period_start: date
     period_end: date
     client_id: Optional[int] = None  # None = all clients
+    employee_id: Optional[int] = None  # None = all employees
 
 
 class InvoiceStatusChange(BaseModel):

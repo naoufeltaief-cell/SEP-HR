@@ -134,6 +134,7 @@ class ScheduleUpdate(BaseModel):
 class ScheduleOut(BaseModel):
     id: str
     employee_id: int
+    client_id: Optional[int] = None
     date: date
     start: str
     end: str

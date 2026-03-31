@@ -15,7 +15,7 @@ import io
 
 from ..database import get_db
 from ..services.auth_service import require_admin
-from ..models.models import Client, Employee, InvoiceAttachment
+from ..models.models import Client, Employee, InvoiceAttachment, Schedule, Accommodation
 from ..models.models_invoice import (
     Invoice, Payment, InvoiceAuditLog, CreditNote,
     InvoiceStatus, AuditAction
@@ -491,7 +491,8 @@ async def generate_invoices(
     """Generate draft invoices from timesheets (1 per employee per client)"""
     invoices = await generate_invoices_from_timesheets(
         db=db, period_start=data.period_start, period_end=data.period_end,
-        client_id=data.client_id, user_email=getattr(user, "email", ""),
+        client_id=data.client_id, employee_id=data.employee_id,
+        user_email=getattr(user, "email", ""),
     )
     return invoices
 
@@ -602,7 +603,6 @@ async def generate_invoice_from_schedules(
             expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
 
     # Accommodation lines
-    from ..models.models import Accommodation
     accom_r = await db.execute(
         select(Accommodation).where(
             Accommodation.employee_id == employee_id,

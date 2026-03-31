@@ -51,7 +51,7 @@ SQL = [
 ]
 
 async def migrate():
-    url = os.environ["DATABASE_URL"].replace("postgres://", "postgresql+asyncpg://")
+    url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+asyncpg://")
     engine = create_async_engine(url)
     async with engine.begin() as conn:
         for i, sql in enumerate(SQL):

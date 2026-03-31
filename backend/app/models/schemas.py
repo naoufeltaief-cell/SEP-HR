@@ -105,6 +105,8 @@ class ScheduleCreate(BaseModel):
     km: float = 0
     deplacement: float = 0
     autre_dep: float = 0
+    garde_hours: float = 0
+    rappel_hours: float = 0
     mandat_start: Optional[str] = None
     mandat_end: Optional[str] = None
     # Recurrence
@@ -124,6 +126,8 @@ class ScheduleUpdate(BaseModel):
     km: Optional[float] = None
     deplacement: Optional[float] = None
     autre_dep: Optional[float] = None
+    garde_hours: Optional[float] = None
+    rappel_hours: Optional[float] = None
     mandat_start: Optional[str] = None
     mandat_end: Optional[str] = None
 
@@ -142,6 +146,8 @@ class ScheduleOut(BaseModel):
     km: float
     deplacement: float
     autre_dep: float
+    garde_hours: float
+    rappel_hours: float
     mandat_start: Optional[str]
     mandat_end: Optional[str]
     class Config:

@@ -3,17 +3,19 @@ Soins Expert Plus — Invoice Router (Phase 1 Complete Rewrite)
 All endpoints for invoicing, payments, credit notes, reports, anomalies, PDF.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, extract, desc
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
 from datetime import date, datetime, timedelta
+import uuid
+import io
 
 from ..database import get_db
 from ..services.auth_service import require_admin
-from ..models.models import Client, Employee
+from ..models.models import Client, Employee, InvoiceAttachment
 from ..models.models_invoice import (
     Invoice, Payment, InvoiceAuditLog, CreditNote,
     InvoiceStatus, AuditAction
@@ -974,3 +976,220 @@ async def bulk_send(
         except ValueError as e:
             errors.append({"id": inv_id, "error": str(e)})
     return {"sent": success, "errors": errors}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# INVOICE ATTACHMENTS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ALLOWED_MIME = {
+    "application/pdf": "pdf",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@router.post("/{invoice_id}/attachments")
+async def upload_attachment(
+    invoice_id: str,
+    file: UploadFile = File(...),
+    category: str = Form("autre"),
+    description: str = Form(""),
+    uploaded_by: str = Form("admin"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Upload une pièce jointe à une facture."""
+    r = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    inv = r.scalar_one_or_none()
+    if not inv:
+        raise HTTPException(404, "Facture non trouvée")
+
+    content_type = file.content_type or ""
+    ext = ALLOWED_MIME.get(content_type)
+    if not ext:
+        raise HTTPException(400, f"Type non supporté: {content_type}. Acceptés: PDF, JPG, PNG, GIF")
+
+    data = await file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(400, "Fichier trop volumineux (max 10 MB)")
+
+    stored_name = f"{uuid.uuid4().hex}.{ext}"
+    att = InvoiceAttachment(
+        invoice_id=invoice_id,
+        filename=stored_name,
+        original_filename=file.filename or "sans_nom",
+        file_type=ext,
+        file_size=len(data),
+        file_data=data,
+        category=category,
+        description=description,
+        uploaded_by=uploaded_by,
+    )
+    db.add(att)
+    await db.commit()
+    await db.refresh(att)
+    return {
+        "id": att.id, "filename": att.original_filename,
+        "file_type": att.file_type, "file_size": att.file_size,
+        "category": att.category, "description": att.description,
+        "created_at": att.created_at.isoformat() if att.created_at else None,
+    }
+
+
+@router.get("/{invoice_id}/attachments")
+async def list_attachments(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Lister les pièces jointes d'une facture."""
+    result = await db.execute(
+        select(InvoiceAttachment)
+        .where(InvoiceAttachment.invoice_id == invoice_id)
+        .order_by(InvoiceAttachment.created_at.desc())
+    )
+    return [
+        {
+            "id": a.id, "filename": a.original_filename,
+            "file_type": a.file_type, "file_size": a.file_size,
+            "category": a.category, "description": a.description,
+            "uploaded_by": a.uploaded_by,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a in result.scalars().all()
+    ]
+
+
+@router.get("/{invoice_id}/attachments/{att_id}")
+async def download_attachment(
+    invoice_id: str,
+    att_id: int,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Télécharger une pièce jointe."""
+    result = await db.execute(
+        select(InvoiceAttachment).where(
+            InvoiceAttachment.id == att_id,
+            InvoiceAttachment.invoice_id == invoice_id,
+        )
+    )
+    att = result.scalar_one_or_none()
+    if not att:
+        raise HTTPException(404, "Pièce jointe non trouvée")
+
+    mime_map = {"pdf": "application/pdf", "jpg": "image/jpeg", "png": "image/png", "gif": "image/gif"}
+    media = mime_map.get(att.file_type, "application/octet-stream")
+    return Response(
+        content=att.file_data,
+        media_type=media,
+        headers={"Content-Disposition": f'inline; filename="{att.original_filename}"'},
+    )
+
+
+@router.delete("/{invoice_id}/attachments/{att_id}")
+async def delete_attachment(
+    invoice_id: str,
+    att_id: int,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Supprimer une pièce jointe."""
+    result = await db.execute(
+        select(InvoiceAttachment).where(
+            InvoiceAttachment.id == att_id,
+            InvoiceAttachment.invoice_id == invoice_id,
+        )
+    )
+    att = result.scalar_one_or_none()
+    if not att:
+        raise HTTPException(404, "Pièce jointe non trouvée")
+    await db.delete(att)
+    await db.commit()
+    return {"message": "Pièce jointe supprimée"}
+
+
+@router.get("/{invoice_id}/pdf-with-attachments")
+async def pdf_with_attachments(
+    invoice_id: str,
+    include_attachments: bool = True,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Générer le PDF de la facture avec pièces jointes combinées."""
+    r = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    inv = r.scalar_one_or_none()
+    if not inv:
+        raise HTTPException(404, "Facture non trouvée")
+
+    # Generate base invoice PDF
+    pdf_bytes = generate_invoice_pdf(inv)
+
+    if not include_attachments:
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes), media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="facture_{inv.number}.pdf"'},
+        )
+
+    # Get attachments
+    att_result = await db.execute(
+        select(InvoiceAttachment)
+        .where(InvoiceAttachment.invoice_id == invoice_id)
+        .order_by(InvoiceAttachment.created_at)
+    )
+    attachments = att_result.scalars().all()
+
+    if not attachments:
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes), media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="facture_{inv.number}.pdf"'},
+        )
+
+    # Merge PDFs and convert images
+    try:
+        from PyPDF2 import PdfMerger, PdfReader
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas as rl_canvas
+
+        merger = PdfMerger()
+        merger.append(io.BytesIO(pdf_bytes))
+
+        for att in attachments:
+            if att.file_type == "pdf":
+                merger.append(io.BytesIO(att.file_data))
+            elif att.file_type in ("jpg", "png", "gif"):
+                # Convert image to PDF page
+                img_pdf = io.BytesIO()
+                c = rl_canvas.Canvas(img_pdf, pagesize=letter)
+                from reportlab.lib.utils import ImageReader
+                img = ImageReader(io.BytesIO(att.file_data))
+                iw, ih = img.getSize()
+                pw, ph = letter
+                # Scale to fit page with margins
+                margin = 36
+                max_w, max_h = pw - 2 * margin, ph - 2 * margin
+                scale = min(max_w / iw, max_h / ih, 1.0)
+                dw, dh = iw * scale, ih * scale
+                x = (pw - dw) / 2
+                y = (ph - dh) / 2
+                c.drawImage(img, x, y, dw, dh)
+                c.save()
+                img_pdf.seek(0)
+                merger.append(img_pdf)
+
+        output = io.BytesIO()
+        merger.write(output)
+        merger.close()
+        output.seek(0)
+        combined = output.getvalue()
+    except ImportError:
+        # PyPDF2 not installed, return base PDF
+        combined = pdf_bytes
+
+    return StreamingResponse(
+        io.BytesIO(combined), media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="facture_{inv.number}_complet.pdf"'},
+    )

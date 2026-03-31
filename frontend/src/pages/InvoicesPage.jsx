@@ -622,6 +622,74 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
   const [payMethod, setPayMethod] = useState('virement');
   const [detailTab, setDetailTab] = useState('lines');
 
+  // Attachments state
+  const [attachments, setAttachments] = useState([]);
+  const [attLoading, setAttLoading] = useState(false);
+  const [attUploading, setAttUploading] = useState(false);
+  const [attCategory, setAttCategory] = useState('hebergement');
+  const [attDescription, setAttDescription] = useState('');
+
+  const loadAttachments = useCallback(async () => {
+    try {
+      setAttLoading(true);
+      const data = await apiFetch(`/invoices/${inv.id}/attachments`);
+      setAttachments(data || []);
+    } catch (e) { console.error(e); }
+    finally { setAttLoading(false); }
+  }, [inv.id]);
+
+  useEffect(() => { loadAttachments(); }, [loadAttachments]);
+
+  const handleAttUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setAttUploading(true);
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('category', attCategory);
+      formData.append('description', attDescription);
+      formData.append('uploaded_by', 'admin');
+      const token = getToken();
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch(`${API}/invoices/${inv.id}/attachments`, { method: 'POST', headers, body: formData });
+      if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || 'Erreur upload'); }
+      setSuccess('Pièce jointe ajoutée');
+      setAttDescription('');
+      loadAttachments();
+    } catch (e) { setError(e.message); }
+    finally { setAttUploading(false); e.target.value = ''; }
+  };
+
+  const deleteAttachment = async (attId) => {
+    if (!confirm('Supprimer cette pièce jointe?')) return;
+    try {
+      await apiFetch(`/invoices/${inv.id}/attachments/${attId}`, { method: 'DELETE' });
+      setSuccess('Pièce jointe supprimée');
+      loadAttachments();
+    } catch (e) { setError(e.message); }
+  };
+
+  const viewAttachment = (attId) => {
+    const token = getToken();
+    window.open(`${API}/invoices/${inv.id}/attachments/${attId}?token=${token}`, '_blank');
+  };
+
+  const downloadPdfWithAttachments = () => {
+    const token = getToken();
+    window.open(`${API}/invoices/${inv.id}/pdf-with-attachments?include_attachments=true`, '_blank');
+  };
+
+  const fmtSize = (bytes) => {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const catLabels = { hebergement: 'Hébergement', deplacement: 'Déplacement', kilometrage: 'Kilométrage', autre: 'Autre' };
+  const typeIcons = { pdf: '📄', jpg: '🖼️', png: '🖼️', gif: '🖼️' };
+
   const addPayment = async () => {
     try {
       await apiFetch(`/invoices/${inv.id}/payments`, {
@@ -731,9 +799,9 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
       {/* Detail Tabs */}
       <div style={{ ...S.tabs, marginBottom: 12 }}>
-        {['lines', 'payments', 'audit'].map(t => (
+        {['lines', 'payments', 'attachments', 'audit'].map(t => (
           <button key={t} style={S.tab(detailTab === t)} onClick={() => setDetailTab(t)}>
-            {t === 'lines' ? '📋 Lignes' : t === 'payments' ? `💰 Paiements (${(inv.payments || []).length})` : `📜 Historique (${(inv.audit_logs || []).length})`}
+            {t === 'lines' ? '📋 Lignes' : t === 'payments' ? `💰 Paiements (${(inv.payments || []).length})` : t === 'attachments' ? `📎 Pièces jointes (${attachments.length})` : `📜 Historique (${(inv.audit_logs || []).length})`}
           </button>
         ))}
       </div>
@@ -915,6 +983,73 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+
+      {/* Attachments Tab */}
+      {detailTab === 'attachments' && (
+        <div style={S.card}>
+          <h4 style={{ ...S.sectionTitle, margin: '0 0 12px 0' }}>📎 Pièces jointes</h4>
+
+          {/* Upload form */}
+          <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 14, marginBottom: 16, border: '1px dashed #ced4da' }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div style={{ flex: 1, minWidth: 140 }}>
+                <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Catégorie</label>
+                <select style={{ ...S.select, width: '100%' }} value={attCategory} onChange={e => setAttCategory(e.target.value)}>
+                  <option value="hebergement">Hébergement</option>
+                  <option value="deplacement">Déplacement</option>
+                  <option value="kilometrage">Kilométrage</option>
+                  <option value="autre">Autre</option>
+                </select>
+              </div>
+              <div style={{ flex: 2, minWidth: 180 }}>
+                <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Description (opt.)</label>
+                <input style={{ ...S.input, width: '100%' }} value={attDescription} onChange={e => setAttDescription(e.target.value)} placeholder="Reçu hôtel, facture..." />
+              </div>
+              <div>
+                <label style={{ ...S.btn('primary', 'sm'), cursor: 'pointer', display: 'inline-block' }}>
+                  {attUploading ? '⏳ Upload...' : '📤 Ajouter fichier'}
+                  <input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={handleAttUpload} disabled={attUploading} />
+                </label>
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: '#6C757D', marginTop: 6 }}>Formats acceptés : PDF, JPG, PNG, GIF — Max 10 MB</div>
+          </div>
+
+          {/* Attachment list */}
+          {attLoading ? (
+            <div style={S.empty}>Chargement...</div>
+          ) : attachments.length === 0 ? (
+            <div style={S.empty}>Aucune pièce jointe</div>
+          ) : (
+            <div>
+              {attachments.map(att => (
+                <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #f0f0f0' }}>
+                  <span style={{ fontSize: 24 }}>{typeIcons[att.file_type] || '📄'}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.filename}</div>
+                    <div style={{ fontSize: 11, color: '#6C757D' }}>
+                      <span style={{ background: '#e9ecef', borderRadius: 4, padding: '1px 6px', marginRight: 6 }}>{catLabels[att.category] || att.category}</span>
+                      {fmtSize(att.file_size)} — {fmtDate(att.created_at?.split('T')[0])}
+                      {att.description && <span style={{ marginLeft: 6 }}>— {att.description}</span>}
+                    </div>
+                  </div>
+                  <button style={{ ...S.btn('outline', 'sm'), padding: '4px 8px' }} onClick={() => viewAttachment(att.id)} title="Voir">👁️</button>
+                  <button style={{ ...S.btn('danger', 'sm'), padding: '4px 8px' }} onClick={() => deleteAttachment(att.id)} title="Supprimer">🗑️</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Download combined PDF */}
+          {attachments.length > 0 && (
+            <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e9ecef' }}>
+              <button style={S.btn('primary', 'md')} onClick={downloadPdfWithAttachments}>
+                📥 Télécharger PDF facture + pièces jointes
+              </button>
+            </div>
           )}
         </div>
       )}

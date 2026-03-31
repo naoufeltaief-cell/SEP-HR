@@ -89,18 +89,21 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [modal, setModal] = useState(null);
   const [empDetail, setEmpDetail] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [approvals, setApprovals] = useState([]);
 
   // ── Data Loading ──
   const reload = useCallback(async () => {
     try {
-      const [scheds, emps, cls] = await Promise.all([
+      const [scheds, emps, cls, apprs] = await Promise.all([
         api.getSchedules(),
         api.getEmployees(),
         api.getClients(),
+        api.getApprovals(),
       ]);
       setSchedules(scheds);
       setEmployees(emps);
       setClients(cls);
+      setApprovals(apprs || []);
     } catch (err) { toast?.('Erreur: ' + err.message); }
     finally { setLoading(false); }
   }, [toast]);
@@ -259,6 +262,38 @@ export default function SchedulesPage({ toast, onNavigate }) {
     try {
       const res = await api.publishAll();
       toast?.(`${res.published} quart(s) publié(s)`);
+      reload();
+    } catch (err) { toast?.('Erreur: ' + err.message); }
+  };
+
+  // ── Week Approval ──
+  const getWeekStart = () => {
+    if (viewMode !== 'week' || viewDates.length < 7) return null;
+    return fmtISO(viewDates[0]); // Sunday
+  };
+
+  const getWeekApprovalStatus = (employeeId, clientId) => {
+    const ws = getWeekStart();
+    if (!ws) return null;
+    return approvals.find(a => a.employee_id === employeeId && a.client_id === clientId && a.week_start === ws);
+  };
+
+  const approveWeek = async (employeeId, clientId) => {
+    const ws = getWeekStart();
+    if (!ws) return;
+    try {
+      await api.approveWeek({ employee_id: employeeId, client_id: clientId, week_start: ws });
+      toast?.('Semaine approuvée');
+      reload();
+    } catch (err) { toast?.('Erreur: ' + err.message); }
+  };
+
+  const revokeWeek = async (employeeId, clientId) => {
+    const ws = getWeekStart();
+    if (!ws) return;
+    try {
+      await api.revokeWeek({ employee_id: employeeId, client_id: clientId, week_start: ws });
+      toast?.('Approbation révoquée');
       reload();
     } catch (err) { toast?.('Erreur: ' + err.message); }
   };
@@ -444,6 +479,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
                 const totalKm = periodShifts.reduce((sum, s) => sum + (s.km || 0), 0);
                 const totalDep = periodShifts.reduce((sum, s) => sum + (s.deplacement || 0) + (s.autre_dep || 0), 0);
                 const totalFrais = totalDep + totalKm * RATE_KM;
+                // Get unique client IDs for this employee's shifts this week
+                const empClientIds = [...new Set(periodShifts.map(s => s.client_id).filter(Boolean))];
                 return (
                   <tr key={e.id}>
                     <td>
@@ -454,6 +491,17 @@ export default function SchedulesPage({ toast, onNavigate }) {
                               onClick={(ev) => { ev.stopPropagation(); setEmpDetail(e); }}
                               title="Voir le profil">{e.name}</div>
                           <div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div>
+                          {viewMode === 'week' && empClientIds.map(cid => {
+                            const appr = getWeekApprovalStatus(e.id, cid);
+                            const cl = clients.find(c => c.id === cid);
+                            if (!appr || appr.status !== 'approved') return null;
+                            return (
+                              <span key={cid} style={{ display: 'inline-block', background: '#28A745', color: '#fff', fontSize: 9, padding: '1px 6px', borderRadius: 4, marginTop: 2 }}
+                                title={`Approuvé pour ${cl?.name || 'Client'}`}>
+                                ✓ {(cl?.name || '').slice(0, 15)}
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     </td>
@@ -479,6 +527,24 @@ export default function SchedulesPage({ toast, onNavigate }) {
                       <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>
                       {totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}
                       {totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}
+                      {viewMode === 'week' && empClientIds.map(cid => {
+                        const appr = getWeekApprovalStatus(e.id, cid);
+                        const isApproved = appr && appr.status === 'approved';
+                        return (
+                          <button key={cid}
+                            style={{
+                              display: 'block', width: '100%', marginTop: 4, padding: '2px 6px',
+                              fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer',
+                              background: isApproved ? '#28A745' : '#FFC107',
+                              color: isApproved ? '#fff' : '#000',
+                            }}
+                            onClick={() => isApproved ? revokeWeek(e.id, cid) : approveWeek(e.id, cid)}
+                            title={isApproved ? 'Cliquer pour révoquer' : 'Approuver cette semaine'}
+                          >
+                            {isApproved ? '✓ Approuvé' : '⏳ Approuver'}
+                          </button>
+                        );
+                      })}
                     </td>
                   </tr>
                 );

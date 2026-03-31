@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, date, time
 from sqlalchemy import (
     Column, String, Integer, Float, Boolean, Date, Time, DateTime,
-    Text, ForeignKey, Enum as SAEnum, JSON
+    Text, ForeignKey, Enum as SAEnum, JSON, LargeBinary, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -91,6 +91,9 @@ class Schedule(Base):
     # Mandat
     mandat_start = Column(String, nullable=True)
     mandat_end = Column(String, nullable=True)
+    # Garde / Rappel (saisie au niveau du quart)
+    garde_hours = Column(Float, default=0)
+    rappel_hours = Column(Float, default=0)
     # Recurrence metadata
     recurrence_group = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -139,3 +142,38 @@ class Accommodation(Base):
 
 # Phase 1 Invoice models (new tables: payments, invoice_audit_log, enhanced invoices, credit_notes)
 from .models_invoice import Invoice, Payment, InvoiceAuditLog, CreditNote
+
+
+class ScheduleApproval(Base):
+    __tablename__ = "schedule_approvals"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
+    week_start = Column(Date, nullable=False)
+    week_end = Column(Date, nullable=False)
+    approved_by = Column(String(255), nullable=True)
+    approved_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(String(20), default="pending")  # pending / approved / rejected
+    notes = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("employee_id", "client_id", "week_start", name="uq_approval_emp_client_week"),
+    )
+    employee = relationship("Employee", backref="schedule_approvals")
+    client = relationship("Client", backref="schedule_approvals")
+
+
+class InvoiceAttachment(Base):
+    __tablename__ = "invoice_attachments"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    invoice_id = Column(String, ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False)
+    filename = Column(String(255), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    file_type = Column(String(50), nullable=False)       # pdf, jpg, png
+    file_size = Column(Integer, default=0)                # bytes
+    file_data = Column(LargeBinary, nullable=False)       # stockage direct en DB
+    category = Column(String(50), default="autre")        # hebergement, deplacement, kilometrage, autre
+    description = Column(Text, default="")
+    uploaded_by = Column(String(255), default="admin")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    invoice = relationship("Invoice", backref="attachments")

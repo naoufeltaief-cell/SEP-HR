@@ -76,6 +76,12 @@ class ApiClient {
   updateSchedule(id, data) { return this.put(`/schedules/${id}`, data); }
   deleteSchedule(id) { return this.del(`/schedules/${id}`); }
   publishAll() { return this.post('/schedules/publish-all', {}); }
+  approveWeek(data) { return this.post('/schedules/approve-week', data); }
+  revokeWeek(data) { return this.post('/schedules/revoke-week', data); }
+  getApprovals(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.get(`/schedules/approvals${qs ? '?' + qs : ''}`);
+  }
 
   // Timesheets
   getTimesheets() { return this.get('/timesheets/'); }
@@ -94,6 +100,33 @@ class ApiClient {
   duplicateInvoice(id) { return this.post(`/invoices/${id}/duplicate`, {}); }
   markUnpaid(id) { return this.put(`/invoices/${id}/unpaid`, {}); }
   cancelInvoice(id) { return this.put(`/invoices/${id}/cancel`, {}); }
+
+  // Invoice Attachments (uses FormData, not JSON)
+  async uploadAttachment(invoiceId, file, category = 'autre', description = '') {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    formData.append('description', description);
+    formData.append('uploaded_by', 'admin');
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const resp = await fetch(`${API_BASE}/invoices/${invoiceId}/attachments`, {
+      method: 'POST', headers, body: formData,
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Erreur upload' }));
+      throw new Error(err.detail || `Erreur ${resp.status}`);
+    }
+    return resp.json();
+  }
+  getAttachments(invoiceId) { return this.get(`/invoices/${invoiceId}/attachments`); }
+  deleteAttachment(invoiceId, attId) { return this.del(`/invoices/${invoiceId}/attachments/${attId}`); }
+  getAttachmentUrl(invoiceId, attId) {
+    return `${API_BASE}/invoices/${invoiceId}/attachments/${attId}`;
+  }
+  getPdfWithAttachments(invoiceId, include = true) {
+    return `${API_BASE}/invoices/${invoiceId}/pdf-with-attachments?include_attachments=${include}`;
+  }
 
   // Accommodations
   getAccommodations() { return this.get('/accommodations/'); }

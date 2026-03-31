@@ -149,7 +149,7 @@ def recalculate_invoice(invoice: Invoice) -> Invoice:
     invoice.tps = tps
     invoice.tvq = tvq
     invoice.total = total
-    invoice.balance_due = round(invoice.total - invoice.amount_paid, 2)
+    invoice.balance_due = round(invoice.total - (invoice.amount_paid or 0), 2)
 
     return invoice
 
@@ -483,8 +483,8 @@ async def add_payment(
     )
     db.add(payment)
 
-    invoice.amount_paid = round(invoice.amount_paid + amount, 2)
-    invoice.balance_due = round(invoice.total - invoice.amount_paid, 2)
+    invoice.amount_paid = round((invoice.amount_paid or 0) + amount, 2)
+    invoice.balance_due = round(invoice.total - (invoice.amount_paid or 0), 2)
 
     # Auto-update status
     if invoice.balance_due <= 0.01:
@@ -492,7 +492,7 @@ async def add_payment(
         invoice.status = InvoiceStatus.PAID.value
         invoice.paid_at = datetime.utcnow()
         invoice.balance_due = 0.0
-    elif invoice.amount_paid > 0 and invoice.status in (InvoiceStatus.SENT.value, InvoiceStatus.VALIDATED.value):
+    elif (invoice.amount_paid or 0) > 0 and invoice.status in (InvoiceStatus.SENT.value, InvoiceStatus.VALIDATED.value):
         old_status = invoice.status
         invoice.status = InvoiceStatus.PARTIALLY_PAID.value
     else:
@@ -534,12 +534,12 @@ async def delete_payment(
     amount = payment.amount
     await db.delete(payment)
 
-    invoice.amount_paid = round(invoice.amount_paid - amount, 2)
-    invoice.balance_due = round(invoice.total - invoice.amount_paid, 2)
+    invoice.amount_paid = round((invoice.amount_paid or 0) - amount, 2)
+    invoice.balance_due = round(invoice.total - (invoice.amount_paid or 0), 2)
 
     # Recalculate status
     old_status = invoice.status
-    if invoice.amount_paid <= 0:
+    if (invoice.amount_paid or 0) <= 0:
         invoice.status = InvoiceStatus.SENT.value
         invoice.paid_at = None
     elif invoice.balance_due > 0.01:
@@ -706,7 +706,7 @@ async def get_client_invoice_summary(
     invoices = result.scalars().all()
 
     total_invoiced = sum(inv.total for inv in invoices)
-    total_paid = sum(inv.amount_paid for inv in invoices)
+    total_paid = sum((inv.amount_paid or 0) for inv in invoices)
     total_outstanding = sum(inv.balance_due for inv in invoices)
     total_overdue = sum(
         inv.balance_due for inv in invoices

@@ -93,3 +93,26 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
     await db.commit()
     await db.refresh(invoice)
     return {"id": invoice.id, "number": invoice.number, "total": invoice.total, "status": invoice.status, "employee_name": invoice.employee_name, "client_name": invoice.client_name, "approved_hours": approved_hours, "planned_hours": raw_total_hours}
+
+@router.post("/generate-all-approved-schedules")
+async def generate_all_approved_schedules(data: dict, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    period_start = data.get("period_start")
+    period_end = data.get("period_end")
+    if not all([period_start, period_end]):
+        raise HTTPException(400, "period_start et period_end requis")
+    ps = date.fromisoformat(period_start)
+    pe = date.fromisoformat(period_end)
+    q = select(ScheduleApproval).where(ScheduleApproval.week_start == ps, ScheduleApproval.week_end == pe, ScheduleApproval.status == "approved")
+    if data.get("employee_id"):
+        q = q.where(ScheduleApproval.employee_id == data.get("employee_id"))
+    if data.get("client_id"):
+        q = q.where(ScheduleApproval.client_id == data.get("client_id"))
+    approvals = (await db.execute(q)).scalars().all()
+    created, skipped = [], []
+    for approval in approvals:
+        try:
+            inv = await generate_invoice_from_approved_schedules({"employee_id": approval.employee_id, "client_id": approval.client_id, "period_start": period_start, "period_end": period_end}, db, user)
+            created.append(inv)
+        except HTTPException as e:
+            skipped.append({"employee_id": approval.employee_id, "client_id": approval.client_id, "reason": e.detail})
+    return {"created": created, "skipped": skipped, "count": len(created)}

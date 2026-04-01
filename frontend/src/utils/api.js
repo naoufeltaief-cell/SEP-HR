@@ -82,7 +82,32 @@ class ApiClient {
     const qs = new URLSearchParams(params).toString();
     return this.get(`/schedules/approvals${qs ? '?' + qs : ''}`);
   }
-  generateFromSchedules(data) { return this.post('/invoices/generate-from-schedules', data); }
+  getScheduleReviews(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.get(`/schedule-reviews/${qs ? '?' + qs : ''}`);
+  }
+  reviewWeek(data) { return this.post('/schedule-reviews/review-week', data); }
+  approveReviewedWeek(data) { return this.post('/schedule-reviews/approve-week', data); }
+  revokeReviewedWeek(data) { return this.post('/schedule-reviews/revoke-week', data); }
+  async uploadScheduleReviewAttachment(reviewId, file, category = 'justificatif', description = '') {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    formData.append('description', description);
+    formData.append('uploaded_by', 'admin');
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const resp = await fetch(`${API_BASE}/schedule-reviews/${reviewId}/attachments`, { method: 'POST', headers, body: formData });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: 'Erreur upload' }));
+      throw new Error(err.detail || `Erreur ${resp.status}`);
+    }
+    return resp.json();
+  }
+  getScheduleReviewAttachments(reviewId) { return this.get(`/schedule-reviews/${reviewId}/attachments`); }
+  deleteScheduleReviewAttachment(reviewId, attId) { return this.del(`/schedule-reviews/${reviewId}/attachments/${attId}`); }
+  generateFromSchedules(data) { return this.post('/invoices-approved/generate-from-approved-schedules', data); }
+  generateAllApprovedInvoices(data) { return this.post('/invoices-approved/generate-all-approved-schedules', data); }
 
   // Timesheets
   getTimesheets() { return this.get('/timesheets/'); }
@@ -92,7 +117,10 @@ class ApiClient {
   deleteTimesheet(id) { return this.del(`/timesheets/${id}`); }
 
   // Invoices
-  getInvoices() { return this.get('/invoices/'); }
+  getInvoices(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.get(`/invoices/${qs ? '?' + qs : ''}`);
+  }
   getInvoice(id) { return this.get(`/invoices/${id}`); }
   createInvoice(data) { return this.post('/invoices/', data); }
   updateInvoice(id, data) { return this.put(`/invoices/${id}`, data); }

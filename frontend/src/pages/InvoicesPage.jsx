@@ -191,7 +191,7 @@ export default function InvoicesPage() {
       const params = new URLSearchParams();
       if (filterStatus) params.set('status', filterStatus);
       if (filterSearch) params.set('search', filterSearch);
-      const data = await apiFetch(`/invoices?${params}`);
+      const data = await apiFetch(`/invoices/?${params}`);
       setInvoices(data);
     } catch (e) {
       setError(e.message);
@@ -207,11 +207,11 @@ export default function InvoicesPage() {
   }, []);
 
   const loadClients = useCallback(async () => {
-    try { setClients(await apiFetch('/clients')); } catch (_) {}
+    try { setClients(await apiFetch('/clients/')); } catch (_) {}
   }, []);
 
   const loadEmployees = useCallback(async () => {
-    try { setEmployees(await apiFetch('/employees')); } catch (_) {}
+    try { setEmployees(await apiFetch('/employees/')); } catch (_) {}
   }, []);
 
   useEffect(() => {

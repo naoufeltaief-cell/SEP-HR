@@ -43,15 +43,35 @@ app.include_router(chatbot.router, prefix="/api/chatbot", tags=["Chatbot"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "Soins Expert Plus API", "version": "2.1.0-serialize-fix"}
+    return {"status": "ok", "service": "Soins Expert Plus API", "version": "2.2.0"}
 
 
-@app.get("/api/debug/version")
-async def debug_version():
-    """Endpoint to verify which code version is deployed"""
-    from .routers.invoices import _serialize_invoice
-    return {
-        "version": "2.1.0",
-        "serialize_fix": True,
-        "has_serialize_invoice": callable(_serialize_invoice),
-    }
+@app.get("/api/debug/invoices")
+async def debug_invoices():
+    """Debug: test invoice list without auth — shows exact error if any."""
+    from sqlalchemy import select, desc
+    from .models.models_invoice import Invoice
+    from .database import async_session
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(Invoice).order_by(desc(Invoice.created_at)).limit(3)
+            )
+            invoices = result.scalars().all()
+            serialized = []
+            for inv in invoices:
+                try:
+                    serialized.append({
+                        "id": inv.id,
+                        "number": getattr(inv, "number", "?"),
+                        "total": getattr(inv, "total", 0),
+                        "status": getattr(inv, "status", "?"),
+                        "client_name": getattr(inv, "client_name", "?"),
+                        "employee_name": getattr(inv, "employee_name", "?"),
+                    })
+                except Exception as e2:
+                    serialized.append({"error": str(e2), "type": type(e2).__name__})
+            return {"ok": True, "count": len(invoices), "invoices": serialized}
+    except Exception as e:
+        import traceback
+        return {"ok": False, "error": str(e), "type": type(e).__name__, "trace": traceback.format_exc()}

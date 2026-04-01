@@ -2,14 +2,12 @@
 Soins Expert Plus — FastAPI Backend
 Full REST API for healthcare staffing platform
 """
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
-import os
 
-from .database import engine, Base, get_db
-from .routers import auth, employees, schedules, timesheets, invoices, accommodations, clients, chatbot
+from .database import engine, Base
+from .routers import auth, employees, schedules, timesheets, invoices, accommodations, clients, chatbot, invoices_approved
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,26 +35,24 @@ app.include_router(employees.router, prefix="/api/employees", tags=["Employees"]
 app.include_router(schedules.router, prefix="/api/schedules", tags=["Schedules"])
 app.include_router(timesheets.router, prefix="/api/timesheets", tags=["Timesheets"])
 app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
+app.include_router(invoices_approved.router, prefix="/api/invoices", tags=["Invoices"])
 app.include_router(accommodations.router, prefix="/api/accommodations", tags=["Accommodations"])
 app.include_router(clients.router, prefix="/api/clients", tags=["Clients"])
 app.include_router(chatbot.router, prefix="/api/chatbot", tags=["Chatbot"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "Soins Expert Plus API", "version": "2.2.0"}
+    return {"status": "ok", "service": "Soins Expert Plus API", "version": "2.3.0"}
 
 
 @app.get("/api/debug/invoices")
 async def debug_invoices():
-    """Debug: test invoice list without auth — shows exact error if any."""
     from sqlalchemy import select, desc
     from .models.models_invoice import Invoice
     from .database import async_session
     try:
         async with async_session() as db:
-            result = await db.execute(
-                select(Invoice).order_by(desc(Invoice.created_at)).limit(3)
-            )
+            result = await db.execute(select(Invoice).order_by(desc(Invoice.created_at)).limit(3))
             invoices = result.scalars().all()
             serialized = []
             for inv in invoices:
@@ -79,43 +75,27 @@ async def debug_invoices():
 
 @app.get("/api/debug/schedules")
 async def debug_schedules():
-    """Debug: check if schedules have client_id set."""
     from sqlalchemy import select, func
     from .models.models import Schedule
     from .database import async_session
     try:
         async with async_session() as db:
-            # Count total schedules
             total = await db.execute(select(func.count(Schedule.id)))
             total_count = total.scalar()
-            
-            # Count schedules WITH client_id
-            with_client = await db.execute(
-                select(func.count(Schedule.id)).where(Schedule.client_id != None)
-            )
+            with_client = await db.execute(select(func.count(Schedule.id)).where(Schedule.client_id != None))
             with_client_count = with_client.scalar()
-            
-            # Count schedules WITHOUT client_id
-            without_client = await db.execute(
-                select(func.count(Schedule.id)).where(Schedule.client_id == None)
-            )
+            without_client = await db.execute(select(func.count(Schedule.id)).where(Schedule.client_id == None))
             without_client_count = without_client.scalar()
-            
-            # Sample of schedules with their client_id
-            sample = await db.execute(
-                select(Schedule).limit(5)
-            )
+            sample = await db.execute(select(Schedule).limit(5))
             sample_data = [
-                {"id": s.id, "employee_id": s.employee_id, "client_id": s.client_id, 
-                 "date": str(s.date), "location": s.location}
+                {"id": s.id, "employee_id": s.employee_id, "client_id": s.client_id, "date": str(s.date), "location": s.location}
                 for s in sample.scalars().all()
             ]
-            
             return {
                 "total_schedules": total_count,
                 "with_client_id": with_client_count,
                 "without_client_id": without_client_count,
-                "sample": sample_data
+                "sample": sample_data,
             }
     except Exception as e:
         import traceback

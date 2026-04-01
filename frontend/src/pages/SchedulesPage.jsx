@@ -223,10 +223,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
     if (!ws || !empId || !clientId) return;
     try {
       setBillingLoading(true);
-      const fn = approve ? api.approveReviewedWeek : api.reviewWeek;
       const approvedHours = Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0);
       const notes = reviewDraft?.notes || '';
-      const review = await fn({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes });
+      const review = approve
+        ? await api.approveReviewedWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes })
+        : await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes });
       setCurrentReview(review || null);
       setApprovals(prev => {
         const rest = prev.filter(a => !(a.employee_id === empId && a.client_id === clientId && a.week_start === ws));
@@ -433,7 +434,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
       {otherEmps.length > 0 && viewMode === 'week' && <tr><td colSpan={viewDates.length + 2} style={{ padding: '8px 16px', background: 'var(--surface2)' }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}><span style={{ fontSize: 11, color: 'var(--text3)' }}>Ajouter un employé :</span>{otherEmps.slice(0, 20).map(e => <button key={e.id} className="btn btn-outline btn-sm" style={{ fontSize: 11, padding: '3px 10px' }} onClick={() => openAdd(e.id, fmtISO(viewDates[0]))}>{e.name.split(' ')[0]} {(e.name.split(' ').slice(-1)[0] || '')[0]}.</button>)}{otherEmps.length > 20 && <span style={{ fontSize: 10, color: 'var(--text3)' }}>+{otherEmps.length - 20} autres</span>}</div></td></tr>}
     </tbody></table></div>}
 
-    {modal && <Modal title={modal.type === 'add' ? 'Nouveau quart' : `Modifier — ${employees.find(e => e.id === modal.data.employeeId)?.name || '?'}`} onClose={() => setModal(null)} wide>
+    {modal && <Modal title={modal.type === 'add' ? 'Nouveau quart' : `Modifier — ${employees.find(e => e.id === modal.data.employeeId)?.name || '?'}`} onClose={() => setModal(null)} wide>{/* modal content unchanged */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}><div className="field"><label>Employé</label><select className="input" value={modal.data.employeeId || ''} onChange={e => handleEmployeeChange(e.target.value)} disabled={modal.type === 'edit'}><option value="">Choisir...</option>{employees.map(e => <option key={e.id} value={e.id}>{e.name} — {e.position}</option>)}</select></div><div className="field"><label>Client (CISSS/CIUSSS)</label><select className="input" value={modal.data.clientId || 0} onChange={e => updateField('clientId', Number(e.target.value))}><option value={0}>— Aucun / Non assigné —</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div></div>
       {selectedClient && <div style={{ background: 'var(--teal-l)', padding: '8px 12px', borderRadius: 'var(--r)', marginBottom: 12, fontSize: 11, color: 'var(--teal)' }}><div style={{ fontWeight: 600, marginBottom: 2 }}>🏥 {selectedClient.name}</div>{selectedClient.address && <div>📍 {selectedClient.address}</div>}{selectedClient.email && <div>📧 {selectedClient.email}</div>}{selectedClient.tax_exempt && <div style={{ marginTop: 4, fontWeight: 700, color: '#059669' }}>✅ Client exempté de taxes</div>}</div>}
       <div className="field"><label>Date</label><input type="date" className="input" value={modal.data.date} onChange={e => updateField('date', e.target.value)} /></div>

@@ -3,6 +3,7 @@ import { useAuth } from './hooks/useAuth';
 import { useToast } from './hooks/useToast';
 import { Sidebar, ToastContainer } from './components/UI';
 import ChatWidget from './components/ChatWidget';
+import WeeklyApprovalPanel from './components/WeeklyApprovalPanel';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import SchedulesPage from './pages/SchedulesPage';
@@ -19,7 +20,6 @@ export default function App() {
   const [page, setPage] = useState('dashboard');
   const [overdueCount, setOverdueCount] = useState(0);
 
-  // Load overdue count for sidebar badge
   useEffect(() => {
     if (!user) return;
     api.getInvoices().then(invoices => {
@@ -47,7 +47,7 @@ export default function App() {
 
   const pages = {
     dashboard: <DashboardPage onNavigate={setPage} />,
-    schedules: <SchedulesPage toast={toast} onNavigate={setPage} />,
+    schedules: <><WeeklyApprovalPanel toast={toast} /><SchedulesPage toast={toast} onNavigate={setPage} /></>,
     employees: <EmployeesPage toast={toast} />,
     candidates: <CandidatesPage toast={toast} />,
     timesheets: <TimesheetsPage toast={toast} />,

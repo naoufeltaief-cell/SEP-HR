@@ -43,4 +43,15 @@ app.include_router(chatbot.router, prefix="/api/chatbot", tags=["Chatbot"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "Soins Expert Plus API"}
+    return {"status": "ok", "service": "Soins Expert Plus API", "version": "2.1.0-serialize-fix"}
+
+
+@app.get("/api/debug/version")
+async def debug_version():
+    """Endpoint to verify which code version is deployed"""
+    from .routers.invoices import _serialize_invoice
+    return {
+        "version": "2.1.0",
+        "serialize_fix": True,
+        "has_serialize_invoice": callable(_serialize_invoice),
+    }

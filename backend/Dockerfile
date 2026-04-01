@@ -1,5 +1,6 @@
 FROM python:3.12-slim
 
+# Force rebuild v2.1.0 - serialize fix
 WORKDIR /app
 
 COPY requirements.txt .

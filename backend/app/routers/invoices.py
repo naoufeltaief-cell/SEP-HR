@@ -123,31 +123,41 @@ async def list_invoices(
     user=Depends(require_admin),
 ):
     """List invoices with optional filters"""
-    query = select(Invoice).order_by(desc(Invoice.date), desc(Invoice.created_at))
+    import logging
+    logger = logging.getLogger("invoices")
+    try:
+        query = select(Invoice).order_by(desc(Invoice.date), desc(Invoice.created_at))
 
-    if status:
-        query = query.where(Invoice.status == status)
-    if client_id:
-        query = query.where(Invoice.client_id == client_id)
-    if employee_id:
-        query = query.where(Invoice.employee_id == employee_id)
-    if period_start:
-        query = query.where(Invoice.period_start >= period_start)
-    if period_end:
-        query = query.where(Invoice.period_end <= period_end)
-    if search:
-        s = f"%{search}%"
-        query = query.where(
-            or_(
-                Invoice.number.ilike(s),
-                Invoice.client_name.ilike(s),
-                Invoice.employee_name.ilike(s),
+        if status:
+            query = query.where(Invoice.status == status)
+        if client_id:
+            query = query.where(Invoice.client_id == client_id)
+        if employee_id:
+            query = query.where(Invoice.employee_id == employee_id)
+        if period_start:
+            query = query.where(Invoice.period_start >= period_start)
+        if period_end:
+            query = query.where(Invoice.period_end <= period_end)
+        if search:
+            s = f"%{search}%"
+            query = query.where(
+                or_(
+                    Invoice.number.ilike(s),
+                    Invoice.client_name.ilike(s),
+                    Invoice.employee_name.ilike(s),
+                )
             )
-        )
 
-    query = query.offset(skip).limit(limit)
-    result = await db.execute(query)
-    return [_serialize_invoice(inv) for inv in result.scalars().all()]
+        query = query.offset(skip).limit(limit)
+        result = await db.execute(query)
+        invoices = result.scalars().all()
+        logger.info(f"list_invoices: found {len(invoices)} invoices, serializing...")
+        serialized = [_serialize_invoice(inv) for inv in invoices]
+        logger.info(f"list_invoices: serialized OK, returning {len(serialized)} items")
+        return serialized
+    except Exception as e:
+        logger.error(f"list_invoices CRASHED: {type(e).__name__}: {e}")
+        raise HTTPException(500, f"Erreur interne: {type(e).__name__}: {str(e)}")
 
 
 @router.get("/stats")

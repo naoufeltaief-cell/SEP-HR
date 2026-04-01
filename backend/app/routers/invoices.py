@@ -41,6 +41,70 @@ router = APIRouter()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# SERIALIZATION HELPER (avoids async lazy-loading crash)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def _serialize_invoice(inv, include_relations=False):
+    """Convert Invoice ORM → dict without triggering lazy-loaded relationships."""
+    d = {
+        "id": inv.id, "number": inv.number,
+        "date": inv.date.isoformat() if inv.date else None,
+        "period_start": inv.period_start.isoformat() if inv.period_start else None,
+        "period_end": inv.period_end.isoformat() if inv.period_end else None,
+        "client_id": inv.client_id, "client_name": inv.client_name,
+        "client_address": inv.client_address or "",
+        "client_email": inv.client_email or "",
+        "client_phone": inv.client_phone or "",
+        "employee_id": inv.employee_id, "employee_name": inv.employee_name,
+        "employee_title": inv.employee_title or "",
+        "subtotal_services": inv.subtotal_services or 0,
+        "subtotal_garde": inv.subtotal_garde or 0,
+        "subtotal_rappel": inv.subtotal_rappel or 0,
+        "subtotal_accom": inv.subtotal_accom or 0,
+        "subtotal_deplacement": inv.subtotal_deplacement or 0,
+        "subtotal_km": inv.subtotal_km or 0,
+        "subtotal_autres_frais": inv.subtotal_autres_frais or 0,
+        "subtotal": inv.subtotal or 0,
+        "include_tax": inv.include_tax,
+        "tps": inv.tps or 0, "tvq": inv.tvq or 0, "total": inv.total or 0,
+        "amount_paid": inv.amount_paid or 0, "balance_due": inv.balance_due or 0,
+        "status": inv.status,
+        "lines": inv.lines or [],
+        "accommodation_lines": inv.accommodation_lines or [],
+        "expense_lines": inv.expense_lines or [],
+        "extra_lines": inv.extra_lines or [],
+        "notes": inv.notes or "",
+        "due_date": inv.due_date.isoformat() if inv.due_date else None,
+        "po_number": inv.po_number or "",
+        "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        "updated_at": inv.updated_at.isoformat() if inv.updated_at else None,
+        "validated_at": inv.validated_at.isoformat() if inv.validated_at else None,
+        "sent_at": inv.sent_at.isoformat() if inv.sent_at else None,
+        "paid_at": inv.paid_at.isoformat() if inv.paid_at else None,
+    }
+    if include_relations:
+        d["payments"] = [
+            {"id": p.id, "amount": p.amount, "date": p.date.isoformat() if p.date else None,
+             "reference": p.reference or "", "method": p.method or "", "notes": p.notes or "",
+             "created_at": p.created_at.isoformat() if p.created_at else None}
+            for p in (inv.payments or [])
+        ]
+        d["audit_logs"] = [
+            {"id": a.id, "action": a.action, "old_status": a.old_status, "new_status": a.new_status,
+             "user_email": a.user_email or "", "details": a.details or "",
+             "created_at": a.created_at.isoformat() if a.created_at else None}
+            for a in (inv.audit_logs or [])
+        ]
+        d["credit_notes"] = [
+            {"id": cn.id, "number": cn.number, "date": cn.date.isoformat() if cn.date else None,
+             "amount": cn.amount, "total": cn.total, "reason": cn.reason or "", "status": cn.status}
+            for cn in (inv.credit_notes or [])
+        ]
+    return d
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # INVOICE CRUD
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -83,7 +147,7 @@ async def list_invoices(
 
     query = query.offset(skip).limit(limit)
     result = await db.execute(query)
-    return result.scalars().all()
+    return [_serialize_invoice(inv) for inv in result.scalars().all()]
 
 
 @router.get("/stats")
@@ -142,7 +206,13 @@ async def list_credit_notes(
     user=Depends(require_admin),
 ):
     result = await db.execute(select(CreditNote).order_by(desc(CreditNote.date)))
-    return result.scalars().all()
+    return [
+        {"id": cn.id, "number": cn.number, "date": cn.date.isoformat() if cn.date else None,
+         "invoice_id": cn.invoice_id, "amount": cn.amount, "tps": cn.tps or 0, "tvq": cn.tvq or 0,
+         "total": cn.total, "reason": cn.reason or "", "status": cn.status,
+         "created_at": cn.created_at.isoformat() if cn.created_at else None}
+        for cn in result.scalars().all()
+    ]
 
 
 @router.get("/reports/by-client")
@@ -338,7 +408,7 @@ async def get_invoice(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
-    return invoice
+    return _serialize_invoice(invoice, include_relations=True)
 
 
 @router.post("/", status_code=201)
@@ -394,7 +464,7 @@ async def create_invoice(
     db.add(audit)
     await db.commit()
     await db.refresh(invoice)
-    return invoice
+    return _serialize_invoice(invoice)
 
 
 @router.put("/{invoice_id}")
@@ -456,7 +526,7 @@ async def update_invoice(
     db.add(audit)
     await db.commit()
     await db.refresh(invoice)
-    return invoice
+    return _serialize_invoice(invoice)
 
 
 @router.delete("/{invoice_id}")
@@ -494,7 +564,7 @@ async def generate_invoices(
         client_id=data.client_id, employee_id=data.employee_id,
         user_email=getattr(user, "email", ""),
     )
-    return invoices
+    return [_serialize_invoice(inv) for inv in invoices]
 
 
 @router.post("/generate-from-schedules")
@@ -701,7 +771,7 @@ async def update_status(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return invoice
+    return _serialize_invoice(invoice, include_relations=True)
 
 
 @router.post("/{invoice_id}/validate")
@@ -757,7 +827,7 @@ async def send_invoice(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return invoice
+    return _serialize_invoice(invoice, include_relations=True)
 
 
 @router.post("/{invoice_id}/mark-paid")
@@ -785,7 +855,7 @@ async def mark_paid(
             user_email=getattr(user, "email", ""),
         )
     await db.refresh(invoice)
-    return invoice
+    return _serialize_invoice(invoice, include_relations=True)
 
 
 # Backward compat: PUT /paid and /unpaid and /cancel
@@ -839,7 +909,7 @@ async def duplicate_invoice_endpoint(
     if not invoice:
         raise HTTPException(404, "Invoice not found")
     new_inv = await duplicate_invoice(db, invoice, getattr(user, "email", ""))
-    return new_inv
+    return _serialize_invoice(new_inv)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -872,7 +942,11 @@ async def create_payment(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return payment
+    return {"id": payment.id, "invoice_id": payment.invoice_id, "amount": payment.amount,
+            "date": payment.date.isoformat() if payment.date else None,
+            "reference": payment.reference or "", "method": payment.method or "",
+            "notes": payment.notes or "",
+            "created_at": payment.created_at.isoformat() if payment.created_at else None}
 
 
 @router.get("/{invoice_id}/payments")
@@ -885,7 +959,13 @@ async def list_payments(
         select(Payment).where(Payment.invoice_id == invoice_id)
         .order_by(desc(Payment.date))
     )
-    return result.scalars().all()
+    return [
+        {"id": p.id, "invoice_id": p.invoice_id, "amount": p.amount,
+         "date": p.date.isoformat() if p.date else None,
+         "reference": p.reference or "", "method": p.method or "", "notes": p.notes or "",
+         "created_at": p.created_at.isoformat() if p.created_at else None}
+        for p in result.scalars().all()
+    ]
 
 
 @router.delete("/{invoice_id}/payments/{payment_id}")
@@ -960,7 +1040,13 @@ async def create_credit_note(
 
     await db.commit()
     await db.refresh(cn)
-    return cn
+    return {"id": cn.id, "number": cn.number, "invoice_id": cn.invoice_id,
+            "invoice_number": cn.invoice_number or "", "client_id": cn.client_id,
+            "client_name": cn.client_name or "", "date": cn.date.isoformat() if cn.date else None,
+            "reason": cn.reason or "", "amount": cn.amount, "include_tax": cn.include_tax,
+            "tps": cn.tps or 0, "tvq": cn.tvq or 0, "total": cn.total,
+            "notes": cn.notes or "", "status": cn.status,
+            "created_at": cn.created_at.isoformat() if cn.created_at else None}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1093,7 +1179,13 @@ async def get_audit_log(
         .where(InvoiceAuditLog.invoice_id == invoice_id)
         .order_by(desc(InvoiceAuditLog.created_at))
     )
-    return result.scalars().all()
+    return [
+        {"id": a.id, "invoice_id": a.invoice_id, "action": a.action,
+         "old_status": a.old_status, "new_status": a.new_status,
+         "user_email": a.user_email or "", "details": a.details or "",
+         "created_at": a.created_at.isoformat() if a.created_at else None}
+        for a in result.scalars().all()
+    ]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

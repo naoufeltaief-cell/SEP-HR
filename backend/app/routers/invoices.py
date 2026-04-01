@@ -45,62 +45,110 @@ router = APIRouter()
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+def _serialize_invoice_summary(inv):
+    """Lightweight serializer for list view — no lines, no relations."""
+    try:
+        return {
+            "id": inv.id, "number": getattr(inv, "number", ""),
+            "date": inv.date.isoformat() if getattr(inv, "date", None) else None,
+            "period_start": inv.period_start.isoformat() if getattr(inv, "period_start", None) else None,
+            "period_end": inv.period_end.isoformat() if getattr(inv, "period_end", None) else None,
+            "client_id": getattr(inv, "client_id", None),
+            "client_name": getattr(inv, "client_name", ""),
+            "employee_id": getattr(inv, "employee_id", None),
+            "employee_name": getattr(inv, "employee_name", ""),
+            "employee_title": getattr(inv, "employee_title", ""),
+            "subtotal": getattr(inv, "subtotal", 0) or 0,
+            "tps": getattr(inv, "tps", 0) or 0,
+            "tvq": getattr(inv, "tvq", 0) or 0,
+            "total": getattr(inv, "total", 0) or 0,
+            "amount_paid": getattr(inv, "amount_paid", 0) or 0,
+            "balance_due": getattr(inv, "balance_due", 0) or 0,
+            "status": getattr(inv, "status", "draft"),
+            "include_tax": getattr(inv, "include_tax", True),
+            "notes": getattr(inv, "notes", "") or "",
+            "due_date": inv.due_date.isoformat() if getattr(inv, "due_date", None) else None,
+            "po_number": getattr(inv, "po_number", "") or "",
+            "created_at": inv.created_at.isoformat() if getattr(inv, "created_at", None) else None,
+        }
+    except Exception as e:
+        return {"id": getattr(inv, "id", "?"), "number": getattr(inv, "number", "?"), "error": str(e)}
+
+
 def _serialize_invoice(inv, include_relations=False):
-    """Convert Invoice ORM → dict without triggering lazy-loaded relationships."""
-    d = {
-        "id": inv.id, "number": inv.number,
-        "date": inv.date.isoformat() if inv.date else None,
-        "period_start": inv.period_start.isoformat() if inv.period_start else None,
-        "period_end": inv.period_end.isoformat() if inv.period_end else None,
-        "client_id": inv.client_id, "client_name": inv.client_name,
-        "client_address": inv.client_address or "",
-        "client_email": inv.client_email or "",
-        "client_phone": inv.client_phone or "",
-        "employee_id": inv.employee_id, "employee_name": inv.employee_name,
-        "employee_title": inv.employee_title or "",
-        "subtotal_services": inv.subtotal_services or 0,
-        "subtotal_garde": inv.subtotal_garde or 0,
-        "subtotal_rappel": inv.subtotal_rappel or 0,
-        "subtotal_accom": inv.subtotal_accom or 0,
-        "subtotal_deplacement": inv.subtotal_deplacement or 0,
-        "subtotal_km": inv.subtotal_km or 0,
-        "subtotal_autres_frais": inv.subtotal_autres_frais or 0,
-        "subtotal": inv.subtotal or 0,
-        "include_tax": inv.include_tax,
-        "tps": inv.tps or 0, "tvq": inv.tvq or 0, "total": inv.total or 0,
-        "amount_paid": inv.amount_paid or 0, "balance_due": inv.balance_due or 0,
-        "status": inv.status,
-        "lines": inv.lines or [],
-        "accommodation_lines": inv.accommodation_lines or [],
-        "expense_lines": inv.expense_lines or [],
-        "extra_lines": inv.extra_lines or [],
-        "notes": inv.notes or "",
-        "due_date": inv.due_date.isoformat() if inv.due_date else None,
-        "po_number": inv.po_number or "",
-        "created_at": inv.created_at.isoformat() if inv.created_at else None,
-        "updated_at": inv.updated_at.isoformat() if inv.updated_at else None,
-        "validated_at": inv.validated_at.isoformat() if inv.validated_at else None,
-        "sent_at": inv.sent_at.isoformat() if inv.sent_at else None,
-        "paid_at": inv.paid_at.isoformat() if inv.paid_at else None,
-    }
+    """Full serializer for single invoice view — includes lines + optionally relations."""
+    try:
+        d = {
+            "id": inv.id, "number": getattr(inv, "number", ""),
+            "date": inv.date.isoformat() if getattr(inv, "date", None) else None,
+            "period_start": inv.period_start.isoformat() if getattr(inv, "period_start", None) else None,
+            "period_end": inv.period_end.isoformat() if getattr(inv, "period_end", None) else None,
+            "client_id": getattr(inv, "client_id", None),
+            "client_name": getattr(inv, "client_name", ""),
+            "client_address": getattr(inv, "client_address", "") or "",
+            "client_email": getattr(inv, "client_email", "") or "",
+            "client_phone": getattr(inv, "client_phone", "") or "",
+            "employee_id": getattr(inv, "employee_id", None),
+            "employee_name": getattr(inv, "employee_name", ""),
+            "employee_title": getattr(inv, "employee_title", "") or "",
+            "subtotal_services": getattr(inv, "subtotal_services", 0) or 0,
+            "subtotal_garde": getattr(inv, "subtotal_garde", 0) or 0,
+            "subtotal_rappel": getattr(inv, "subtotal_rappel", 0) or 0,
+            "subtotal_accom": getattr(inv, "subtotal_accom", 0) or 0,
+            "subtotal_deplacement": getattr(inv, "subtotal_deplacement", 0) or 0,
+            "subtotal_km": getattr(inv, "subtotal_km", 0) or 0,
+            "subtotal_autres_frais": getattr(inv, "subtotal_autres_frais", 0) or 0,
+            "subtotal": getattr(inv, "subtotal", 0) or 0,
+            "include_tax": getattr(inv, "include_tax", True),
+            "tps": getattr(inv, "tps", 0) or 0,
+            "tvq": getattr(inv, "tvq", 0) or 0,
+            "total": getattr(inv, "total", 0) or 0,
+            "amount_paid": getattr(inv, "amount_paid", 0) or 0,
+            "balance_due": getattr(inv, "balance_due", 0) or 0,
+            "status": getattr(inv, "status", "draft"),
+            "lines": getattr(inv, "lines", None) or [],
+            "accommodation_lines": getattr(inv, "accommodation_lines", None) or [],
+            "expense_lines": getattr(inv, "expense_lines", None) or [],
+            "extra_lines": getattr(inv, "extra_lines", None) or [],
+            "notes": getattr(inv, "notes", "") or "",
+            "due_date": inv.due_date.isoformat() if getattr(inv, "due_date", None) else None,
+            "po_number": getattr(inv, "po_number", "") or "",
+            "created_at": inv.created_at.isoformat() if getattr(inv, "created_at", None) else None,
+            "updated_at": inv.updated_at.isoformat() if getattr(inv, "updated_at", None) else None,
+            "validated_at": inv.validated_at.isoformat() if getattr(inv, "validated_at", None) else None,
+            "sent_at": inv.sent_at.isoformat() if getattr(inv, "sent_at", None) else None,
+            "paid_at": inv.paid_at.isoformat() if getattr(inv, "paid_at", None) else None,
+        }
+    except Exception as e:
+        return {"id": getattr(inv, "id", "?"), "error": str(e)}
+
     if include_relations:
-        d["payments"] = [
-            {"id": p.id, "amount": p.amount, "date": p.date.isoformat() if p.date else None,
-             "reference": p.reference or "", "method": p.method or "", "notes": p.notes or "",
-             "created_at": p.created_at.isoformat() if p.created_at else None}
-            for p in (inv.payments or [])
-        ]
-        d["audit_logs"] = [
-            {"id": a.id, "action": a.action, "old_status": a.old_status, "new_status": a.new_status,
-             "user_email": a.user_email or "", "details": a.details or "",
-             "created_at": a.created_at.isoformat() if a.created_at else None}
-            for a in (inv.audit_logs or [])
-        ]
-        d["credit_notes"] = [
-            {"id": cn.id, "number": cn.number, "date": cn.date.isoformat() if cn.date else None,
-             "amount": cn.amount, "total": cn.total, "reason": cn.reason or "", "status": cn.status}
-            for cn in (inv.credit_notes or [])
-        ]
+        try:
+            d["payments"] = [
+                {"id": p.id, "amount": p.amount, "date": p.date.isoformat() if p.date else None,
+                 "reference": p.reference or "", "method": p.method or "", "notes": p.notes or "",
+                 "created_at": p.created_at.isoformat() if p.created_at else None}
+                for p in (inv.payments or [])
+            ]
+        except Exception:
+            d["payments"] = []
+        try:
+            d["audit_logs"] = [
+                {"id": a.id, "action": a.action, "old_status": a.old_status, "new_status": a.new_status,
+                 "user_email": a.user_email or "", "details": a.details or "",
+                 "created_at": a.created_at.isoformat() if a.created_at else None}
+                for a in (inv.audit_logs or [])
+            ]
+        except Exception:
+            d["audit_logs"] = []
+        try:
+            d["credit_notes"] = [
+                {"id": cn.id, "number": cn.number, "date": cn.date.isoformat() if cn.date else None,
+                 "amount": cn.amount, "total": cn.total, "reason": cn.reason or "", "status": cn.status}
+                for cn in (inv.credit_notes or [])
+            ]
+        except Exception:
+            d["credit_notes"] = []
     return d
 
 
@@ -152,7 +200,7 @@ async def list_invoices(
         result = await db.execute(query)
         invoices = result.scalars().all()
         logger.info(f"list_invoices: found {len(invoices)} invoices, serializing...")
-        serialized = [_serialize_invoice(inv) for inv in invoices]
+        serialized = [_serialize_invoice_summary(inv) for inv in invoices]
         logger.info(f"list_invoices: serialized OK, returning {len(serialized)} items")
         return serialized
     except Exception as e:
@@ -192,6 +240,24 @@ async def invoice_stats(
         "count": len(invoices),
         "status_counts": status_counts,
     }
+
+
+@router.get("/debug-list")
+async def debug_list_invoices(db: AsyncSession = Depends(get_db)):
+    """Debug endpoint — no auth required — returns first 3 invoices as summary."""
+    try:
+        result = await db.execute(
+            select(Invoice).order_by(desc(Invoice.created_at)).limit(3)
+        )
+        invoices = result.scalars().all()
+        return {
+            "count": len(invoices),
+            "invoices": [_serialize_invoice_summary(inv) for inv in invoices],
+            "debug": "OK — if you see this, the list serializer works",
+        }
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "type": type(e).__name__, "trace": traceback.format_exc()}
 
 
 @router.get("/next-number")

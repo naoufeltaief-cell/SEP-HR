@@ -84,17 +84,13 @@ class Schedule(Base):
     status = Column(String, default="draft")  # draft, published
     notes = Column(Text, default="")
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
-    # Expenses on shift
     km = Column(Float, default=0)
     deplacement = Column(Float, default=0)
     autre_dep = Column(Float, default=0)
-    # Mandat
     mandat_start = Column(String, nullable=True)
     mandat_end = Column(String, nullable=True)
-    # Garde / Rappel (saisie au niveau du quart)
     garde_hours = Column(Float, default=0)
     rappel_hours = Column(Float, default=0)
-    # Recurrence metadata
     recurrence_group = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     employee = relationship("Employee", back_populates="schedules")
@@ -106,7 +102,7 @@ class Timesheet(Base):
     employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
     period_start = Column(Date, nullable=False)
     period_end = Column(Date, nullable=False)
-    status = Column(String, default="submitted")  # submitted, approved, rejected, invoiced
+    status = Column(String, default="submitted")
     notes = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     shifts = relationship("TimesheetShift", back_populates="timesheet", cascade="all, delete-orphan")
@@ -140,7 +136,21 @@ class Accommodation(Base):
     notes = Column(Text, default="")
 
 
-# Phase 1 Invoice models (new tables: payments, invoice_audit_log, enhanced invoices, credit_notes)
+class AccommodationAttachment(Base):
+    __tablename__ = "accommodation_attachments"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    accommodation_id = Column(String, ForeignKey("accommodations.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    file_type = Column(String(50), nullable=False)
+    file_size = Column(Integer, default=0)
+    file_data = Column(LargeBinary, nullable=False)
+    category = Column(String(50), default="hebergement")
+    description = Column(Text, default="")
+    uploaded_by = Column(String(255), default="admin")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 from .models_invoice import Invoice, Payment, InvoiceAuditLog, CreditNote
 
 
@@ -153,7 +163,7 @@ class ScheduleApproval(Base):
     week_end = Column(Date, nullable=False)
     approved_by = Column(String(255), nullable=True)
     approved_at = Column(DateTime, default=datetime.utcnow)
-    status = Column(String(20), default="pending")  # pending / approved / rejected
+    status = Column(String(20), default="pending")
     notes = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     __table_args__ = (
@@ -169,10 +179,10 @@ class InvoiceAttachment(Base):
     invoice_id = Column(String, ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False)
     filename = Column(String(255), nullable=False)
     original_filename = Column(String(255), nullable=False)
-    file_type = Column(String(50), nullable=False)       # pdf, jpg, png
-    file_size = Column(Integer, default=0)                # bytes
-    file_data = Column(LargeBinary, nullable=False)       # stockage direct en DB
-    category = Column(String(50), default="autre")        # hebergement, deplacement, kilometrage, autre
+    file_type = Column(String(50), nullable=False)
+    file_size = Column(Integer, default=0)
+    file_data = Column(LargeBinary, nullable=False)
+    category = Column(String(50), default="autre")
     description = Column(Text, default="")
     uploaded_by = Column(String(255), default="admin")
     created_at = Column(DateTime, default=datetime.utcnow)

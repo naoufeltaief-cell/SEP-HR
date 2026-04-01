@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 from ..database import get_db
-from ..models.models import Schedule, ScheduleApproval, new_id
+from ..models.models import Schedule, ScheduleApproval, Employee, new_id
 from ..models.schemas import ScheduleCreate, ScheduleUpdate, ScheduleOut
 from ..services.auth_service import require_admin, get_current_user
 
@@ -31,7 +31,24 @@ async def list_schedules(
         q = q.where(Schedule.status == "published")
     q = q.order_by(Schedule.date, Schedule.start)
     result = await db.execute(q)
-    return [ScheduleOut.model_validate(s) for s in result.scalars().all()]
+    schedules = result.scalars().all()
+
+    # Fallback: if historical schedules have no client_id, use employee default client_id
+    employee_ids = list({s.employee_id for s in schedules if getattr(s, "employee_id", None)})
+    employee_client_map = {}
+    if employee_ids:
+        emp_result = await db.execute(select(Employee).where(Employee.id.in_(employee_ids)))
+        for emp in emp_result.scalars().all():
+            if getattr(emp, "client_id", None):
+                employee_client_map[emp.id] = emp.client_id
+
+    for s in schedules:
+        if not getattr(s, "client_id", None):
+            fallback_client_id = employee_client_map.get(s.employee_id)
+            if fallback_client_id:
+                s.client_id = fallback_client_id
+
+    return [ScheduleOut.model_validate(s) for s in schedules]
 
 
 @router.post("/", status_code=201)

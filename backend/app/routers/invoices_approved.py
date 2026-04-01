@@ -5,7 +5,7 @@ from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..services.auth_service import require_admin
-from ..models.models import Client, Employee, InvoiceAttachment, Schedule, Accommodation, ScheduleApproval
+from ..models.models import Client, Employee, InvoiceAttachment, Schedule, Accommodation, ScheduleApproval, AccommodationAttachment
 from ..models.models_schedule_review import ScheduleApprovalMeta, ScheduleApprovalAttachment
 from ..models.models_invoice import Invoice, InvoiceAuditLog
 from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS
@@ -52,6 +52,8 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
     if not scheds:
         raise HTTPException(400, "Aucun quart trouvé pour cette période")
 
+    worked_dates = sorted({s.date for s in scheds})
+
     rate = get_rate_for_title(employee.position or "Infirmier(ère)")
     include_tax = not is_tax_exempt(client_name)
     service_lines = []
@@ -82,15 +84,21 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
         if autre_val:
             expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
 
-    accom_r = await db.execute(select(Accommodation).where(Accommodation.employee_id == employee_id, or_(and_(Accommodation.start_date >= ps, Accommodation.start_date <= pe), and_(Accommodation.end_date >= ps, Accommodation.end_date <= pe))))
+    accom_r = await db.execute(select(Accommodation).where(Accommodation.employee_id == employee_id, Accommodation.start_date <= pe, Accommodation.end_date >= ps))
+    accom_records = accom_r.scalars().all()
     accom_lines = []
-    for a in accom_r.scalars().all():
-        days = getattr(a, "days_worked", 0) or 0
+    applicable_accom_ids = []
+    for a in accom_records:
+        overlap_dates = [d for d in worked_dates if d >= a.start_date and d <= a.end_date]
+        overlap_days = len(overlap_dates)
+        if overlap_days <= 0:
+            continue
         cpd = getattr(a, "cost_per_day", 0) or 0
         tc = getattr(a, "total_cost", 0) or 0
-        if tc and days and not cpd:
-            cpd = round(tc / days, 2)
-        accom_lines.append({"employee": employee.name or "", "period": f"{ps.isoformat()} → {pe.isoformat()}", "days": days, "cost_per_day": cpd, "amount": round(days * cpd, 2) if cpd else tc})
+        if tc and not cpd and getattr(a, "days_worked", 0):
+            cpd = round(tc / max(1, getattr(a, "days_worked", 0)), 2)
+        accom_lines.append({"employee": employee.name or "", "period": f"{max(ps, a.start_date).isoformat()} → {min(pe, a.end_date).isoformat()}", "days": overlap_days, "cost_per_day": cpd, "amount": round(overlap_days * cpd, 2) if cpd else 0})
+        applicable_accom_ids.append(a.id)
 
     extra_lines = []
     if abs(approved_hours - raw_total_hours) > 0.009:
@@ -105,6 +113,11 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
     approval_atts_r = await db.execute(select(ScheduleApprovalAttachment).where(ScheduleApprovalAttachment.approval_id == approval.id).order_by(ScheduleApprovalAttachment.created_at))
     for src in approval_atts_r.scalars().all():
         db.add(InvoiceAttachment(invoice_id=invoice.id, filename=src.filename, original_filename=src.original_filename, file_type=src.file_type, file_size=src.file_size, file_data=src.file_data, category=src.category, description=src.description, uploaded_by=src.uploaded_by))
+
+    if applicable_accom_ids:
+        accom_atts_r = await db.execute(select(AccommodationAttachment).where(AccommodationAttachment.accommodation_id.in_(applicable_accom_ids)).order_by(AccommodationAttachment.created_at))
+        for src in accom_atts_r.scalars().all():
+            db.add(InvoiceAttachment(invoice_id=invoice.id, filename=src.filename, original_filename=src.original_filename, file_type=src.file_type, file_size=src.file_size, file_data=src.file_data, category='hebergement', description=src.description or "Pièce d'hébergement", uploaded_by=src.uploaded_by))
 
     db.add(InvoiceAuditLog(invoice_id=invoice.id, action="created", new_status="validated", user_email=getattr(user, "email", ""), details=f"Facture approuvée générée — {employee.name} / {client_name} / {ps} → {pe} / {approved_hours:.2f}h approuvées / {raw_total_hours:.2f}h planifiées"))
     await db.commit()

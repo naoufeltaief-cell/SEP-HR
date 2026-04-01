@@ -21,26 +21,37 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
         raise HTTPException(400, "employee_id, client_id, period_start et period_end requis")
     ps = date.fromisoformat(period_start)
     pe = date.fromisoformat(period_end)
-    existing = await db.execute(select(Invoice).where(Invoice.employee_id == employee_id, Invoice.client_id == client_id, Invoice.period_start == ps, Invoice.period_end == pe, Invoice.status != "cancelled"))
-    if existing.scalar_one_or_none():
-        raise HTTPException(400, "Une facture existe déjà pour cet employé/client/période")
-    approval_result = await db.execute(select(ScheduleApproval).where(ScheduleApproval.employee_id == employee_id, ScheduleApproval.client_id == client_id, ScheduleApproval.week_start == ps, ScheduleApproval.week_end == pe, ScheduleApproval.status == "approved"))
-    approval = approval_result.scalar_one_or_none()
-    if not approval:
-        raise HTTPException(400, "Cette semaine doit être approuvée avant de générer une facture approuvée")
-    meta_result = await db.execute(select(ScheduleApprovalMeta).where(ScheduleApprovalMeta.approval_id == approval.id))
-    approval_meta = meta_result.scalar_one_or_none()
+
     er = await db.execute(select(Employee).where(Employee.id == employee_id))
     employee = er.scalar_one_or_none()
     if not employee:
         raise HTTPException(404, "Employé non trouvé")
-    cr = await db.execute(select(Client).where(Client.id == client_id))
+    effective_client_id = client_id or getattr(employee, "client_id", None)
+    if not effective_client_id:
+        raise HTTPException(400, "Aucun client associé à cet employé")
+
+    existing = await db.execute(select(Invoice).where(Invoice.employee_id == employee_id, Invoice.client_id == effective_client_id, Invoice.period_start == ps, Invoice.period_end == pe, Invoice.status != "cancelled"))
+    if existing.scalar_one_or_none():
+        raise HTTPException(400, "Une facture existe déjà pour cet employé/client/période")
+
+    approval_result = await db.execute(select(ScheduleApproval).where(ScheduleApproval.employee_id == employee_id, ScheduleApproval.client_id == effective_client_id, ScheduleApproval.week_start == ps, ScheduleApproval.week_end == pe, ScheduleApproval.status == "approved"))
+    approval = approval_result.scalar_one_or_none()
+    if not approval:
+        raise HTTPException(400, "Cette semaine doit être approuvée avant de générer une facture approuvée")
+
+    meta_result = await db.execute(select(ScheduleApprovalMeta).where(ScheduleApprovalMeta.approval_id == approval.id))
+    approval_meta = meta_result.scalar_one_or_none()
+
+    cr = await db.execute(select(Client).where(Client.id == effective_client_id))
     client = cr.scalar_one_or_none()
     client_name = client.name if client else "Non assigné"
-    scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == employee_id, Schedule.client_id == client_id, Schedule.date >= ps, Schedule.date <= pe, Schedule.status != "cancelled").order_by(Schedule.date))
-    scheds = scheds_r.scalars().all()
+
+    scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == employee_id, Schedule.date >= ps, Schedule.date <= pe, Schedule.status != "cancelled").order_by(Schedule.date))
+    raw_scheds = scheds_r.scalars().all()
+    scheds = [s for s in raw_scheds if (getattr(s, 'client_id', None) == effective_client_id) or (not getattr(s, 'client_id', None) and getattr(employee, 'client_id', None) == effective_client_id)]
     if not scheds:
         raise HTTPException(400, "Aucun quart trouvé pour cette période")
+
     rate = get_rate_for_title(employee.position or "Infirmier(ère)")
     include_tax = not is_tax_exempt(client_name)
     service_lines = []
@@ -56,6 +67,7 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
         service_lines.append({"date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date), "employee": employee.name or "", "location": client_name, "start": getattr(s, "start", "") or "", "end": getattr(s, "end", "") or "", "pause_min": getattr(s, "pause", 0) or 0, "hours": hours, "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": garde_amount, "rappel_hours": rappel_h, "rappel_amount": rappel_amount})
     raw_total_hours = round(raw_total_hours, 2)
     approved_hours = round((approval_meta.approved_hours if approval_meta else raw_total_hours) or raw_total_hours, 2)
+
     expense_lines = []
     for s in scheds:
         km_val = getattr(s, "km", 0) or 0
@@ -69,6 +81,7 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
         autre_val = getattr(s, "autre_dep", 0) or 0
         if autre_val:
             expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
+
     accom_r = await db.execute(select(Accommodation).where(Accommodation.employee_id == employee_id, or_(and_(Accommodation.start_date >= ps, Accommodation.start_date <= pe), and_(Accommodation.end_date >= ps, Accommodation.end_date <= pe))))
     accom_lines = []
     for a in accom_r.scalars().all():
@@ -78,17 +91,21 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
         if tc and days and not cpd:
             cpd = round(tc / days, 2)
         accom_lines.append({"employee": employee.name or "", "period": f"{ps.isoformat()} → {pe.isoformat()}", "days": days, "cost_per_day": cpd, "amount": round(days * cpd, 2) if cpd else tc})
+
     extra_lines = []
     if abs(approved_hours - raw_total_hours) > 0.009:
         delta_hours = round(approved_hours - raw_total_hours, 2)
         extra_lines.append({"description": f"Ajustement heures approuvées ({approved_hours:.2f}h approuvées vs {raw_total_hours:.2f}h planifiées)", "amount": round(delta_hours * rate, 2), "hours_delta": delta_hours, "rate": rate, "type": "approved_hours_adjustment"})
-    invoice = Invoice(id=str(uuid.uuid4()), number=await generate_invoice_number(db), date=date.today(), period_start=ps, period_end=pe, client_id=client.id if client else None, client_name=client_name, client_address=client.address if client else "", client_email=getattr(client, "email", "") if client else "", client_phone=getattr(client, "phone", "") if client else "", employee_id=employee_id, employee_name=employee.name or "", employee_title=employee.position or "", include_tax=include_tax, status="validated", validated_at=datetime.utcnow(), lines=service_lines, accommodation_lines=accom_lines, expense_lines=expense_lines, extra_lines=extra_lines, notes=f"Facture approuvée générée depuis l'horaire validé. Heures approuvées: {approved_hours:.2f}h. Heures planifiées: {raw_total_hours:.2f}h.")
+
+    invoice = Invoice(id=str(uuid.uuid4()), number=await generate_invoice_number(db), date=date.today(), period_start=ps, period_end=pe, client_id=client.id if client else effective_client_id, client_name=client_name, client_address=client.address if client else "", client_email=getattr(client, "email", "") if client else "", client_phone=getattr(client, "phone", "") if client else "", employee_id=employee_id, employee_name=employee.name or "", employee_title=employee.position or "", include_tax=include_tax, status="validated", validated_at=datetime.utcnow(), lines=service_lines, accommodation_lines=accom_lines, expense_lines=expense_lines, extra_lines=extra_lines, notes=f"Facture approuvée générée depuis l'horaire validé. Heures approuvées: {approved_hours:.2f}h. Heures planifiées: {raw_total_hours:.2f}h.")
     invoice = recalculate_invoice(invoice)
     db.add(invoice)
     await db.flush()
+
     approval_atts_r = await db.execute(select(ScheduleApprovalAttachment).where(ScheduleApprovalAttachment.approval_id == approval.id).order_by(ScheduleApprovalAttachment.created_at))
     for src in approval_atts_r.scalars().all():
         db.add(InvoiceAttachment(invoice_id=invoice.id, filename=src.filename, original_filename=src.original_filename, file_type=src.file_type, file_size=src.file_size, file_data=src.file_data, category=src.category, description=src.description, uploaded_by=src.uploaded_by))
+
     db.add(InvoiceAuditLog(invoice_id=invoice.id, action="created", new_status="validated", user_email=getattr(user, "email", ""), details=f"Facture approuvée générée — {employee.name} / {client_name} / {ps} → {pe} / {approved_hours:.2f}h approuvées / {raw_total_hours:.2f}h planifiées"))
     await db.commit()
     await db.refresh(invoice)

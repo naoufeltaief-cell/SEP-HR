@@ -5,6 +5,7 @@ Full REST API for healthcare staffing platform
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import os
 
 from .database import engine, Base
 from .routers import auth, employees, schedules, schedule_reviews, timesheets, invoices, accommodations, clients, chatbot, invoices_approved, invoices_bulk
@@ -22,10 +23,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+cors_env = os.getenv("CORS_ORIGINS", "")
+allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+if not allowed_origins:
+    allowed_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

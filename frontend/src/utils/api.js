@@ -24,19 +24,44 @@ class ApiClient {
   isAdmin() { return this.user?.role === 'admin'; }
 
   async request(path, options = {}) {
-    const headers = { 'Content-Type': 'application/json', ...options.headers };
+    const headers = { ...options.headers };
+    if (!(options.body instanceof FormData) && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-    const resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    } catch (err) {
+      throw new Error('Impossible de joindre le serveur. Vérifie le backend /api et VITE_API_URL.');
+    }
+
     if (resp.status === 401) {
       this.clearAuth();
       window.location.href = '/login';
       throw new Error('Session expirée');
     }
+
+    const contentType = resp.headers.get('content-type') || '';
+    const isJson = contentType.includes('application/json');
+
     if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: 'Erreur serveur' }));
-      throw new Error(err.detail || `Erreur ${resp.status}`);
+      let message = `Erreur ${resp.status}`;
+      if (isJson) {
+        const err = await resp.json().catch(() => null);
+        message = err?.detail || err?.message || message;
+      } else {
+        const text = await resp.text().catch(() => '');
+        if (text) message = text;
+      }
+      throw new Error(message);
     }
-    return resp.json();
+
+    if (resp.status === 204) return null;
+    if (isJson) return resp.json();
+    const text = await resp.text().catch(() => '');
+    return text || null;
   }
 
   get(path) { return this.request(path); }
@@ -74,11 +99,7 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    const headers = {};
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-    const resp = await fetch(`${API_BASE}/schedule-reviews/${reviewId}/attachments`, { method: 'POST', headers, body: formData });
-    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
-    return resp.json();
+    return this.request(`/schedule-reviews/${reviewId}/attachments`, { method: 'POST', body: formData });
   }
   getScheduleReviewAttachments(reviewId) { return this.get(`/schedule-reviews/${reviewId}/attachments`); }
   deleteScheduleReviewAttachment(reviewId, attId) { return this.del(`/schedule-reviews/${reviewId}/attachments/${attId}`); }
@@ -127,11 +148,7 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    const headers = {};
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-    const resp = await fetch(`${API_BASE}/invoices/${invoiceId}/attachments`, { method: 'POST', headers, body: formData });
-    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
-    return resp.json();
+    return this.request(`/invoices/${invoiceId}/attachments`, { method: 'POST', body: formData });
   }
   getAttachments(invoiceId) { return this.get(`/invoices/${invoiceId}/attachments`); }
   deleteAttachment(invoiceId, attId) { return this.del(`/invoices/${invoiceId}/attachments/${attId}`); }
@@ -147,11 +164,7 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    const headers = {};
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-    const resp = await fetch(`${API_BASE}/accommodations/${accommodationId}/attachments`, { method: 'POST', headers, body: formData });
-    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
-    return resp.json();
+    return this.request(`/accommodations/${accommodationId}/attachments`, { method: 'POST', body: formData });
   }
   getAccommodationAttachments(accommodationId) { return this.get(`/accommodations/${accommodationId}/attachments`); }
   deleteAccommodationAttachment(accommodationId, attId) { return this.del(`/accommodations/${accommodationId}/attachments/${attId}`); }

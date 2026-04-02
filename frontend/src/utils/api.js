@@ -94,6 +94,8 @@ class ApiClient {
   getInvoices(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/${qs ? '?' + qs : ''}`); }
   getInvoice(id) { return this.get(`/invoices/${id}`); }
   getInvoiceStats() { return this.get('/invoices/stats'); }
+  generateDraftInvoices(data) { return this.post('/invoices/generate', data); }
+  generateDraftInvoiceFromSchedules(data) { return this.post('/invoices/generate-from-schedules', data); }
   createInvoice(data) { return this.post('/invoices/', data); }
   updateInvoice(id, data) { return this.put(`/invoices/${id}`, data); }
   markPaid(id) { return this.put(`/invoices/${id}/paid`, {}); }
@@ -105,8 +107,19 @@ class ApiClient {
   validateInvoice(id) { return this.post(`/invoices/${id}/validate`, {}); }
   sendInvoice(id) { return this.post(`/invoices/${id}/send`, {}); }
   emailInvoice(id) { return this.post(`/invoices/${id}/email`, {}); }
+  getInvoiceAuditLog(id) { return this.get(`/invoices/${id}/audit-log`); }
   bulkDeleteInvoices(invoiceIds) { return this.post('/invoices/bulk-delete', invoiceIds); }
+  getInvoiceAnomalies() { return this.get('/invoices/anomalies/check'); }
+  getInvoiceReportByClient(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/reports/by-client${qs ? '?' + qs : ''}`); }
+  getInvoiceReportByEmployee(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/reports/by-employee${qs ? '?' + qs : ''}`); }
+  getInvoiceReportByPeriod(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/reports/by-period${qs ? '?' + qs : ''}`); }
+  getClientInvoiceReport(clientId) { return this.get(`/invoices/reports/client/${clientId}`); }
+  getInvoicePdfUrl(id, token = this.token) { return `${API_BASE}/invoices/${id}/pdf${token ? `?token=${token}` : ''}`; }
+
+  getCreditNotes() { return this.get('/invoices/credit-notes/all'); }
+  createCreditNote(data) { return this.post('/invoices/credit-notes', data); }
   bulkDeleteCreditNotes(creditNoteIds) { return this.post('/invoices/credit-notes/bulk-delete', creditNoteIds); }
+  getCreditNotePdfUrl(id, token = this.token) { return `${API_BASE}/invoices/credit-notes/${id}/pdf${token ? `?token=${token}` : ''}`; }
 
   async uploadAttachment(invoiceId, file, category = 'autre', description = '') {
     const formData = new FormData();

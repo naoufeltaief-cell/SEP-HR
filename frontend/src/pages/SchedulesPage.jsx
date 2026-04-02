@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import api from '../utils/api';
 import { fmtDay, fmtISO, fmtMoney, getWeekDates, getMonthDates, RATE_KM } from '../utils/helpers';
 import { Avatar, Modal } from '../components/UI';
-import { ChevronLeft, ChevronRight, Plus, Send, Calendar, Search, FileText, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Send, Calendar, Search, FileText, Trash2, Eye } from 'lucide-react';
 
 const MONTHS_FULL = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
 const TPS_RATE = 0.05;
@@ -111,46 +111,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const getClientWeekHours = (employeeId, clientId, fallbackClientId = null) => getClientWeekShifts(employeeId, clientId, fallbackClientId).reduce((sum, s) => sum + (Number(s.hours) || 0), 0);
 
   const openAdd = (employeeId = '', date = fmtISO(viewDates[0] || new Date())) => {
-    setModal({
-      type: 'add',
-      data: {
-        employeeId,
-        date,
-        start: '07:00',
-        end: '15:00',
-        pause: 0.5,
-        pauseMinutes: 30,
-        hours: 7.5,
-        location: '',
-        clientId: '',
-        km: 0,
-        deplacement: 0,
-        autreDep: 0,
-        notes: '',
-      },
-    });
+    setModal({ type: 'add', data: { employeeId, date, start: '07:00', end: '15:00', pause: 0.5, pauseMinutes: 30, hours: 7.5, location: '', clientId: '', km: 0, deplacement: 0, autreDep: 0, notes: '' } });
   };
 
   const openEdit = (shift) => {
-    setModal({
-      type: 'edit',
-      data: {
-        id: shift.id,
-        employeeId: shift.employee_id,
-        date: shift.date,
-        start: normalizeTimeForInput(shift.start),
-        end: normalizeTimeForInput(shift.end),
-        pause: Number(shift.pause || 0),
-        pauseMinutes: pauseHoursToMinutes(shift.pause || 0),
-        hours: Number(shift.hours || 0),
-        location: shift.location || '',
-        clientId: shift.client_id || '',
-        km: shift.km || 0,
-        deplacement: shift.deplacement || 0,
-        autreDep: shift.autre_dep || 0,
-        notes: shift.notes || '',
-      },
-    });
+    setModal({ type: 'edit', data: { id: shift.id, employeeId: shift.employee_id, date: shift.date, start: normalizeTimeForInput(shift.start), end: normalizeTimeForInput(shift.end), pause: Number(shift.pause || 0), pauseMinutes: pauseHoursToMinutes(shift.pause || 0), hours: Number(shift.hours || 0), location: shift.location || '', clientId: shift.client_id || '', km: shift.km || 0, deplacement: shift.deplacement || 0, autreDep: shift.autre_dep || 0, notes: shift.notes || '' } });
   };
 
   const updateModalField = (field, value) => {
@@ -167,30 +132,13 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const saveShift = async () => {
     try {
       const d = modal.data;
-      const payload = {
-        employee_id: Number(d.employeeId),
-        date: d.date,
-        start: normalizeTimeForInput(d.start),
-        end: normalizeTimeForInput(d.end),
-        pause: Number(d.pause || 0),
-        hours: Number(d.hours || 0),
-        location: d.location || '',
-        client_id: d.clientId ? Number(d.clientId) : null,
-        km: Number(d.km || 0),
-        deplacement: Number(d.deplacement || 0),
-        autre_dep: Number(d.autreDep || 0),
-        notes: d.notes || '',
-        billable_rate: 0,
-        status: 'published',
-      };
+      const payload = { employee_id: Number(d.employeeId), date: d.date, start: normalizeTimeForInput(d.start), end: normalizeTimeForInput(d.end), pause: Number(d.pause || 0), hours: Number(d.hours || 0), location: d.location || '', client_id: d.clientId ? Number(d.clientId) : null, km: Number(d.km || 0), deplacement: Number(d.deplacement || 0), autre_dep: Number(d.autreDep || 0), notes: d.notes || '', billable_rate: 0, status: 'published' };
       if (modal.type === 'add') await api.createSchedule(payload);
       else await api.updateSchedule(d.id, payload);
       toast?.(modal.type === 'add' ? 'Quart ajouté' : 'Quart modifié');
       setModal(null);
       await reload();
-    } catch (err) {
-      toast?.('Erreur: ' + err.message);
-    }
+    } catch (err) { toast?.('Erreur: ' + err.message); }
   };
 
   const deleteShift = async () => {
@@ -199,14 +147,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
       toast?.('Quart supprimé');
       setModal(null);
       await reload();
-    } catch (err) {
-      toast?.('Erreur: ' + err.message);
-    }
+    } catch (err) { toast?.('Erreur: ' + err.message); }
   };
 
   const toggleBillingPanel = async (empId, clientId, fallbackClientId = null) => {
     if (expandedEmp?.empId === empId && expandedEmp?.clientId === clientId) {
       setExpandedEmp(null);
+      setCurrentReview(null);
+      setCurrentInvoice(null);
+      setReviewAttachments([]);
       return;
     }
     const ws = getWeekStart(), we = getWeekEnd();
@@ -269,6 +218,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
       toast?.('Approbation révoquée');
       await reload();
       setCurrentReview(r => r ? { ...r, status: 'rejected' } : r);
+      setCurrentInvoice(null);
     } catch (err) {
       toast?.('Erreur: ' + err.message);
     }
@@ -307,9 +257,19 @@ export default function SchedulesPage({ toast, onNavigate }) {
     }
   };
 
+  const openReviewAttachment = async (attId) => {
+    if (!currentReview?.id || !attId) return;
+    const base = import.meta.env.VITE_API_URL || '/api';
+    window.open(`${base}/schedule-reviews/${currentReview.id}/attachments/${attId}`, '_blank');
+  };
+
   const generateInvoice = async (empId, clientId) => {
     const ws = getWeekStart(), we = getWeekEnd();
     if (!ws || !we || !empId || !clientId) return;
+    if (currentReview?.status !== 'approved') {
+      toast?.('Approuve les heures avant de générer la facture');
+      return;
+    }
     try {
       setBillingLoading(true);
       const result = await api.generateFromSchedules({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we });
@@ -412,7 +372,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                   })}
                 </td>
               </tr>
-              {viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} onSave={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeek(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoice(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} />}</div></td></tr>}
+              {viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} onSave={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeek(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoice(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onOpenAttachment={openReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} />}</div></td></tr>}
             </React.Fragment>;
           })}
         </tbody>
@@ -457,7 +417,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   </>;
 }
 
-function ApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewDraft, setReviewDraft, currentReview, currentInvoice, reviewAttachments, onSave, onApprove, onRevoke, onGenerateInvoice, onUpload, onDeleteAttachment, onGoInvoices, onRefreshParent }) {
+function ApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewDraft, setReviewDraft, currentReview, currentInvoice, reviewAttachments, onSave, onApprove, onRevoke, onGenerateInvoice, onUpload, onDeleteAttachment, onOpenAttachment, onGoInvoices, onRefreshParent }) {
   const [editableShifts, setEditableShifts] = useState([]);
   const [savingShiftId, setSavingShiftId] = useState(null);
   const [accommodations, setAccommodations] = useState([]);
@@ -507,7 +467,7 @@ function ApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewD
       } else {
         await api.updateSchedule(shift.id, { start: normalizeTimeForInput(shift.start), end: normalizeTimeForInput(shift.end), pause: Number(shift.pause || 0), hours: Number(shift.hours || 0), km: Number(shift.km || 0), deplacement: Number(shift.deplacement || 0), autre_dep: Number(shift.other_dep || 0), notes: shift.notes || '' });
       }
-      onRefreshParent?.();
+      await onRefreshParent?.();
     } finally {
       setSavingShiftId(null);
     }
@@ -521,7 +481,7 @@ function ApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewD
     try {
       setSavingShiftId(shift.id);
       await api.deleteSchedule(shift.id);
-      onRefreshParent?.();
+      await onRefreshParent?.();
     } finally {
       setSavingShiftId(null);
     }
@@ -557,12 +517,13 @@ function ApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewD
   const plannedHours = editableShifts.reduce((sum, s) => sum + (Number(s.hours) || 0), 0);
   const totalKm = editableShifts.reduce((sum, s) => sum + (Number(s.km) || 0), 0);
   const totalDep = editableShifts.reduce((sum, s) => sum + (Number(s.deplacement) || 0) + (Number(s.other_dep) || 0), 0);
+  const canGenerateInvoice = currentReview?.status === 'approved';
 
   return <>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}><div style={{ fontSize: 14, fontWeight: 700, color: 'var(--brand-d)' }}>📋 Validation hebdomadaire — {employee?.name || ''} / {client?.name || 'Client'}</div><div style={{ fontSize: 11, color: 'var(--text3)' }}>{currentReview?.status ? `Statut: ${currentReview.status}` : 'Aucune approbation enregistrée'}</div></div>
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Quarts</div><div style={{ fontSize: 16, fontWeight: 700, color: 'var(--brand)' }}>{editableShifts.length}</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Heures affichées</div><div style={{ fontSize: 16, fontWeight: 700 }}>{plannedHours.toFixed(2)}h</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Kilométrage</div><div style={{ fontSize: 16, fontWeight: 700 }}>{totalKm} km</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Frais</div><div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(totalDep + totalKm * RATE_KM)}</div></div></div>
     <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, alignItems: 'start', marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Édition rapide des quarts / frais</div><button className="btn btn-outline btn-sm" onClick={addQuickShiftRow}>+ Ajouter ligne</button></div><div style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px 88px', gap: 6, fontSize: 10, color: 'var(--text3)', marginBottom: 6 }}><div>Date</div><div>Début</div><div>Fin</div><div>Pause min</div><div>Heures</div><div>KM</div><div>Dépl.</div><div>Autre</div><div>Notes</div><div></div><div></div></div>{editableShifts.map(s => <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px 88px', gap: 6, marginBottom: 6, alignItems: 'center' }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={s.date} onChange={e => updateEditableShift(s.id, 'date', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.start)} onChange={e => updateEditableShift(s.id, 'start', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.end)} onChange={e => updateEditableShift(s.id, 'end', e.target.value)} /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.pause_minutes || 0} onChange={e => updateEditableShift(s.id, 'pause_minutes', e.target.value)} /><input className="input" type="number" step="0.25" style={{ padding: '6px 8px', fontSize: 12, background: '#f8f9fa' }} value={Number(s.hours || 0).toFixed(2)} readOnly /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.km || 0} onChange={e => updateEditableShift(s.id, 'km', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.deplacement || 0} onChange={e => updateEditableShift(s.id, 'deplacement', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.other_dep || 0} onChange={e => updateEditableShift(s.id, 'other_dep', e.target.value)} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} value={s.notes || ''} onChange={e => updateEditableShift(s.id, 'notes', e.target.value)} /><button className="btn btn-outline btn-sm" onClick={() => saveShiftLine(s)} disabled={savingShiftId === s.id}>{savingShiftId === s.id ? '...' : 'Sauver'}</button><button className="btn btn-outline btn-sm" onClick={() => removeShiftLine(s)} disabled={savingShiftId === s.id}><Trash2 size={12} /></button></div>)}</div><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Résumé estimatif</div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Services</span><strong>{fmtMoney(totals.service)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>KM</span><strong>{fmtMoney(totals.km)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Déplacement</span><strong>{fmtMoney(totals.dep)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Autres frais</span><strong>{fmtMoney(totals.autres)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Hébergement</span><strong>{fmtMoney(totals.accom)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '6px 0', borderTop: '1px solid #dee2e6', marginTop: 6 }}><span>Sous-total</span><strong>{fmtMoney(totals.subtotal)}</strong></div>{!client?.tax_exempt && <><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>TPS</span><strong>{fmtMoney(totals.tps)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>TVQ</span><strong>{fmtMoney(totals.tvq)}</strong></div></>}{client?.tax_exempt && <div style={{ fontSize: 11, color: '#28A745', paddingTop: 6 }}>Client exempté de taxes</div>}<div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, padding: '10px 12px', marginTop: 8, background: '#2A7B88', color: '#fff', borderRadius: 8 }}><span>Total estimé</span><strong>{fmtMoney(totals.total)}</strong></div></div></div>
-    <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Hébergement lié à la semaine</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargement…' : `${accommodationEstimates.length} ligne(s)`}</div></div>{accommodationEstimates.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hébergement trouvé pour cette semaine.</div> : <div>{accommodationEstimates.map(a => <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .8fr', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{a.start_date} → {a.end_date}</span><span>{a.estimate.days} jour(s)</span><span>{fmtMoney(a.estimate.costPerDay)}/jour</span><strong>{fmtMoney(a.estimate.amount)}</strong></div>)}</div>}<div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}><div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Ajout rapide hébergement</div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1.2fr auto', gap: 6 }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.start_date} onChange={e => setAccomForm(f => ({ ...f, start_date: e.target.value }))} /><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.end_date} onChange={e => setAccomForm(f => ({ ...f, end_date: e.target.value }))} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Coût total" value={accomForm.total_cost} onChange={e => setAccomForm(f => ({ ...f, total_cost: e.target.value }))} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Notes" value={accomForm.notes} onChange={e => setAccomForm(f => ({ ...f, notes: e.target.value }))} /><button className="btn btn-outline btn-sm" onClick={saveQuickAccommodation} disabled={savingAccommodation}>{savingAccommodation ? '...' : 'Ajouter'}</button></div></div></div><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Approbation / justificatifs</div><div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 12 }}><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Heures approuvées</label><input className="input" type="number" step="0.25" value={reviewDraft.approvedHours} onChange={e => setReviewDraft(d => ({ ...d, approvedHours: e.target.value }))} /></div><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Notes</label><input className="input" value={reviewDraft.notes} onChange={e => setReviewDraft(d => ({ ...d, notes: e.target.value }))} placeholder="Notes de vérification" /></div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}><button className="btn btn-outline btn-sm" onClick={onSave}>Enregistrer</button><button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={onApprove} disabled={!editableShifts.length}>Approuver les heures</button><button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>Révoquer</button><button className="btn btn-primary btn-sm" onClick={onGenerateInvoice}>Générer la facture approuvée</button><label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }}>Ajouter justificatif<input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={onUpload} /></label>{currentInvoice && <button className="btn btn-outline btn-sm" onClick={onGoInvoices}>Voir dans Facturation</button>}</div>{currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}<div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Justificatifs ({reviewAttachments.length})</div>{reviewAttachments.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)' }}>Aucune pièce jointe</div> : reviewAttachments.map(att => <div key={att.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{att.filename}</span><button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => onDeleteAttachment(att.id)}><Trash2 size={12} /></button></div>)}</div></div></>;
+    <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Hébergement lié à la semaine</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargement…' : `${accommodationEstimates.length} ligne(s)`}</div></div>{accommodationEstimates.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hébergement trouvé pour cette semaine.</div> : <div>{accommodationEstimates.map(a => <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .8fr', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{a.start_date} → {a.end_date}</span><span>{a.estimate.days} jour(s)</span><span>{fmtMoney(a.estimate.costPerDay)}/jour</span><strong>{fmtMoney(a.estimate.amount)}</strong></div>)}</div>}<div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}><div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Ajout rapide hébergement</div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1.2fr auto', gap: 6 }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.start_date} onChange={e => setAccomForm(f => ({ ...f, start_date: e.target.value }))} /><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.end_date} onChange={e => setAccomForm(f => ({ ...f, end_date: e.target.value }))} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Coût total" value={accomForm.total_cost} onChange={e => setAccomForm(f => ({ ...f, total_cost: e.target.value }))} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Notes" value={accomForm.notes} onChange={e => setAccomForm(f => ({ ...f, notes: e.target.value }))} /><button className="btn btn-outline btn-sm" onClick={saveQuickAccommodation} disabled={savingAccommodation}>{savingAccommodation ? '...' : 'Ajouter'}</button></div></div></div><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Approbation / justificatifs</div><div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 12 }}><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Heures approuvées</label><input className="input" type="number" step="0.25" value={reviewDraft.approvedHours} onChange={e => setReviewDraft(d => ({ ...d, approvedHours: e.target.value }))} /></div><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Notes</label><input className="input" value={reviewDraft.notes} onChange={e => setReviewDraft(d => ({ ...d, notes: e.target.value }))} placeholder="Notes de vérification" /></div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}><button className="btn btn-outline btn-sm" onClick={onSave}>Enregistrer</button><button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={onApprove} disabled={!editableShifts.length}>Approuver les heures</button><button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>Révoquer</button><button className="btn btn-primary btn-sm" onClick={onGenerateInvoice} disabled={!canGenerateInvoice}>Générer la facture approuvée</button><label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }}>Ajouter justificatif<input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={onUpload} /></label>{currentInvoice && <button className="btn btn-outline btn-sm" onClick={onGoInvoices}>Voir dans Facturation</button>}</div>{!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de générer la facture approuvée.</div>}{currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}<div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Justificatifs ({reviewAttachments.length})</div>{reviewAttachments.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)' }}>Aucune pièce jointe</div> : reviewAttachments.map(att => <div key={att.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{att.filename}</span><div style={{ display: 'flex', gap: 6 }}><button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => onOpenAttachment(att.id)}><Eye size={12} /></button><button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => onDeleteAttachment(att.id)}><Trash2 size={12} /></button></div></div>)}</div></div></>;
 }
 
 function ShiftPill({ shift, onClick }) {

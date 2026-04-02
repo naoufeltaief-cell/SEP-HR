@@ -39,6 +39,32 @@ function getRecurrenceDates(startDate, mode, endDate, customDays = []) {
   }
   return dates.length ? dates : [startDate];
 }
+function normalizeTimeForInput(value) {
+  if (!value) return '';
+  const raw = String(value).trim();
+  const m = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m) return '';
+  const hh = String(Number(m[1])).padStart(2, '0');
+  const mm = m[2];
+  return `${hh}:${mm}`;
+}
+function pauseHoursToMinutes(value) {
+  return Math.round((Number(value || 0)) * 60);
+}
+function pauseMinutesToHours(value) {
+  return Math.round((Number(value || 0) / 60) * 100) / 100;
+}
+function computeAccommodationEstimate(accommodation, shifts) {
+  const workedDates = [...new Set((shifts || []).map(s => s.date).filter(Boolean))].sort();
+  const overlapDates = workedDates.filter(d => d >= accommodation.start_date && d <= accommodation.end_date);
+  const days = overlapDates.length;
+  const totalCost = Number(accommodation.total_cost || 0);
+  const fallbackDays = Number(accommodation.days_worked || 0);
+  const effectiveDays = days || fallbackDays || 0;
+  const costPerDay = effectiveDays > 0 ? totalCost / effectiveDays : Number(accommodation.cost_per_day || 0);
+  const amount = effectiveDays > 0 && totalCost > 0 ? totalCost : costPerDay * effectiveDays;
+  return { days: effectiveDays, costPerDay, amount };
+}
 
 export default function SchedulesPage({ toast, onNavigate }) {
   const [schedules, setSchedules] = useState([]);
@@ -464,7 +490,13 @@ function ApprovalPanel({ employee, client, shifts, reviewDraft, setReviewDraft, 
   const [savingAccommodation, setSavingAccommodation] = useState(false);
 
   useEffect(() => {
-    setEditableShifts((shifts || []).map(s => ({ ...s, other_dep: s.autre_dep ?? s.other_dep ?? 0 })));
+    setEditableShifts((shifts || []).map(s => ({
+      ...s,
+      start: normalizeTimeForInput(s.start),
+      end: normalizeTimeForInput(s.end),
+      other_dep: s.autre_dep ?? s.other_dep ?? 0,
+      pause_minutes: pauseHoursToMinutes(s.pause),
+    })));
   }, [shifts]);
 
   const loadAccommodations = useCallback(async () => {
@@ -492,7 +524,10 @@ function ApprovalPanel({ employee, client, shifts, reviewDraft, setReviewDraft, 
     setEditableShifts(prev => prev.map(s => {
       if (s.id !== id) return s;
       const next = { ...s, [field]: value };
-      if (field === 'start' || field === 'end' || field === 'pause') next.hours = calcHours(next.start, next.end, Number(next.pause || 0));
+      if (field === 'start' || field === 'end' || field === 'pause_minutes') {
+        next.pause = pauseMinutesToHours(next.pause_minutes);
+        next.hours = calcHours(next.start, next.end, Number(next.pause || 0));
+      }
       return next;
     }));
   };
@@ -501,8 +536,8 @@ function ApprovalPanel({ employee, client, shifts, reviewDraft, setReviewDraft, 
     try {
       setSavingShiftId(shift.id);
       await api.updateSchedule(shift.id, {
-        start: shift.start,
-        end: shift.end,
+        start: normalizeTimeForInput(shift.start),
+        end: normalizeTimeForInput(shift.end),
         pause: Number(shift.pause || 0),
         hours: Number(shift.hours || 0),
         km: Number(shift.km || 0),
@@ -536,19 +571,21 @@ function ApprovalPanel({ employee, client, shifts, reviewDraft, setReviewDraft, 
     }
   };
 
+  const accommodationEstimates = useMemo(() => (accommodations || []).map(a => ({ ...a, estimate: computeAccommodationEstimate(a, editableShifts) })), [accommodations, editableShifts]);
+
   const totals = useMemo(() => {
     const rate = Number(employee?.rate || 0);
     const service = editableShifts.reduce((sum, s) => sum + Number(s.hours || 0) * rate, 0);
     const km = editableShifts.reduce((sum, s) => sum + Number(s.km || 0) * RATE_KM, 0);
     const dep = editableShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) * rate, 0);
     const autres = editableShifts.reduce((sum, s) => sum + Number(s.other_dep || 0), 0);
-    const accom = accommodations.reduce((sum, a) => sum + Number(a.total_cost || 0), 0);
+    const accom = accommodationEstimates.reduce((sum, a) => sum + Number(a.estimate.amount || 0), 0);
     const subtotal = service + km + dep + autres + accom;
     const includeTax = !client?.tax_exempt;
     const tps = includeTax ? subtotal * TPS_RATE : 0;
     const tvq = includeTax ? subtotal * TVQ_RATE : 0;
     return { service, km, dep, autres, accom, subtotal, tps, tvq, total: subtotal + tps + tvq };
-  }, [editableShifts, accommodations, employee, client]);
+  }, [editableShifts, accommodationEstimates, employee, client]);
 
   const plannedHours = editableShifts.reduce((sum, s) => sum + (Number(s.hours) || 0), 0);
   const totalKm = editableShifts.reduce((sum, s) => sum + (Number(s.km) || 0), 0);
@@ -561,8 +598,8 @@ function ApprovalPanel({ employee, client, shifts, reviewDraft, setReviewDraft, 
     <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, alignItems: 'start', marginBottom: 12 }}>
       <div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}>
         <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Édition rapide des quarts / frais</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '96px 82px 82px 82px 82px 72px 90px 90px 90px 88px', gap: 6, fontSize: 10, color: 'var(--text3)', marginBottom: 6 }}><div>Date</div><div>Début</div><div>Fin</div><div>Pause</div><div>Heures</div><div>KM</div><div>Dépl.</div><div>Autre</div><div>Notes</div><div></div></div>
-        {editableShifts.map(s => <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '96px 82px 82px 82px 82px 72px 90px 90px 90px 88px', gap: 6, marginBottom: 6, alignItems: 'center' }}><div style={{ fontSize: 11 }}>{s.date}</div><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={s.start || ''} onChange={e => updateEditableShift(s.id, 'start', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={s.end || ''} onChange={e => updateEditableShift(s.id, 'end', e.target.value)} /><input className="input" type="number" step="0.25" style={{ padding: '6px 8px', fontSize: 12 }} value={s.pause || 0} onChange={e => updateEditableShift(s.id, 'pause', e.target.value)} /><input className="input" type="number" step="0.25" style={{ padding: '6px 8px', fontSize: 12, background: '#f8f9fa' }} value={Number(s.hours || 0).toFixed(2)} readOnly /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.km || 0} onChange={e => updateEditableShift(s.id, 'km', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.deplacement || 0} onChange={e => updateEditableShift(s.id, 'deplacement', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.other_dep || 0} onChange={e => updateEditableShift(s.id, 'other_dep', e.target.value)} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} value={s.notes || ''} onChange={e => updateEditableShift(s.id, 'notes', e.target.value)} /><button className="btn btn-outline btn-sm" onClick={() => saveShiftLine(s)} disabled={savingShiftId === s.id}>{savingShiftId === s.id ? '...' : 'Sauver'}</button></div>)}
+        <div style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px', gap: 6, fontSize: 10, color: 'var(--text3)', marginBottom: 6 }}><div>Date</div><div>Début</div><div>Fin</div><div>Pause min</div><div>Heures</div><div>KM</div><div>Dépl.</div><div>Autre</div><div>Notes</div><div></div></div>
+        {editableShifts.map(s => <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px', gap: 6, marginBottom: 6, alignItems: 'center' }}><div style={{ fontSize: 11 }}>{s.date}</div><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.start)} onChange={e => updateEditableShift(s.id, 'start', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.end)} onChange={e => updateEditableShift(s.id, 'end', e.target.value)} /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.pause_minutes || 0} onChange={e => updateEditableShift(s.id, 'pause_minutes', e.target.value)} /><input className="input" type="number" step="0.25" style={{ padding: '6px 8px', fontSize: 12, background: '#f8f9fa' }} value={Number(s.hours || 0).toFixed(2)} readOnly /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.km || 0} onChange={e => updateEditableShift(s.id, 'km', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.deplacement || 0} onChange={e => updateEditableShift(s.id, 'deplacement', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.other_dep || 0} onChange={e => updateEditableShift(s.id, 'other_dep', e.target.value)} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} value={s.notes || ''} onChange={e => updateEditableShift(s.id, 'notes', e.target.value)} /><button className="btn btn-outline btn-sm" onClick={() => saveShiftLine(s)} disabled={savingShiftId === s.id}>{savingShiftId === s.id ? '...' : 'Sauver'}</button></div>)}
       </div>
       <div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}>
         <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Résumé estimatif</div>
@@ -580,8 +617,8 @@ function ApprovalPanel({ employee, client, shifts, reviewDraft, setReviewDraft, 
 
     <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}>
       <div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Hébergement lié à la semaine</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargement…' : `${accommodations.length} ligne(s)`}</div></div>
-        {accommodations.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hébergement trouvé pour cette semaine.</div> : accommodations.map(a => <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{a.start_date} → {a.end_date}</span><strong>{fmtMoney(a.total_cost || 0)}</strong></div>)}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Hébergement lié à la semaine</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargement…' : `${accommodationEstimates.length} ligne(s)`}</div></div>
+        {accommodationEstimates.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hébergement trouvé pour cette semaine.</div> : <div>{accommodationEstimates.map(a => <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .8fr', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{a.start_date} → {a.end_date}</span><span>{a.estimate.days} jour(s)</span><span>{fmtMoney(a.estimate.costPerDay)}/j</span><strong>{fmtMoney(a.estimate.amount)}</strong></div>)}</div>}
         <div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}>
           <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Ajout rapide hébergement</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1.2fr auto', gap: 6 }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.start_date} onChange={e => setAccomForm(f => ({ ...f, start_date: e.target.value }))} /><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.end_date} onChange={e => setAccomForm(f => ({ ...f, end_date: e.target.value }))} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Coût total" value={accomForm.total_cost} onChange={e => setAccomForm(f => ({ ...f, total_cost: e.target.value }))} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Notes" value={accomForm.notes} onChange={e => setAccomForm(f => ({ ...f, notes: e.target.value }))} /><button className="btn btn-outline btn-sm" onClick={saveQuickAccommodation} disabled={savingAccommodation}>{savingAccommodation ? '...' : 'Ajouter'}</button></div>
@@ -602,7 +639,7 @@ function ShiftPill({ shift, onClick }) {
   const bg = shift.status === 'draft' ? 'var(--surface2)' : shift.status === 'published' ? 'var(--brand-l)' : 'var(--green-l)';
   const hasDep = shift.km || shift.deplacement || shift.autre_dep;
   const hasMandat = shift.mandat_start || shift.mandat_end;
-  return <div className="shift-pill" style={{ background: bg }} onClick={onClick} title={`${shift.location}\n${shift.start}—${shift.end} (${shift.hours}h net)`}><div style={{ fontWeight: 600 }}>{shift.start}–{shift.end}</div><div style={{ color: 'var(--text3)', fontSize: 9 }}>{shift.hours}h{shift.pause > 0 && <span style={{ color: 'var(--amber)' }}> (−{shift.pause}h)</span>}</div><div style={{ color: 'var(--text3)', fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{shift.location?.split(' ').slice(0, 3).join(' ')}</div>{shift.notes && <div style={{ fontSize: 8, color: 'var(--amber)', marginTop: 1 }}>✏ note</div>}{hasDep > 0 && <div style={{ fontSize: 8, color: 'var(--purple)', marginTop: 1 }}>$ dépense</div>}{hasMandat && <div style={{ fontSize: 8, color: 'var(--teal)', marginTop: 1 }}>📅 mandat</div>}</div>;
+  return <div className="shift-pill" style={{ background: bg }} onClick={onClick} title={`${shift.location}\n${shift.start}—${shift.end} (${shift.hours}h net)`}><div style={{ fontWeight: 600, fontSize: 10.5, whiteSpace: 'nowrap' }}>{normalizeTimeForInput(shift.start) || shift.start}–{normalizeTimeForInput(shift.end) || shift.end}</div><div style={{ color: 'var(--text3)', fontSize: 9 }}>{shift.hours}h{shift.pause > 0 && <span style={{ color: 'var(--amber)' }}> (−{pauseHoursToMinutes(shift.pause)} min)</span>}</div><div style={{ color: 'var(--text3)', fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 90 }}>{shift.location?.split(' ').slice(0, 3).join(' ')}</div>{shift.notes && <div style={{ fontSize: 8, color: 'var(--amber)', marginTop: 1 }}>✏ note</div>}{hasDep > 0 && <div style={{ fontSize: 8, color: 'var(--purple)', marginTop: 1 }}>$ dépense</div>}{hasMandat && <div style={{ fontSize: 8, color: 'var(--teal)', marginTop: 1 }}>📅 mandat</div>}</div>;
 }
 
 function YearView({ schedules, employees, selectedDate }) {

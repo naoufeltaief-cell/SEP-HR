@@ -93,6 +93,7 @@ class ApiClient {
 
   getInvoices(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/${qs ? '?' + qs : ''}`); }
   getInvoice(id) { return this.get(`/invoices/${id}`); }
+  getInvoiceStats() { return this.get('/invoices/stats'); }
   createInvoice(data) { return this.post('/invoices/', data); }
   updateInvoice(id, data) { return this.put(`/invoices/${id}`, data); }
   markPaid(id) { return this.put(`/invoices/${id}/paid`, {}); }
@@ -100,6 +101,12 @@ class ApiClient {
   duplicateInvoice(id) { return this.post(`/invoices/${id}/duplicate`, {}); }
   markUnpaid(id) { return this.put(`/invoices/${id}/unpaid`, {}); }
   cancelInvoice(id) { return this.put(`/invoices/${id}/cancel`, {}); }
+  changeInvoiceStatus(id, data) { return this.post(`/invoices/${id}/status`, data); }
+  validateInvoice(id) { return this.post(`/invoices/${id}/validate`, {}); }
+  sendInvoice(id) { return this.post(`/invoices/${id}/send`, {}); }
+  emailInvoice(id) { return this.post(`/invoices/${id}/email`, {}); }
+  bulkDeleteInvoices(invoiceIds) { return this.post('/invoices/bulk-delete', invoiceIds); }
+  bulkDeleteCreditNotes(creditNoteIds) { return this.post('/invoices/credit-notes/bulk-delete', creditNoteIds); }
 
   async uploadAttachment(invoiceId, file, category = 'autre', description = '') {
     const formData = new FormData();

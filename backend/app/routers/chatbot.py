@@ -24,7 +24,6 @@ router = APIRouter()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1")
-
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 IMAP_USER = os.getenv("IMAP_USER", os.getenv("SMTP_USER", ""))
 IMAP_PASS = os.getenv("IMAP_PASS", os.getenv("SMTP_PASS", ""))
@@ -66,17 +65,16 @@ COURRIELS:
 """
 
 RAW_TOOLS = [
-    {"name": "search_employees", "description": "Rechercher des employés par nom, poste ou email. Retourne les infos complètes incluant taux horaire, client assigné, heures travaillées.", "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "Nom, poste ou email à chercher"}}, "required": ["query"]}},
-    {"name": "get_employee_schedule", "description": "Obtenir l'horaire d'un employé pour une période donnée.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "start_date": {"type": "string", "description": "YYYY-MM-DD"}, "end_date": {"type": "string", "description": "YYYY-MM-DD"}}, "required": ["employee_id"]}},
-    {"name": "create_schedule", "description": "Créer un ou plusieurs quarts de travail pour un employé. Utiliser pour planifier des horaires.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "date": {"type": "string", "description": "YYYY-MM-DD"}, "start": {"type": "string", "description": "HH:MM"}, "end": {"type": "string", "description": "HH:MM"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}}, "required": ["employee_id", "date", "start", "end", "hours", "location"]}},
-    {"name": "read_recent_emails", "description": "Lire les courriels récents de la boîte de réception. Peut filtrer par expéditeur ou sujet. Utile pour trouver les FDT envoyées par les employés ou les besoins des clients.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string", "description": "Terme de recherche (expéditeur, sujet, contenu)"}, "folder": {"type": "string", "default": "INBOX"}}}},
-    {"name": "send_email", "description": "Envoyer un courriel à un employé, un client ou un candidat. Toujours confirmer avec l'admin avant d'envoyer.", "input_schema": {"type": "object", "properties": {"to": {"type": "string", "description": "Adresse email du destinataire"}, "subject": {"type": "string"}, "body_html": {"type": "string", "description": "Contenu HTML du courriel"}}, "required": ["to", "subject", "body_html"]}},
-    {"name": "get_candidates", "description": "Obtenir la liste des candidats disponibles pour soumission, avec filtres optionnels par titre d'emploi ou région.", "input_schema": {"type": "object", "properties": {"title_filter": {"type": "string", "description": "Filtrer par titre d'emploi (ex: Infirmier)"}, "region_filter": {"type": "string", "description": "Filtrer par région"}}}},
-    {"name": "get_invoices_summary", "description": "Obtenir un résumé de la facturation: factures impayées, en retard, totaux par client.", "input_schema": {"type": "object", "properties": {"status_filter": {"type": "string", "description": "Filtrer par statut: draft, sent, paid, overdue"}, "client_id": {"type": "integer", "description": "Filtrer par client"}}}},
+    {"name": "search_employees", "description": "Rechercher des employés par nom, poste ou email.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"name": "get_employee_schedule", "description": "Obtenir l'horaire d'un employé pour une période donnée.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}, "required": ["employee_id"]}},
+    {"name": "create_schedule", "description": "Créer un quart de travail pour un employé.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}}, "required": ["employee_id", "date", "start", "end", "hours", "location"]}},
+    {"name": "read_recent_emails", "description": "Lire les courriels récents de la boîte de réception.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "folder": {"type": "string", "default": "INBOX"}}}},
+    {"name": "send_email", "description": "Envoyer un courriel.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}}, "required": ["to", "subject", "body_html"]}},
+    {"name": "get_candidates", "description": "Obtenir la liste des candidats disponibles.", "input_schema": {"type": "object", "properties": {"title_filter": {"type": "string"}, "region_filter": {"type": "string"}}}},
+    {"name": "get_invoices_summary", "description": "Obtenir un résumé de la facturation.", "input_schema": {"type": "object", "properties": {"status_filter": {"type": "string"}, "client_id": {"type": "integer"}}}},
     {"name": "get_accommodations", "description": "Obtenir la liste des hébergements actifs pour les employés.", "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_business_info", "description": "Obtenir les informations business: taux horaires, calendrier de paie, règles de facturation, tarifs de déplacement, etc.", "input_schema": {"type": "object", "properties": {"topic": {"type": "string", "description": "Sujet: taux, paie, deplacement, hebergement, garde, taxes, fdt"}}}},
+    {"name": "get_business_info", "description": "Obtenir les informations business.", "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}}},
 ]
-
 TOOLS = [{"type": "function", "name": t["name"], "description": t["description"], "parameters": t["input_schema"], "strict": False} for t in RAW_TOOLS]
 
 async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
@@ -89,7 +87,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
             if not matches:
                 return f"Aucun employé trouvé pour '{query}'. {len(employees)} employés actifs au total."
             return json.dumps([{"id": e.id, "name": e.name, "position": e.position, "rate": e.rate, "email": e.email, "phone": e.phone, "client_id": e.client_id} for e in matches], ensure_ascii=False)
-        elif name == "get_employee_schedule":
+        if name == "get_employee_schedule":
             eid = input_data["employee_id"]
             q = select(Schedule).where(Schedule.employee_id == eid)
             if input_data.get("start_date"):
@@ -101,20 +99,20 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
             shifts = result.scalars().all()
             total_hours = sum(s.hours for s in shifts)
             return json.dumps({"employee_id": eid, "shifts": [{"date": s.date.isoformat(), "start": s.start, "end": s.end, "hours": s.hours, "location": s.location, "rate": s.billable_rate} for s in shifts], "total_hours": total_hours, "total_shifts": len(shifts)}, ensure_ascii=False)
-        elif name == "create_schedule":
+        if name == "create_schedule":
             from ..models.models import new_id
             emp = await db.execute(select(Employee).where(Employee.id == input_data["employee_id"]))
             emp = emp.scalar_one_or_none()
             if not emp:
                 return "Employé introuvable"
-            parts = input_data["date"].split("-")
-            sched = Schedule(id=new_id(), employee_id=input_data["employee_id"], date=date(int(parts[0]), int(parts[1]), int(parts[2])), start=input_data["start"], end=input_data["end"], hours=input_data["hours"], location=input_data["location"], billable_rate=input_data.get("billable_rate", emp.rate or 0), status="published")
+            y,m,d = input_data["date"].split("-")
+            sched = Schedule(id=new_id(), employee_id=input_data["employee_id"], date=date(int(y), int(m), int(d)), start=input_data["start"], end=input_data["end"], hours=input_data["hours"], location=input_data["location"], billable_rate=input_data.get("billable_rate", emp.rate or 0), status="published")
             db.add(sched)
             await db.commit()
             return f"Quart créé: {emp.name} le {input_data['date']} de {input_data['start']} à {input_data['end']} ({input_data['hours']}h) à {input_data['location']}"
-        elif name == "read_recent_emails":
+        if name == "read_recent_emails":
             if not IMAP_USER or not IMAP_PASS:
-                return "Configuration IMAP manquante. Configurer IMAP_USER et IMAP_PASS (ou SMTP_USER/SMTP_PASS) dans les variables d'environnement Render."
+                return "Configuration IMAP manquante."
             try:
                 mail = imaplib.IMAP4_SSL(IMAP_HOST)
                 mail.login(IMAP_USER, IMAP_PASS)
@@ -122,7 +120,8 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
                 mail.select(folder)
                 search_criteria = "ALL"
                 if input_data.get("search"):
-                    search_criteria = f'(OR (FROM "{input_data["search"]}") (SUBJECT "{input_data["search"]}"))'
+                    s = input_data["search"]
+                    search_criteria = f'(OR (FROM "{s}") (SUBJECT "{s}"))'
                 _, msg_nums = mail.search(None, search_criteria)
                 nums = msg_nums[0].split()
                 max_r = input_data.get("max_results", 10)
@@ -150,16 +149,14 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
                 return json.dumps(emails, ensure_ascii=False)
             except Exception as e:
                 return f"Erreur lecture emails: {str(e)}"
-        elif name == "send_email":
+        if name == "send_email":
             await _send_email(input_data["to"], input_data["subject"], input_data["body_html"])
             return f"Courriel envoyé à {input_data['to']}: {input_data['subject']}"
-        elif name == "get_candidates":
-            return json.dumps({"note": "La liste des candidats est disponible dans l'onglet Candidats de la plateforme. Utilisez les filtres par titre et région pour trouver les candidats disponibles.", "suggestion": "Consultez l'onglet Candidats pour voir les 80+ candidats avec leurs disponibilités, régions et coordonnées."}, ensure_ascii=False)
-        elif name == "get_invoices_summary":
-            result = await db.execute(select(Schedule))
-            _ = result  # keep db warm / placeholder
+        if name == "get_candidates":
+            return json.dumps({"note": "La liste des candidats est disponible dans l'onglet Candidats.", "suggestion": "Consultez l'onglet Candidats pour voir les candidats avec leurs disponibilités."}, ensure_ascii=False)
+        if name == "get_invoices_summary":
             return json.dumps({"note": "Utilisez l'onglet Facturation pour le détail. L'agent peut résumer les statuts sur demande."}, ensure_ascii=False)
-        elif name == "get_accommodations":
+        if name == "get_accommodations":
             result = await db.execute(select(Accommodation))
             accoms = result.scalars().all()
             data = []
@@ -168,65 +165,21 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
                 emp = emp.scalar_one_or_none()
                 data.append({"employee": emp.name if emp else "?", "start": a.start_date.isoformat() if a.start_date else "", "end": a.end_date.isoformat() if a.end_date else "", "total_cost": a.total_cost, "days": a.days_worked, "cost_per_day": a.cost_per_day})
             return json.dumps(data, ensure_ascii=False)
-        elif name == "get_business_info":
+        if name == "get_business_info":
             return BUSINESS_KNOWLEDGE
         return f"Outil '{name}' non reconnu"
     except Exception as e:
         return f"Erreur outil {name}: {str(e)}"
 
-AGENT_FACTURATION_PROMPT = """Tu es l'Agent de Facturation de Soins Expert Plus, une agence de placement en santé au Québec.
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Utilise les outils disponibles pour la facturation, les FDT, la conciliation et les factures. Réponds toujours en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Utilise les outils disponibles pour les besoins clients, les candidats, les horaires et les courriels. Réponds toujours en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Sois concis, professionnel et proactif. Réponds en français.\n\n" + BUSINESS_KNOWLEDGE
 
-TON RÔLE:
-- Surveiller les courriels entrants pour détecter les feuilles de temps (FDT) envoyées par les employés
-- Matcher les courriels avec les employés dans le système (par adresse email)
-- Concilier les FDT reçues avec les horaires planifiés dans Evolia
-- Générer des brouillons de factures par période (Dimanche au Samedi)
-- Calculer automatiquement les heures, garde, rappel, hébergement, déplacement, kilométrage
-- Alerter sur les écarts entre FDT et horaires planifiés
-- Répondre aux questions sur la facturation, les taux, le calendrier de paie
-
-RÈGLES DE FACTURATION:
-""" + BUSINESS_KNOWLEDGE + """
-
-Utilise les outils disponibles pour accéder aux données en temps réel. Sois proactif et précis.
-Réponds toujours en français québécois professionnel."""
-
-AGENT_RECRUTEMENT_PROMPT = """Tu es l'Agent de Recrutement de Soins Expert Plus, une agence de placement en santé au Québec.
-
-TON RÔLE:
-- Lire et résumer les besoins de clients reçus par courriel
-- Suggérer des candidats disponibles en fonction de leur titre d'emploi, disponibilité et région
-- Créer des horaires pour les candidats sélectionnés
-- Envoyer des courriels aux candidats pour leur proposer des assignations
-- Répondre aux questions répétitives (calendrier de paie, taux horaires, tarifs de déplacement)
-- Préparer des soumissions pour les clients
-
-CONNAISSANCES:
-""" + BUSINESS_KNOWLEDGE + """
-
-Toujours demander confirmation avant d'envoyer un courriel ou de créer un horaire.
-Réponds en français québécois professionnel."""
-
-GENERAL_PROMPT = """Tu es l'assistant intelligent de Soins Expert Plus, une agence de placement en santé au Québec (9437-7827 Québec Inc. / Gestion Taief Inc.).
-
-Tu peux:
-1. Répondre aux questions sur la facturation, les taux, la paie
-2. Chercher des employés et voir leurs horaires
-3. Lire les courriels récents
-4. Envoyer des courriels
-5. Créer des quarts de travail
-6. Voir le résumé de facturation
-7. Suggérer des candidats
-
-""" + BUSINESS_KNOWLEDGE + """
-
-Sois concis, professionnel et proactif. Réponds en français."""
-
-def _detect_prompt(message: str) -> tuple[str, str]:
-    message_lower = message.lower()
-    if any(kw in message_lower for kw in ["factur", "fdt", "feuille de temps", "paie", "paiement", "impayé", "souffrance", "concili"]):
+def _detect_prompt(message: str):
+    m = message.lower()
+    if any(kw in m for kw in ["factur", "fdt", "feuille de temps", "paie", "paiement", "impayé", "souffrance", "concili"]):
         return AGENT_FACTURATION_PROMPT, "facturation"
-    if any(kw in message_lower for kw in ["candidat", "recrutement", "besoin", "soumission", "disponib", "assignation", "placement"]):
+    if any(kw in m for kw in ["candidat", "recrutement", "besoin", "soumission", "disponib", "assignation", "placement"]):
         return AGENT_RECRUTEMENT_PROMPT, "recrutement"
     return GENERAL_PROMPT, "general"
 
@@ -235,15 +188,11 @@ def _history_to_input(history, user_message):
     for m in history or []:
         role = m.get("role", "user")
         content = m.get("content", "")
-        if isinstance(content, list):
-            text = json.dumps(content, ensure_ascii=False)
-        else:
-            text = str(content)
-        items.append({"role": role, "content": text})
+        items.append({"role": role, "content": str(content)})
     items.append({"role": "user", "content": user_message})
     return items
 
-def _extract_text(data: dict) -> str:
+def _extract_text(data):
     if data.get("output_text"):
         return data["output_text"]
     texts = []
@@ -271,8 +220,8 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                 tool_calls = [item for item in data.get("output", []) if item.get("type") == "function_call"]
                 if not tool_calls:
                     break
+                inputs.extend(data.get("output", []))
                 for call in tool_calls:
-                    args = {}
                     raw_args = call.get("arguments") or "{}"
                     try:
                         args = json.loads(raw_args)
@@ -280,11 +229,8 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                         args = {}
                     result = await execute_tool(call.get("name", ""), args, db)
                     inputs.append({"type": "function_call_output", "call_id": call.get("call_id"), "output": result})
-            reply = _extract_text(data or {})
-            usage = data.get("usage", {}) if data else {}
-            return {"reply": reply or "Je n'ai pas pu générer de réponse.", "usage": usage, "agent": agent_name, "model": OPENAI_MODEL}
+            return {"reply": _extract_text(data or {}) or "Je n'ai pas pu générer de réponse.", "usage": (data or {}).get("usage", {}), "agent": agent_name, "model": OPENAI_MODEL}
         except httpx.HTTPStatusError as e:
-            detail = e.response.text
-            raise HTTPException(status_code=502, detail=f"Erreur API OpenAI: {detail}")
+            raise HTTPException(status_code=502, detail=f"Erreur API OpenAI: {e.response.text}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

@@ -24,44 +24,19 @@ class ApiClient {
   isAdmin() { return this.user?.role === 'admin'; }
 
   async request(path, options = {}) {
-    const headers = { ...options.headers };
-    if (!(options.body instanceof FormData) && !headers['Content-Type']) {
-      headers['Content-Type'] = 'application/json';
-    }
+    const headers = { 'Content-Type': 'application/json', ...options.headers };
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-
-    let resp;
-    try {
-      resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
-    } catch (err) {
-      throw new Error('Impossible de joindre le serveur. Vérifie le backend /api et VITE_API_URL.');
-    }
-
+    const resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
     if (resp.status === 401) {
       this.clearAuth();
       window.location.href = '/login';
       throw new Error('Session expirée');
     }
-
-    const contentType = resp.headers.get('content-type') || '';
-    const isJson = contentType.includes('application/json');
-
     if (!resp.ok) {
-      let message = `Erreur ${resp.status}`;
-      if (isJson) {
-        const err = await resp.json().catch(() => null);
-        message = err?.detail || err?.message || message;
-      } else {
-        const text = await resp.text().catch(() => '');
-        if (text) message = text;
-      }
-      throw new Error(message);
+      const err = await resp.json().catch(() => ({ detail: 'Erreur serveur' }));
+      throw new Error(err.detail || `Erreur ${resp.status}`);
     }
-
-    if (resp.status === 204) return null;
-    if (isJson) return resp.json();
-    const text = await resp.text().catch(() => '');
-    return text || null;
+    return resp.json();
   }
 
   get(path) { return this.request(path); }
@@ -99,7 +74,11 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    return this.request(`/schedule-reviews/${reviewId}/attachments`, { method: 'POST', body: formData });
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const resp = await fetch(`${API_BASE}/schedule-reviews/${reviewId}/attachments`, { method: 'POST', headers, body: formData });
+    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
+    return resp.json();
   }
   getScheduleReviewAttachments(reviewId) { return this.get(`/schedule-reviews/${reviewId}/attachments`); }
   deleteScheduleReviewAttachment(reviewId, attId) { return this.del(`/schedule-reviews/${reviewId}/attachments/${attId}`); }
@@ -114,9 +93,6 @@ class ApiClient {
 
   getInvoices(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/${qs ? '?' + qs : ''}`); }
   getInvoice(id) { return this.get(`/invoices/${id}`); }
-  getInvoiceStats() { return this.get('/invoices/stats'); }
-  generateDraftInvoices(data) { return this.post('/invoices/generate', data); }
-  generateDraftInvoiceFromSchedules(data) { return this.post('/invoices/generate-from-schedules', data); }
   createInvoice(data) { return this.post('/invoices/', data); }
   updateInvoice(id, data) { return this.put(`/invoices/${id}`, data); }
   markPaid(id) { return this.put(`/invoices/${id}/paid`, {}); }
@@ -124,23 +100,6 @@ class ApiClient {
   duplicateInvoice(id) { return this.post(`/invoices/${id}/duplicate`, {}); }
   markUnpaid(id) { return this.put(`/invoices/${id}/unpaid`, {}); }
   cancelInvoice(id) { return this.put(`/invoices/${id}/cancel`, {}); }
-  changeInvoiceStatus(id, data) { return this.post(`/invoices/${id}/status`, data); }
-  validateInvoice(id) { return this.post(`/invoices/${id}/validate`, {}); }
-  sendInvoice(id) { return this.post(`/invoices/${id}/send`, {}); }
-  emailInvoice(id) { return this.post(`/invoices/${id}/email`, {}); }
-  getInvoiceAuditLog(id) { return this.get(`/invoices/${id}/audit-log`); }
-  bulkDeleteInvoices(invoiceIds) { return this.post('/invoices/bulk-delete', invoiceIds); }
-  getInvoiceAnomalies() { return this.get('/invoices/anomalies/check'); }
-  getInvoiceReportByClient(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/reports/by-client${qs ? '?' + qs : ''}`); }
-  getInvoiceReportByEmployee(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/reports/by-employee${qs ? '?' + qs : ''}`); }
-  getInvoiceReportByPeriod(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/reports/by-period${qs ? '?' + qs : ''}`); }
-  getClientInvoiceReport(clientId) { return this.get(`/invoices/reports/client/${clientId}`); }
-  getInvoicePdfUrl(id, token = this.token) { return `${API_BASE}/invoices/${id}/pdf${token ? `?token=${token}` : ''}`; }
-
-  getCreditNotes() { return this.get('/invoices/credit-notes/all'); }
-  createCreditNote(data) { return this.post('/invoices/credit-notes', data); }
-  bulkDeleteCreditNotes(creditNoteIds) { return this.post('/invoices/credit-notes/bulk-delete', creditNoteIds); }
-  getCreditNotePdfUrl(id, token = this.token) { return `${API_BASE}/invoices/credit-notes/${id}/pdf${token ? `?token=${token}` : ''}`; }
 
   async uploadAttachment(invoiceId, file, category = 'autre', description = '') {
     const formData = new FormData();
@@ -148,7 +107,11 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    return this.request(`/invoices/${invoiceId}/attachments`, { method: 'POST', body: formData });
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const resp = await fetch(`${API_BASE}/invoices/${invoiceId}/attachments`, { method: 'POST', headers, body: formData });
+    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
+    return resp.json();
   }
   getAttachments(invoiceId) { return this.get(`/invoices/${invoiceId}/attachments`); }
   deleteAttachment(invoiceId, attId) { return this.del(`/invoices/${invoiceId}/attachments/${attId}`); }
@@ -164,7 +127,11 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    return this.request(`/accommodations/${accommodationId}/attachments`, { method: 'POST', body: formData });
+    const headers = {};
+    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+    const resp = await fetch(`${API_BASE}/accommodations/${accommodationId}/attachments`, { method: 'POST', headers, body: formData });
+    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
+    return resp.json();
   }
   getAccommodationAttachments(accommodationId) { return this.get(`/accommodations/${accommodationId}/attachments`); }
   deleteAccommodationAttachment(accommodationId, attId) { return this.del(`/accommodations/${accommodationId}/attachments/${attId}`); }

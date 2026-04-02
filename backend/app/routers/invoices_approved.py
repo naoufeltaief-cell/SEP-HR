@@ -1,7 +1,7 @@
 from datetime import date, datetime
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..services.auth_service import require_admin
@@ -9,33 +9,36 @@ from ..models.models import Client, Employee, InvoiceAttachment, Schedule, Accom
 from ..models.models_schedule_review import ScheduleApprovalMeta, ScheduleApprovalAttachment
 from ..models.models_invoice import Invoice, InvoiceAuditLog
 from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS
+
 router = APIRouter()
 
-def _build_prorated_accommodation_lines(accom_records, worked_dates, period_start, period_end, employee_name):
+
+def _build_prorated_accommodation_lines(accom_records, all_employee_worked_dates, billed_worked_dates, period_start, period_end, employee_name):
     accom_lines = []
     applicable_ids = []
-    worked_dates = sorted({d for d in worked_dates if d})
+    all_employee_worked_dates = sorted({d for d in all_employee_worked_dates if d})
+    billed_worked_dates = sorted({d for d in billed_worked_dates if d})
     for a in accom_records:
-        full_span_worked = [d for d in worked_dates if d >= a.start_date and d <= a.end_date]
-        full_span_count = len(full_span_worked)
-        period_worked = [d for d in full_span_worked if d >= period_start and d <= period_end]
-        period_count = len(period_worked)
-        if period_count <= 0:
+        full_span_worked = [d for d in all_employee_worked_dates if a.start_date <= d <= a.end_date]
+        billed_span_worked = [d for d in billed_worked_dates if max(period_start, a.start_date) <= d <= min(period_end, a.end_date)]
+        billed_count = len(billed_span_worked)
+        if billed_count <= 0:
             continue
         total_cost = float(getattr(a, 'total_cost', 0) or 0)
         fallback_count = int(getattr(a, 'days_worked', 0) or 0)
-        denominator = full_span_count or fallback_count or 1
+        denominator = len(full_span_worked) or fallback_count or 1
         cost_per_worked_day = round(total_cost / denominator, 2) if total_cost else float(getattr(a, 'cost_per_day', 0) or 0)
-        amount = round(cost_per_worked_day * period_count, 2)
+        amount = round(cost_per_worked_day * billed_count, 2)
         accom_lines.append({
             'employee': employee_name or '',
             'period': f"{max(period_start, a.start_date).isoformat()} → {min(period_end, a.end_date).isoformat()}",
-            'days': period_count,
+            'days': billed_count,
             'cost_per_day': cost_per_worked_day,
             'amount': amount,
         })
         applicable_ids.append(a.id)
     return accom_lines, applicable_ids
+
 
 @router.post('/generate-from-approved-schedules')
 async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
@@ -78,7 +81,6 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
     if not scheds:
         raise HTTPException(400, 'Aucun quart trouvé pour cette période')
 
-    worked_dates = sorted({s.date for s in scheds})
     rate = get_rate_for_title(employee.position or 'Infirmier(ère)')
     include_tax = not is_tax_exempt(client_name)
     service_lines = []
@@ -111,7 +113,14 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
 
     accom_r = await db.execute(select(Accommodation).where(Accommodation.employee_id == employee_id, Accommodation.start_date <= pe, Accommodation.end_date >= ps))
     accom_records = accom_r.scalars().all()
-    accom_lines, applicable_accom_ids = _build_prorated_accommodation_lines(accom_records, worked_dates, ps, pe, employee.name or '')
+    all_employee_worked_dates = []
+    if accom_records:
+        min_start = min(a.start_date for a in accom_records)
+        max_end = max(a.end_date for a in accom_records)
+        all_scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == employee_id, Schedule.date >= min_start, Schedule.date <= max_end, Schedule.status != 'cancelled'))
+        all_employee_worked_dates = [s.date for s in all_scheds_r.scalars().all()]
+    billed_worked_dates = [s.date for s in scheds]
+    accom_lines, applicable_accom_ids = _build_prorated_accommodation_lines(accom_records, all_employee_worked_dates, billed_worked_dates, ps, pe, employee.name or '')
 
     extra_lines = []
     if abs(approved_hours - raw_total_hours) > 0.009:
@@ -136,6 +145,7 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
     await db.commit()
     await db.refresh(invoice)
     return {'id': invoice.id, 'number': invoice.number, 'total': invoice.total, 'status': invoice.status, 'employee_name': invoice.employee_name, 'client_name': invoice.client_name, 'approved_hours': approved_hours, 'planned_hours': raw_total_hours}
+
 
 @router.post('/generate-all-approved-schedules')
 async def generate_all_approved_schedules(data: dict, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):

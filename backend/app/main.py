@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from .database import engine, Base
-from .routers import auth, employees, schedules, schedule_reviews, timesheets, invoices, accommodations, clients, chatbot, invoices_approved
+from .routers import auth, employees, schedules, schedule_reviews, timesheets, invoices, accommodations, clients, chatbot, invoices_approved, invoices_bulk
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,6 +36,7 @@ app.include_router(schedules.router, prefix="/api/schedules", tags=["Schedules"]
 app.include_router(schedule_reviews.router, prefix="/api/schedule-reviews", tags=["Schedule Reviews"])
 app.include_router(timesheets.router, prefix="/api/timesheets", tags=["Timesheets"])
 app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
+app.include_router(invoices_bulk.router, prefix="/api/invoices", tags=["Invoices Bulk"])
 app.include_router(invoices_approved.router, prefix="/api/invoices-approved", tags=["Invoices Approved"])
 app.include_router(accommodations.router, prefix="/api/accommodations", tags=["Accommodations"])
 app.include_router(clients.router, prefix="/api/clients", tags=["Clients"])

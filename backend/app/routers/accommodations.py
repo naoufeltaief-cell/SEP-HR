@@ -11,6 +11,7 @@ from ..services.auth_service import require_admin
 router = APIRouter()
 
 
+@router.get("")
 @router.get("/")
 async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     result = await db.execute(select(Accommodation).order_by(Accommodation.start_date.desc()))

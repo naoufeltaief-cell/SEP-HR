@@ -20,7 +20,8 @@ app = FastAPI(
     title="Soins Expert Plus API",
     version="1.0.0",
     description="API pour la gestion du personnel de santé — Soins Expert Plus / 9437-7827 Québec Inc.",
-    lifespan=lifespan
+    lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 cors_env = os.getenv("CORS_ORIGINS", "")

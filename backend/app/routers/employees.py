@@ -11,6 +11,7 @@ from ..services.auth_service import require_admin, get_current_user
 router = APIRouter()
 
 
+@router.get("")
 @router.get("/")
 async def list_employees(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
     result = await db.execute(

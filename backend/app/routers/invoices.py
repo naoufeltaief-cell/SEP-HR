@@ -157,6 +157,7 @@ def _serialize_invoice(inv, include_relations=False):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+@router.get("")
 @router.get("/")
 async def list_invoices(
     status: Optional[str] = None,
@@ -487,6 +488,7 @@ async def get_invoice(
     return _serialize_invoice(invoice, include_relations=True)
 
 
+@router.post("", status_code=201)
 @router.post("/", status_code=201)
 async def create_invoice(
     data: InvoiceCreate,

@@ -1,6 +1,7 @@
 from typing import List
+from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -8,9 +9,13 @@ from sqlalchemy.orm import selectinload
 from ..database import get_db
 from ..services.auth_service import require_admin
 from ..models.models import InvoiceAttachment
-from ..models.models_invoice import Invoice, CreditNote, InvoiceStatus
+from ..models.models_invoice import (
+    Invoice, CreditNote, InvoiceAuditLog, InvoiceStatus, AuditAction
+)
+from ..services.invoice_service import change_invoice_status
 
 router = APIRouter()
+
 
 @router.post('/bulk-delete')
 async def bulk_delete_invoices(invoice_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
@@ -38,6 +43,7 @@ async def bulk_delete_invoices(invoice_ids: List[str], db: AsyncSession = Depend
     await db.commit()
     return {'deleted': deleted, 'skipped': skipped, 'count': len(deleted)}
 
+
 @router.post('/credit-notes/bulk-delete')
 async def bulk_delete_credit_notes(credit_note_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     deleted, skipped = [], []
@@ -51,3 +57,65 @@ async def bulk_delete_credit_notes(credit_note_ids: List[str], db: AsyncSession 
         await db.delete(credit_note)
     await db.commit()
     return {'deleted': deleted, 'skipped': skipped, 'count': len(deleted)}
+
+
+@router.post('/bulk/validate')
+async def bulk_validate_invoices(invoice_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Validate multiple draft invoices at once."""
+    validated, skipped = [], []
+    for invoice_id in invoice_ids:
+        result = await db.execute(
+            select(Invoice).options(
+                selectinload(Invoice.payments),
+                selectinload(Invoice.audit_logs),
+                selectinload(Invoice.credit_notes),
+            ).where(Invoice.id == invoice_id)
+        )
+        invoice = result.scalar_one_or_none()
+        if not invoice:
+            skipped.append({'id': invoice_id, 'reason': 'Not found'})
+            continue
+        if invoice.status != InvoiceStatus.DRAFT.value:
+            skipped.append({'id': invoice_id, 'number': invoice.number, 'reason': f'Status is {invoice.status}, must be draft'})
+            continue
+        try:
+            await change_invoice_status(db, invoice, InvoiceStatus.VALIDATED.value, getattr(user, 'email', ''))
+            validated.append({'id': invoice.id, 'number': invoice.number})
+        except Exception as e:
+            skipped.append({'id': invoice_id, 'number': getattr(invoice, 'number', '?'), 'reason': str(e)})
+    return {'validated': validated, 'skipped': skipped, 'count': len(validated)}
+
+
+@router.post('/bulk/send')
+async def bulk_send_invoices(invoice_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Send multiple invoices at once (validates draft ones first)."""
+    sent, skipped = [], []
+    for invoice_id in invoice_ids:
+        result = await db.execute(
+            select(Invoice).options(
+                selectinload(Invoice.payments),
+                selectinload(Invoice.audit_logs),
+                selectinload(Invoice.credit_notes),
+            ).where(Invoice.id == invoice_id)
+        )
+        invoice = result.scalar_one_or_none()
+        if not invoice:
+            skipped.append({'id': invoice_id, 'reason': 'Not found'})
+            continue
+        try:
+            if invoice.status == InvoiceStatus.DRAFT.value:
+                invoice = await change_invoice_status(db, invoice, InvoiceStatus.VALIDATED.value, getattr(user, 'email', ''))
+            if invoice.status == InvoiceStatus.VALIDATED.value:
+                invoice = await change_invoice_status(db, invoice, InvoiceStatus.SENT.value, getattr(user, 'email', ''))
+                sent.append({'id': invoice.id, 'number': invoice.number})
+            else:
+                skipped.append({'id': invoice_id, 'number': getattr(invoice, 'number', '?'), 'reason': f'Status {invoice.status} cannot be sent'})
+        except Exception as e:
+            skipped.append({'id': invoice_id, 'number': getattr(invoice, 'number', '?'), 'reason': str(e)})
+    return {'sent': sent, 'skipped': skipped, 'count': len(sent)}
+
+
+@router.post('/anomalies/bulk-delete')
+async def bulk_delete_anomaly_invoices(invoice_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Delete invoices linked to anomalies (must be draft/cancelled)."""
+    return await bulk_delete_invoices(invoice_ids, db, user)

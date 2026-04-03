@@ -11,6 +11,7 @@ from ..services.auth_service import require_admin, get_current_user
 router = APIRouter()
 
 
+@router.get("")
 @router.get("/")
 async def list_schedules(
     start: str = Query(None, description="Start date YYYY-MM-DD"),

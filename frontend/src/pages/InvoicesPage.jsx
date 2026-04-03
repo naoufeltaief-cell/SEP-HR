@@ -1830,7 +1830,25 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
 
   const downloadClientCSV = () => {
     if (!clientDetail || !clientDetail.invoices?.length) return;
-    let csv = 'Numéro,Date,Employé,Période,Total,Payé,Solde,Statut\n';
+    let csv = '';
+    // Client identification header
+    csv += `Rapport Client\n`;
+    csv += `Client,${clientDetail.client_name || 'N/A'}\n`;
+    csv += `ID Client,${clientDetail.client_id || 'N/A'}\n`;
+    if (clientDetail.client_address) csv += `Adresse,"${clientDetail.client_address}"\n`;
+    if (clientDetail.client_email) csv += `Courriel,${clientDetail.client_email}\n`;
+    if (clientDetail.client_phone) csv += `Téléphone,${clientDetail.client_phone}\n`;
+    csv += `Date du rapport,${new Date().toLocaleDateString('fr-CA')}\n`;
+    csv += `\n`;
+    // Summary
+    csv += `Facturé,${clientDetail.total_invoiced || 0}\n`;
+    csv += `Payé,${clientDetail.total_paid || 0}\n`;
+    csv += `En cours,${clientDetail.total_outstanding || 0}\n`;
+    csv += `En retard,${clientDetail.total_overdue || 0}\n`;
+    csv += `Nombre de factures,${clientDetail.invoice_count || clientDetail.invoices.length}\n`;
+    csv += `\n`;
+    // Invoice details
+    csv += 'Numéro,Date,Employé,Période,Total,Payé,Solde,Statut\n';
     clientDetail.invoices.forEach(inv => {
       const statusLabel = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' }[inv.status] || inv.status;
       csv += `"${inv.number}","${inv.date}","${inv.employee_name}","${inv.period_start} → ${inv.period_end}",${inv.total},${inv.amount_paid},${inv.balance_due},"${statusLabel}"\n`;
@@ -1838,7 +1856,7 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `rapport_client_${clientDetail.client_name}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.href = url; a.download = `rapport_client_${clientDetail.client_name || 'client'}_${new Date().toISOString().split('T')[0]}.csv`;
     a.click(); URL.revokeObjectURL(url);
   };
 
@@ -1849,7 +1867,8 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
       const statusLabel = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' }[inv.status] || inv.status;
       return `<tr><td>${inv.number}</td><td>${inv.date}</td><td>${inv.employee_name}</td><td>${inv.period_start} → ${inv.period_end}</td><td style="text-align:right">${Number(inv.total||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.amount_paid||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.balance_due||0).toFixed(2)}$</td><td>${statusLabel}</td></tr>`;
     }).join('');
-    const html = `<!DOCTYPE html><html><head><title>Rapport - ${clientDetail.client_name}</title><style>body{font-family:Arial,sans-serif;margin:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;font-size:12px}th{background:#2A7B88;color:#fff}h1{color:#2A7B88;font-size:18px}h2{font-size:14px;margin-top:20px}.summary{display:flex;gap:20px;margin:10px 0}.summary div{background:#f0f0f0;padding:8px 12px;border-radius:6px;font-size:12px}.summary strong{display:block;font-size:16px}</style></head><body><h1>Rapport Client — ${clientDetail.client_name}</h1><div class="summary"><div>Facturé<strong>${Number(clientDetail.total_invoiced||0).toFixed(2)}$</strong></div><div>Payé<strong>${Number(clientDetail.total_paid||0).toFixed(2)}$</strong></div><div>En cours<strong>${Number(clientDetail.total_outstanding||0).toFixed(2)}$</strong></div><div>En retard<strong>${Number(clientDetail.total_overdue||0).toFixed(2)}$</strong></div></div><h2>Factures (${clientDetail.invoices?.length || 0})</h2><table><thead><tr><th>Numéro</th><th>Date</th><th>Employé</th><th>Période</th><th>Total</th><th>Payé</th><th>Solde</th><th>Statut</th></tr></thead><tbody>${invoiceRows}</tbody></table><p style="margin-top:20px;font-size:10px;color:#888">Généré le ${new Date().toLocaleDateString('fr-CA')}</p></body></html>`;
+    const clientInfoHtml = `<div style="margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:6px;border-left:4px solid #2A7B88"><div style="font-size:11px;color:#666">ID Client: ${clientDetail.client_id || 'N/A'}</div>${clientDetail.client_address ? `<div style="font-size:11px;color:#444">${clientDetail.client_address}</div>` : ''}${clientDetail.client_email ? `<div style="font-size:11px;color:#444">✉ ${clientDetail.client_email}</div>` : ''}${clientDetail.client_phone ? `<div style="font-size:11px;color:#444">☎ ${clientDetail.client_phone}</div>` : ''}</div>`;
+    const html = `<!DOCTYPE html><html><head><title>Rapport - ${clientDetail.client_name || 'Client'}</title><style>body{font-family:Arial,sans-serif;margin:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;font-size:12px}th{background:#2A7B88;color:#fff}h1{color:#2A7B88;font-size:18px}h2{font-size:14px;margin-top:20px}.summary{display:flex;gap:20px;margin:10px 0}.summary div{background:#f0f0f0;padding:8px 12px;border-radius:6px;font-size:12px}.summary strong{display:block;font-size:16px}</style></head><body><h1>Rapport Client — ${clientDetail.client_name || 'Client'}</h1>${clientInfoHtml}<div class="summary"><div>Facturé<strong>${Number(clientDetail.total_invoiced||0).toFixed(2)}$</strong></div><div>Payé<strong>${Number(clientDetail.total_paid||0).toFixed(2)}$</strong></div><div>En cours<strong>${Number(clientDetail.total_outstanding||0).toFixed(2)}$</strong></div><div>En retard<strong>${Number(clientDetail.total_overdue||0).toFixed(2)}$</strong></div></div><h2>Factures (${clientDetail.invoices?.length || 0})</h2><table><thead><tr><th>Numéro</th><th>Date</th><th>Employé</th><th>Période</th><th>Total</th><th>Payé</th><th>Solde</th><th>Statut</th></tr></thead><tbody>${invoiceRows}</tbody></table><p style="margin-top:20px;font-size:10px;color:#888">Généré le ${new Date().toLocaleDateString('fr-CA')}</p></body></html>`;
     const w = window.open('', '_blank');
     w.document.write(html);
     w.document.close();
@@ -1865,7 +1884,15 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
         <div style={{ ...S.flexBetween, marginBottom: 16 }}>
           <div style={S.flexRow}>
             <button style={S.btn('outline')} onClick={() => setClientDetail(null)}>← Retour aux rapports</button>
-            <h3 style={{ ...S.sectionTitle, margin: 0 }}>📋 {clientDetail.client_name}</h3>
+            <div>
+              <h3 style={{ ...S.sectionTitle, margin: 0 }}>📋 {clientDetail.client_name || 'Client'}</h3>
+              <div style={{ fontSize: 11, color: '#6C757D', marginTop: 2 }}>
+                {clientDetail.client_id ? `ID: ${clientDetail.client_id}` : ''}
+                {clientDetail.client_email ? ` · ${clientDetail.client_email}` : ''}
+                {clientDetail.client_phone ? ` · ${clientDetail.client_phone}` : ''}
+                {clientDetail.client_address ? ` · ${clientDetail.client_address}` : ''}
+              </div>
+            </div>
           </div>
           <div style={S.flexRow}>
             <button style={S.btn('outline')} onClick={downloadClientCSV}>📥 CSV</button>

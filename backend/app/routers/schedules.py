@@ -75,6 +75,10 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
         db.add(sched)
         created.append(sched)
     await db.commit()
+    # For single creation, return the full schedule object (frontend needs it)
+    if len(created) == 1:
+        await db.refresh(created[0])
+        return ScheduleOut.model_validate(created[0])
     return {"created": len(created), "ids": [s.id for s in created]}
 
 

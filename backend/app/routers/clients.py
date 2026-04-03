@@ -17,6 +17,7 @@ async def list_clients(db: AsyncSession = Depends(get_db), user=Depends(require_
     return [ClientOut.model_validate(c) for c in result.scalars().all()]
 
 
+@router.post("", status_code=201)
 @router.post("/", status_code=201)
 async def create_client(data: ClientCreate, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     client = Client(**data.model_dump())

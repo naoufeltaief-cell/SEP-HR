@@ -167,5 +167,9 @@ async def generate_all_approved_schedules(data: dict, db: AsyncSession = Depends
             inv = await generate_invoice_from_approved_schedules({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'period_start': period_start, 'period_end': period_end}, db, user)
             created.append(inv)
         except HTTPException as e:
+            await db.rollback()
             skipped.append({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'reason': e.detail})
+        except Exception as e:
+            await db.rollback()
+            skipped.append({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'reason': str(e)})
     return {'created': created, 'skipped': skipped, 'count': len(created)}

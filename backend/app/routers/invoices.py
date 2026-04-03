@@ -441,7 +441,18 @@ async def client_detail_report(
     user=Depends(require_admin),
 ):
     """Detailed client view"""
+    # Fetch client info
+    cr = await db.execute(select(Client).where(Client.id == client_id))
+    client = cr.scalar_one_or_none()
+
     summary = await get_client_invoice_summary(db, client_id)
+
+    # Add client identifying information
+    summary["client_name"] = client.name if client else "Client inconnu"
+    summary["client_address"] = getattr(client, "address", "") if client else ""
+    summary["client_email"] = getattr(client, "email", "") if client else ""
+    summary["client_phone"] = getattr(client, "phone", "") if client else ""
+
     inv_list = []
     for inv in summary["invoices"]:
         inv_list.append({
@@ -518,7 +529,9 @@ async def create_invoice(
     include_tax = data.include_tax and not is_tax_exempt(client_name)
     number = await generate_invoice_number(db)
 
+    invoice_id = str(uuid.uuid4())
     invoice = Invoice(
+        id=invoice_id,
         number=number, date=date.today(),
         period_start=data.period_start, period_end=data.period_end,
         client_id=data.client_id, client_name=client_name,
@@ -535,7 +548,7 @@ async def create_invoice(
     db.add(invoice)
 
     audit = InvoiceAuditLog(
-        invoice_id=invoice.id, action=AuditAction.CREATED.value,
+        invoice_id=invoice_id, action=AuditAction.CREATED.value,
         new_status=InvoiceStatus.DRAFT.value,
         user_email=getattr(user, "email", ""), details="Manual creation",
     )

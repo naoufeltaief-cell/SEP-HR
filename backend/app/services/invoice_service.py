@@ -6,7 +6,7 @@ Business logic for invoice generation, calculations, anomalies, workflow.
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, Integer
 from sqlalchemy.orm import selectinload
 import uuid
 
@@ -37,16 +37,64 @@ TAX_EXEMPT_CLIENTS = ["Centre de Santé Inuulitsivik", "Conseil Cri de la Santé
 COMPANY_INFO = {"name": "Soins Expert Plus", "legal": "9437-7827 Québec Inc.", "address": "Québec, Canada", "phone": "", "email": "rh@soins-expert-plus.com", "tps_number": TPS_NUMBER, "tvq_number": TVQ_NUMBER}
 
 async def generate_invoice_number(db: AsyncSession) -> str:
-    today = date.today(); prefix = f"SEP-{today.strftime('%Y%m')}"
-    result = await db.execute(select(func.count(Invoice.id)).where(Invoice.number.like(f"{prefix}%")))
-    count = result.scalar() or 0
-    return f"{prefix}-{count + 1:04d}"
+    """Generate next invoice number using MAX sequence to avoid duplicates after deletions.
+    Format: SEP-YYYYMM-XXXX  (e.g. SEP-202604-0009)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    today = date.today()
+    prefix = f"SEP-{today.strftime('%Y%m')}"
+
+    # Extract the maximum sequence number from existing invoices for this month.
+    # Invoice.number format: SEP-YYYYMM-XXXX  →  suffix starts at position len(prefix)+2
+    suffix_start = len(prefix) + 2  # +1 for the dash, +1 because SQL SUBSTR is 1-based
+    result = await db.execute(
+        select(
+            func.max(
+                func.cast(func.substr(Invoice.number, suffix_start), Integer)
+            )
+        ).where(Invoice.number.like(f"{prefix}-%"))
+    )
+    max_seq = result.scalar()
+
+    if max_seq is None:
+        next_seq = 1
+    else:
+        next_seq = int(max_seq) + 1
+
+    new_number = f"{prefix}-{next_seq:04d}"
+    logger.info("Generated invoice number %s (max_seq was %s)", new_number, max_seq)
+    return new_number
 
 async def generate_credit_note_number(db: AsyncSession) -> str:
-    today = date.today(); prefix = f"CN-{today.strftime('%Y%m')}"
-    result = await db.execute(select(func.count(CreditNote.id)).where(CreditNote.number.like(f"{prefix}%")))
-    count = result.scalar() or 0
-    return f"{prefix}-{count + 1:04d}"
+    """Generate next credit note number using MAX sequence to avoid duplicates after deletions.
+    Format: CN-YYYYMM-XXXX  (e.g. CN-202604-0003)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    today = date.today()
+    prefix = f"CN-{today.strftime('%Y%m')}"
+
+    suffix_start = len(prefix) + 2
+    result = await db.execute(
+        select(
+            func.max(
+                func.cast(func.substr(CreditNote.number, suffix_start), Integer)
+            )
+        ).where(CreditNote.number.like(f"{prefix}-%"))
+    )
+    max_seq = result.scalar()
+
+    if max_seq is None:
+        next_seq = 1
+    else:
+        next_seq = int(max_seq) + 1
+
+    new_number = f"{prefix}-{next_seq:04d}"
+    logger.info("Generated credit note number %s (max_seq was %s)", new_number, max_seq)
+    return new_number
 
 def is_tax_exempt(client_name: str) -> bool:
     return any(exempt.lower() in (client_name or "").lower() for exempt in TAX_EXEMPT_CLIENTS)

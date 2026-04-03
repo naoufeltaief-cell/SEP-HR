@@ -84,9 +84,50 @@ async def send_email_with_attachment(
     attachment: bytes,
     attachment_name: str = "document.pdf"
 ):
-    """Send email with PDF attachment via Gmail SMTP"""
+    """Send email with PDF attachment — utilise Gmail API OAuth2 en priorité, SMTP en fallback"""
+    # Essayer d'abord via Gmail API OAuth2
+    try:
+        from .gmail_service import send_invoice_via_gmail, _load_gmail_tokens, _build_mime_message
+        import httpx
+        import base64
+
+        tokens = _load_gmail_tokens()
+        access_token = tokens["access_token"]
+
+        # Construire le message MIME avec le corps en texte
+        from email.mime.text import MIMEText as _MIMEText
+        from email.mime.multipart import MIMEMultipart as _MIMEMultipart
+        from email.mime.application import MIMEApplication as _MIMEApplication
+
+        msg = _MIMEMultipart("mixed")
+        msg["From"] = f"Soins Expert Plus <paie@soins-expert-plus.com>"
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.attach(_MIMEText(body, "plain", "utf-8"))
+
+        pdf_part = _MIMEApplication(attachment, _subtype="pdf")
+        pdf_part.add_header("Content-Disposition", "attachment", filename=attachment_name)
+        msg.attach(pdf_part)
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                json={"raw": raw},
+            )
+            if response.status_code == 200:
+                print(f"[GMAIL OK] Sent to {to_email}: {subject} with {attachment_name}")
+                return
+            else:
+                print(f"[GMAIL WARN] Gmail API returned {response.status_code}, falling back to SMTP")
+    except Exception as e:
+        print(f"[GMAIL WARN] Gmail API failed ({e}), falling back to SMTP")
+
+    # Fallback SMTP
     if not SMTP_PASS:
-        print(f"[EMAIL SKIP] No SMTP_PASS set. Would send to {to_email}: {subject} with attachment {attachment_name}")
+        print(f"[EMAIL SKIP] No SMTP_PASS set and Gmail API failed. Would send to {to_email}: {subject} with attachment {attachment_name}")
         return
 
     msg = MIMEMultipart()

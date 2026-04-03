@@ -1349,34 +1349,27 @@ async def email_invoice(
     if not invoice:
         raise HTTPException(404, "Invoice not found")
     if not invoice.client_email:
-        raise HTTPException(400, "Client has no email address")
+        raise HTTPException(400, "Le client n'a pas d'adresse courriel")
 
+    # Générer le PDF de la facture
     pdf_buffer = generate_invoice_pdf(invoice)
+    pdf_bytes = pdf_buffer.getvalue()
+    pdf_filename = f"facture_{invoice.number}.pdf"
 
     try:
-        from ..services.email_service import send_email_with_attachment
-        await send_email_with_attachment(
+        from ..services.gmail_service import send_invoice_via_gmail
+        await send_invoice_via_gmail(
             to_email=invoice.client_email,
-            subject=f"Facture {invoice.number} — Soins Expert Plus",
-            body=(
-                f"Bonjour,\n\n"
-                f"Veuillez trouver ci-joint la facture {invoice.number} "
-                f"pour la période du {invoice.period_start} au {invoice.period_end}.\n\n"
-                f"Montant total: ${invoice.total:,.2f}\n\n"
-                f"Merci de votre confiance.\n\n"
-                f"Soins Expert Plus\n{COMPANY_INFO['email']}"
-            ),
-            attachment=pdf_buffer.getvalue(),
-            attachment_name=f"facture_{invoice.number}.pdf",
+            invoice=invoice,
+            pdf_bytes=pdf_bytes,
+            pdf_filename=pdf_filename,
         )
-    except ImportError:
-        raise HTTPException(
-            500,
-            "Email service not configured — add send_email_with_attachment to email_service.py",
-        )
+    except RuntimeError as e:
+        raise HTTPException(500, f"Erreur Gmail: {str(e)}")
     except Exception as e:
-        raise HTTPException(500, f"Email failed: {str(e)}")
+        raise HTTPException(500, f"Échec de l'envoi du courriel: {str(e)}")
 
+    # Mettre à jour le statut de la facture
     if invoice.status in (InvoiceStatus.VALIDATED.value, InvoiceStatus.DRAFT.value):
         if invoice.status == InvoiceStatus.DRAFT.value:
             invoice.status = InvoiceStatus.VALIDATED.value
@@ -1388,12 +1381,12 @@ async def email_invoice(
         invoice_id=invoice.id,
         action=AuditAction.EMAILED.value,
         user_email=getattr(user, "email", ""),
-        details=f"Emailed to {invoice.client_email}",
+        details=f"Envoyé par Gmail à {invoice.client_email} (PDF + HTML)",
     )
     db.add(audit)
     await db.commit()
 
-    return {"message": f"Invoice emailed to {invoice.client_email}"}
+    return {"message": f"Facture envoyée par courriel à {invoice.client_email}"}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

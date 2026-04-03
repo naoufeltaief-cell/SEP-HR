@@ -171,7 +171,7 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
             for s in sorted(scheds, key=lambda x: x.date):
                 hours = getattr(s, "hours", 0) or 0; pause = getattr(s, "pause", 0) or 0; garde_h = getattr(s, "garde_hours", 0) or 0; rappel_h = getattr(s, "rappel_hours", 0) or 0
                 garde_billable = garde_h / 8.0 if garde_h else 0
-                service_lines.append({"date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date), "employee": employee.name or f"Emp #{emp_id}", "location": client_name, "start": getattr(s, "start", "") or "", "end": getattr(s, "end", "") or "", "pause_min": pause, "hours": round(hours, 2), "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
+                service_lines.append({"schedule_id": s.id, "date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date), "employee": employee.name or f"Emp #{emp_id}", "location": client_name, "start": getattr(s, "start", "") or "", "end": getattr(s, "end", "") or "", "pause_min": pause, "hours": round(hours, 2), "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
             all_scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == emp_id, Schedule.status != 'cancelled'))
             all_scheds = all_scheds_r.scalars().all()
             all_worked = sorted({s.date for s in all_scheds})
@@ -190,14 +190,14 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
                 km_val = getattr(s, 'km', 0) or 0
                 if km_val:
                     capped_km = min(float(km_val), MAX_KM)
-                    expense_lines.append({"type": "km", "description": f"Kilométrage ({s.date})", "quantity": capped_km, "rate": KM_RATE, "amount": round(capped_km * KM_RATE, 2)})
+                    expense_lines.append({"schedule_id": s.id, "type": "km", "description": f"Kilométrage ({s.date})", "quantity": capped_km, "rate": KM_RATE, "amount": round(capped_km * KM_RATE, 2)})
                 depl_val = getattr(s, 'deplacement', 0) or 0
                 if depl_val:
                     capped_depl = min(float(depl_val), MAX_DEPLACEMENT_HOURS)
-                    expense_lines.append({"type": "deplacement", "description": f"Déplacement ({s.date})", "quantity": capped_depl, "rate": rate, "amount": round(capped_depl * rate, 2)})
+                    expense_lines.append({"schedule_id": s.id, "type": "deplacement", "description": f"Déplacement ({s.date})", "quantity": capped_depl, "rate": rate, "amount": round(capped_depl * rate, 2)})
                 autre_val = getattr(s, 'autre_dep', 0) or 0
                 if autre_val:
-                    expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
+                    expense_lines.append({"schedule_id": s.id, "type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
             inv_number = await generate_invoice_number(db)
             invoice = Invoice(id=str(uuid.uuid4()), number=inv_number, date=date.today(), period_start=period_start, period_end=period_end, client_id=client.id if client else None, client_name=client_name, client_address=getattr(client, 'address', '') if client else '', client_email=getattr(client, 'email', '') if client else '', client_phone=getattr(client, 'phone', '') if client else '', employee_id=emp_id, employee_name=employee.name or '', employee_title=employee.position or '', include_tax=include_tax, status=InvoiceStatus.DRAFT.value, lines=service_lines, accommodation_lines=accom_lines, expense_lines=expense_lines, extra_lines=[])
             invoice = recalculate_invoice(invoice)

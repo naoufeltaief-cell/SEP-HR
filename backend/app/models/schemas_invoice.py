@@ -34,6 +34,7 @@ class PaymentMethodEnum(str, Enum):
 # ──────────────────────────────────────────────
 
 class InvoiceServiceLine(BaseModel):
+    schedule_id: Optional[str] = None  # links back to schedules.id for sync
     date: str = ""
     employee: str = ""
     location: str = ""
@@ -58,6 +59,7 @@ class InvoiceAccommodationLine(BaseModel):
 
 
 class InvoiceExpenseLine(BaseModel):
+    schedule_id: Optional[str] = None  # links back to schedules.id for sync
     type: str = ""  # deplacement, km, autre
     description: str = ""
     quantity: float = 0

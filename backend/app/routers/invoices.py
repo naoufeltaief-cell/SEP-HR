@@ -499,6 +499,115 @@ async def get_invoice(
     return _serialize_invoice(invoice, include_relations=True)
 
 
+# ──────────────────────────────────────────────
+# Schedule ↔ Invoice sync helper
+# ──────────────────────────────────────────────
+
+async def _sync_invoice_to_schedules(db: AsyncSession, invoice: Invoice):
+    """Sync modified invoice lines back to their source Schedule records.
+
+    For each service line that carries a ``schedule_id`` we update the
+    corresponding Schedule with the current shift values (start, end,
+    pause, hours, garde_hours, rappel_hours).
+
+    For expense lines that carry a ``schedule_id`` we aggregate km,
+    deplacement, and autre_dep per schedule and write them back.
+
+    Lines without a ``schedule_id`` (manually-added lines) are silently
+    skipped — they have no underlying Schedule to sync to.
+    """
+    import logging
+    _logger = logging.getLogger(__name__)
+
+    # --- Collect all schedule_ids referenced by invoice lines ----------
+    svc_by_sid: dict[str, dict] = {}
+    for line in (invoice.lines or []):
+        sid = line.get("schedule_id")
+        if sid:
+            svc_by_sid[sid] = line
+
+    # Aggregate expense values per schedule_id
+    exp_by_sid: dict[str, dict] = {}  # sid -> {km, deplacement, autre_dep}
+    for exp in (invoice.expense_lines or []):
+        sid = exp.get("schedule_id")
+        if not sid:
+            continue
+        if sid not in exp_by_sid:
+            exp_by_sid[sid] = {"km": 0.0, "deplacement": 0.0, "autre_dep": 0.0}
+        etype = exp.get("type", "")
+        if etype == "km":
+            exp_by_sid[sid]["km"] += float(exp.get("quantity", 0))
+        elif etype == "deplacement":
+            exp_by_sid[sid]["deplacement"] += float(exp.get("quantity", 0))
+        elif etype == "autre":
+            exp_by_sid[sid]["autre_dep"] += float(exp.get("amount", 0))
+
+    all_sids = set(svc_by_sid.keys()) | set(exp_by_sid.keys())
+    if not all_sids:
+        return  # nothing to sync
+
+    # Fetch all referenced schedules in one query
+    result = await db.execute(
+        select(Schedule).where(Schedule.id.in_(list(all_sids)))
+    )
+    schedules_map: dict[str, Schedule] = {s.id: s for s in result.scalars().all()}
+
+    synced_count = 0
+    for sid in all_sids:
+        sched = schedules_map.get(sid)
+        if not sched:
+            _logger.warning("Schedule %s referenced by invoice %s not found — skipping sync", sid, invoice.id)
+            continue
+
+        changed = False
+        # --- Sync service line fields ---
+        svc = svc_by_sid.get(sid)
+        if svc:
+            new_start = svc.get("start", "")
+            new_end = svc.get("end", "")
+            new_pause = float(svc.get("pause_min", 0))
+            new_hours = float(svc.get("hours", 0))
+            new_garde = float(svc.get("garde_hours", 0))
+            new_rappel = float(svc.get("rappel_hours", 0))
+
+            if new_start and sched.start != new_start:
+                sched.start = new_start; changed = True
+            if new_end and sched.end != new_end:
+                sched.end = new_end; changed = True
+            if sched.pause != new_pause:
+                sched.pause = new_pause; changed = True
+            if sched.hours != new_hours:
+                sched.hours = new_hours; changed = True
+            if sched.garde_hours != new_garde:
+                sched.garde_hours = new_garde; changed = True
+            if sched.rappel_hours != new_rappel:
+                sched.rappel_hours = new_rappel; changed = True
+
+        # --- Sync expense fields ---
+        exp = exp_by_sid.get(sid)
+        if exp:
+            if sched.km != exp["km"]:
+                sched.km = exp["km"]; changed = True
+            if sched.deplacement != exp["deplacement"]:
+                sched.deplacement = exp["deplacement"]; changed = True
+            if sched.autre_dep != exp["autre_dep"]:
+                sched.autre_dep = exp["autre_dep"]; changed = True
+        else:
+            # If the schedule had expenses but they were removed from the invoice, reset
+            if sid in svc_by_sid:
+                if sched.km and sched.km != 0:
+                    sched.km = 0; changed = True
+                if sched.deplacement and sched.deplacement != 0:
+                    sched.deplacement = 0; changed = True
+                if sched.autre_dep and sched.autre_dep != 0:
+                    sched.autre_dep = 0; changed = True
+
+        if changed:
+            synced_count += 1
+
+    _logger.info("Synced %d schedule(s) from invoice %s", synced_count, invoice.number)
+
+
 @router.post("", status_code=201)
 @router.post("/", status_code=201)
 async def create_invoice(
@@ -609,10 +718,13 @@ async def update_invoice(
 
     invoice = recalculate_invoice(invoice)
 
+    # ── Sync invoice line changes back to Schedule records ──
+    await _sync_invoice_to_schedules(db, invoice)
+
     audit = InvoiceAuditLog(
         invoice_id=invoice.id, action=AuditAction.UPDATED.value,
         user_email=getattr(user, "email", ""),
-        details=f"Fields updated: {', '.join(update_data.keys())}",
+        details=f"Fields updated: {', '.join(update_data.keys())}. Schedule records synced.",
     )
     db.add(audit)
     await db.commit()

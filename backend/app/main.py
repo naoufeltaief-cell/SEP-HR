@@ -26,15 +26,26 @@ app = FastAPI(
 
 cors_env = os.getenv("CORS_ORIGINS", "")
 allowed_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+# Always include known frontend URLs
+_known_origins = [
+    "https://soins-expert-frontend.onrender.com",
+    "https://soins-expert-plus.com",
+    "http://localhost:5173",
+    "http://localhost:3000",
+]
+for origin in _known_origins:
+    if origin not in allowed_origins:
+        allowed_origins.append(origin)
 if not allowed_origins:
     allowed_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
@@ -42,8 +53,11 @@ app.include_router(employees.router, prefix="/api/employees", tags=["Employees"]
 app.include_router(schedules.router, prefix="/api/schedules", tags=["Schedules"])
 app.include_router(schedule_reviews.router, prefix="/api/schedule-reviews", tags=["Schedule Reviews"])
 app.include_router(timesheets.router, prefix="/api/timesheets", tags=["Timesheets"])
-app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
+# IMPORTANT: bulk router MUST be included BEFORE the main invoices router
+# because routes like /bulk/validate and /bulk/send would otherwise be
+# intercepted by /{invoice_id}/validate and /{invoice_id}/send
 app.include_router(invoices_bulk.router, prefix="/api/invoices", tags=["Invoices Bulk"])
+app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
 app.include_router(invoices_approved.router, prefix="/api/invoices-approved", tags=["Invoices Approved"])
 app.include_router(accommodations.router, prefix="/api/accommodations", tags=["Accommodations"])
 app.include_router(clients.router, prefix="/api/clients", tags=["Clients"])

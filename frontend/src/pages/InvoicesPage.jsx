@@ -1213,7 +1213,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
   const downloadPdfWithAttachments = () => {
     const token = getToken();
-    window.open(`${API}/invoices/${inv.id}/pdf-with-attachments?include_attachments=true`, '_blank');
+    window.open(`${API}/invoices/${inv.id}/pdf-with-attachments?include_attachments=true&token=${token}`, '_blank');
   };
 
   const fmtSize = (bytes) => {

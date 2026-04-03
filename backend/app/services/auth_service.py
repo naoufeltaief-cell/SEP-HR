@@ -49,11 +49,19 @@ def decode_token(token: str) -> dict:
 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    token: Optional[str] = None,
 ) -> User:
-    if not credentials:
+    # Support token via Bearer header OR query parameter (?token=xxx)
+    # Query param is needed for PDF viewing in new browser tabs
+    raw_token = None
+    if credentials:
+        raw_token = credentials.credentials
+    elif token:
+        raw_token = token
+    if not raw_token:
         raise HTTPException(status_code=401, detail="Non authentifié")
-    payload = decode_token(credentials.credentials)
+    payload = decode_token(raw_token)
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Token invalide")

@@ -613,13 +613,30 @@ async def delete_invoice(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    """Delete invoice (only if draft)"""
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    """Delete invoice (draft or cancelled)"""
+    result = await db.execute(
+        select(Invoice).options(
+            selectinload(Invoice.payments),
+            selectinload(Invoice.audit_logs),
+            selectinload(Invoice.credit_notes),
+        ).where(Invoice.id == invoice_id)
+    )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
-    if invoice.status != InvoiceStatus.DRAFT.value:
-        raise HTTPException(400, "Can only delete draft invoices")
+    if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
+        raise HTTPException(400, "Seules les factures brouillon ou annulées peuvent être supprimées")
+    # Delete related attachments
+    att_result = await db.execute(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id))
+    for att in att_result.scalars().all():
+        await db.delete(att)
+    # Delete related records (cascade should handle, but explicit for safety)
+    for payment in list(invoice.payments or []):
+        await db.delete(payment)
+    for audit in list(invoice.audit_logs or []):
+        await db.delete(audit)
+    for cn in list(invoice.credit_notes or []):
+        await db.delete(cn)
     await db.delete(invoice)
     await db.commit()
     return {"message": f"Facture {invoice.number} supprimée"}
@@ -924,12 +941,21 @@ async def mark_paid(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
+    if invoice.status in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
+        raise HTTPException(400, "Impossible de marquer payée une facture brouillon ou annulée")
+    # If validated but not sent, send it first
+    if invoice.status == InvoiceStatus.VALIDATED.value:
+        invoice = await change_invoice_status(
+            db, invoice, InvoiceStatus.SENT.value,
+            getattr(user, "email", ""), "Auto-envoyée lors du paiement",
+        )
     if invoice.balance_due > 0:
         await add_payment(
             db=db, invoice=invoice,
             amount=invoice.balance_due,
             payment_date=date.today(),
-            reference="Full payment",
+            reference="Paiement complet",
+            method="virement",
             user_email=getattr(user, "email", ""),
         )
     await db.refresh(invoice)
@@ -1269,6 +1295,45 @@ async def get_audit_log(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # BULK ACTIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+@router.post("/bulk/delete")
+@router.post("/bulk-delete")
+async def bulk_delete(
+    invoice_ids: List[str],
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Delete multiple invoices (draft or cancelled only)"""
+    deleted, skipped = [], []
+    for invoice_id in invoice_ids:
+        result = await db.execute(
+            select(Invoice).options(
+                selectinload(Invoice.payments),
+                selectinload(Invoice.audit_logs),
+                selectinload(Invoice.credit_notes),
+            ).where(Invoice.id == invoice_id)
+        )
+        invoice = result.scalar_one_or_none()
+        if not invoice:
+            skipped.append({"id": invoice_id, "reason": "Non trouvée"})
+            continue
+        if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
+            skipped.append({"id": invoice_id, "number": invoice.number, "reason": "Seules les factures brouillon/annulées peuvent être supprimées"})
+            continue
+        att_result = await db.execute(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id))
+        for att in att_result.scalars().all():
+            await db.delete(att)
+        for payment in list(invoice.payments or []):
+            await db.delete(payment)
+        for audit in list(invoice.audit_logs or []):
+            await db.delete(audit)
+        for cn in list(invoice.credit_notes or []):
+            await db.delete(cn)
+        deleted.append({"id": invoice.id, "number": invoice.number})
+        await db.delete(invoice)
+    await db.commit()
+    return {"deleted": deleted, "skipped": skipped, "count": len(deleted)}
 
 
 @router.post("/bulk/validate")

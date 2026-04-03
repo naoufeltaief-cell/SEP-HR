@@ -7,11 +7,18 @@ const fmtDateTime = (d) => { if (!d) return '—'; return new Date(d).toLocaleSt
 const getToken = () => localStorage.getItem('sep_token');
 const apiFetch = async (path, opts = {}) => {
   const token = getToken();
+  if (!token && !path.includes('/auth/')) {
+    throw new Error('Non authentifié — veuillez vous reconnecter');
+  }
   const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...opts.headers };
   const res = await fetch(`${API}${path}`, { ...opts, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || 'API Error');
+    const detail = err.detail || 'API Error';
+    if (res.status === 401 && detail.includes('authentifié')) {
+      throw new Error('Session expirée — veuillez vous reconnecter');
+    }
+    throw new Error(detail);
   }
   if (res.status === 204) return null;
   const ct = res.headers.get('content-type') || '';
@@ -115,7 +122,7 @@ const S = {
   empty: { textAlign: 'center', padding: 40, color: '#adb5bd', fontSize: 14 },
   modal: { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' },
   modalOverlay: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)' },
-  modalContent: { position: 'relative', background: '#fff', borderRadius: 12, padding: 24, maxWidth: 720, width: '95%', maxHeight: '85vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }
+  modalContent: { position: 'relative', background: '#fff', borderRadius: 12, padding: 24, maxWidth: 960, width: '95%', maxHeight: '85vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }
 };
 
 function Modal({ open, onClose, title, children }) {
@@ -266,7 +273,7 @@ export default function InvoicesPage() {
   };
 
   const deleteInvoice = async (id) => {
-    if (!confirm('Supprimer cette facture brouillon?')) return;
+    if (!confirm('Supprimer cette facture?')) return;
     try {
       await apiFetch(`/invoices/${id}`, { method: 'DELETE' });
       setSuccess('Facture supprimée');
@@ -383,7 +390,7 @@ export default function InvoicesPage() {
   const bulkValidate = async () => {
     try {
       const res = await apiFetch('/invoices/bulk/validate', { method: 'POST', body: JSON.stringify([...selected]) });
-      setSuccess(`${res.validated.length} facture(s) validée(s)`);
+      setSuccess(`${res.validated?.length || 0} facture(s) validée(s)`);
       setSelected(new Set());
       loadInvoices();
       loadStats();
@@ -395,7 +402,24 @@ export default function InvoicesPage() {
   const bulkSend = async () => {
     try {
       const res = await apiFetch('/invoices/bulk/send', { method: 'POST', body: JSON.stringify([...selected]) });
-      setSuccess(`${res.sent.length} facture(s) envoyée(s)`);
+      setSuccess(`${res.sent?.length || 0} facture(s) envoyée(s)`);
+      setSelected(new Set());
+      loadInvoices();
+      loadStats();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const bulkDelete = async () => {
+    if (!confirm(`Supprimer ${selected.size} facture(s) sélectionnée(s)? (brouillon/annulées seulement)`)) return;
+    try {
+      const res = await apiFetch('/invoices/bulk/delete', { method: 'POST', body: JSON.stringify([...selected]) });
+      const count = res.deleted?.length || 0;
+      const skippedCount = res.skipped?.length || 0;
+      let msg = `${count} facture(s) supprimée(s)`;
+      if (skippedCount > 0) msg += ` — ${skippedCount} ignorée(s)`;
+      setSuccess(msg);
       setSelected(new Set());
       loadInvoices();
       loadStats();
@@ -499,8 +523,9 @@ export default function InvoicesPage() {
               {selected.size > 0 && (
                 <>
                   <span style={{ fontSize: 12, color: '#6C757D' }}>{selected.size} sélectionnée(s)</span>
-                  <button style={S.btn('primary')} onClick={bulkValidate}>Valider</button>
-                  <button style={S.btn('outline')} onClick={bulkSend}>Envoyer</button>
+                  <button style={S.btn('primary')} onClick={bulkValidate}>✓ Valider</button>
+                  <button style={S.btn('outline')} onClick={bulkSend}>📤 Envoyer</button>
+                  <button style={S.btn('danger')} onClick={bulkDelete}>🗑 Supprimer</button>
                 </>
               )}
               <button style={S.btn('primary')} onClick={() => setActiveTab('generate')}>+ Générer factures</button>
@@ -560,7 +585,7 @@ export default function InvoicesPage() {
                         <div style={{ display: 'flex', gap: 4 }}>
                           <button style={S.btn('ghost')} title="PDF" onClick={() => openPdf(inv.id)}>📄</button>
                           <button style={S.btn('ghost')} title="Détail" onClick={() => openDetail(inv.id)}>👁</button>
-                          {inv.status === 'draft' && (
+                          {(inv.status === 'draft' || inv.status === 'cancelled') && (
                             <button style={S.btn('ghost')} title="Supprimer" onClick={() => deleteInvoice(inv.id)}>🗑</button>
                           )}
                         </div>
@@ -703,6 +728,9 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
   const [editPoNumber, setEditPoNumber] = useState(inv.po_number || '');
   const [editDueDate, setEditDueDate] = useState(inv.due_date || '');
   const [editIncludeTax, setEditIncludeTax] = useState(!!inv.include_tax);
+  const [editLines, setEditLines] = useState(JSON.parse(JSON.stringify(inv.lines || [])));
+  const [editExpenseLines, setEditExpenseLines] = useState(JSON.parse(JSON.stringify(inv.expense_lines || [])));
+  const [editAccomLines, setEditAccomLines] = useState(JSON.parse(JSON.stringify(inv.accommodation_lines || [])));
 
   useEffect(() => {
     setEditClientId(inv.client_id || '');
@@ -711,6 +739,9 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     setEditPoNumber(inv.po_number || '');
     setEditDueDate(inv.due_date || '');
     setEditIncludeTax(!!inv.include_tax);
+    setEditLines(JSON.parse(JSON.stringify(inv.lines || [])));
+    setEditExpenseLines(JSON.parse(JSON.stringify(inv.expense_lines || [])));
+    setEditAccomLines(JSON.parse(JSON.stringify(inv.accommodation_lines || [])));
   }, [inv.id]);
 
   const [attachments, setAttachments] = useState([]);
@@ -735,6 +766,33 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
   const saveInvoiceEdits = async () => {
     try {
+      // Recalculate service_amount for each line
+      const processedLines = editLines.map(l => ({
+        ...l,
+        hours: parseFloat(l.hours) || 0,
+        pause_min: parseFloat(l.pause_min) || 0,
+        rate: parseFloat(l.rate) || 0,
+        service_amount: (parseFloat(l.hours) || 0) * (parseFloat(l.rate) || 0),
+        garde_hours: parseFloat(l.garde_hours) || 0,
+        garde_amount: ((parseFloat(l.garde_hours) || 0) / 8) * 86.23,
+        rappel_hours: parseFloat(l.rappel_hours) || 0,
+        rappel_amount: (parseFloat(l.rappel_hours) || 0) * (parseFloat(l.rate) || 0),
+      }));
+      // Recalculate expense amounts
+      const processedExpenses = editExpenseLines.map(e => ({
+        ...e,
+        quantity: parseFloat(e.quantity) || 0,
+        rate: parseFloat(e.rate) || 0,
+        amount: (parseFloat(e.quantity) || 0) * (parseFloat(e.rate) || 0),
+      }));
+      // Recalculate accommodation amounts
+      const processedAccom = editAccomLines.map(a => ({
+        ...a,
+        days: parseFloat(a.days) || 0,
+        cost_per_day: parseFloat(a.cost_per_day) || 0,
+        amount: (parseFloat(a.days) || 0) * (parseFloat(a.cost_per_day) || 0),
+      }));
+
       await apiFetch(`/invoices/${inv.id}`, {
         method: 'PUT',
         body: JSON.stringify({
@@ -743,7 +801,10 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           notes: editNotes,
           po_number: editPoNumber,
           due_date: editDueDate || null,
-          include_tax: editIncludeTax
+          include_tax: editIncludeTax,
+          lines: processedLines,
+          expense_lines: processedExpenses,
+          accommodation_lines: processedAccom,
         })
       });
       setSuccess('Facture modifiée');
@@ -754,6 +815,55 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     } catch (e) {
       setError(e.message);
     }
+  };
+
+  const updateEditLine = (idx, field, value) => {
+    setEditLines(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
+    });
+  };
+
+  const removeEditLine = (idx) => {
+    setEditLines(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const addEditLine = () => {
+    setEditLines(prev => [...prev, { date: '', employee: inv.employee_name || '', location: inv.client_name || '', start: '', end: '', pause_min: 0, hours: 0, rate: editLines[0]?.rate || 0, service_amount: 0, garde_hours: 0, garde_amount: 0, rappel_hours: 0, rappel_amount: 0 }]);
+  };
+
+  const updateEditExpense = (idx, field, value) => {
+    setEditExpenseLines(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
+    });
+  };
+
+  const removeEditExpense = (idx) => {
+    setEditExpenseLines(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const addEditExpense = (type) => {
+    const defaults = {
+      km: { type: 'km', description: 'Kilométrage', quantity: 0, rate: 0.525, amount: 0 },
+      deplacement: { type: 'deplacement', description: 'Frais de déplacement', quantity: 0, rate: editLines[0]?.rate || 0, amount: 0 },
+      autre: { type: 'autre', description: 'Autres frais', quantity: 1, rate: 0, amount: 0 },
+    };
+    setEditExpenseLines(prev => [...prev, defaults[type] || defaults.autre]);
+  };
+
+  const updateEditAccom = (idx, field, value) => {
+    setEditAccomLines(prev => {
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
+    });
+  };
+
+  const removeEditAccom = (idx) => {
+    setEditAccomLines(prev => prev.filter((_, i) => i !== idx));
   };
 
   const handleAttUpload = async (e) => {
@@ -855,6 +965,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
         break;
       case 'validated':
         actions.push({ label: 'Marquer envoyée', status: 'sent', variant: 'primary', icon: '📤' });
+        actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: '💰' });
         actions.push({ label: 'Retour brouillon', status: 'draft', variant: 'ghost', icon: '←' });
         break;
       case 'sent':
@@ -888,7 +999,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           <button style={S.btn('outline')} onClick={() => onPdf(inv.id)}>📄 PDF</button>
           <button style={S.btn('outline')} onClick={() => onEmail(inv.id)}>✉️ Courriel</button>
           <button style={S.btn('ghost')} onClick={() => onDuplicate(inv.id)}>📋 Dupliquer</button>
-          {inv.status === 'draft' && (
+          {(inv.status === 'draft' || inv.status === 'cancelled') && (
             <button style={S.btn('danger')} onClick={() => onDelete(inv.id)}>🗑 Supprimer</button>
           )}
         </div>
@@ -1235,7 +1346,8 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
       </Modal>
 
       <Modal open={showEdit} onClose={() => setShowEdit(false)} title="Modifier la facture">
-        <div style={{ display: 'grid', gap: 14 }}>
+        <div style={{ display: 'grid', gap: 14, maxHeight: '70vh', overflowY: 'auto' }}>
+          {/* General info */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Client</label>
@@ -1268,18 +1380,100 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
             </div>
           </div>
 
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Notes</label>
-            <textarea style={{ ...S.input, width: '100%', minHeight: 90 }} value={editNotes} onChange={e => setEditNotes(e.target.value)} />
-          </div>
-
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-            <input type="checkbox" checked={editIncludeTax} onChange={e => setEditIncludeTax(e.target.checked)} /> Inclure TPS/TVQ
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', padding: '8px 0' }}>
+            <input type="checkbox" checked={editIncludeTax} onChange={e => setEditIncludeTax(e.target.checked)} />
+            <strong>Inclure TPS (5%) / TVQ (9.975%)</strong>
           </label>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {/* Service Lines (Shifts/Quarts) */}
+          <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12 }}>
+            <div style={{ ...S.flexBetween, marginBottom: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>📋 Quarts / Services</h4>
+              <button style={S.btn('outline', 'sm')} onClick={addEditLine}>+ Ajouter quart</button>
+            </div>
+            {editLines.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#6C757D', textAlign: 'center', padding: 8 }}>Aucun quart</div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ ...S.table, fontSize: 11 }}>
+                  <thead>
+                    <tr>
+                      {['Date', 'Début', 'Fin', 'Pause (min)', 'Heures', 'Taux', 'Garde h', 'Rappel h', ''].map(h => (
+                        <th key={h} style={{ ...S.th, fontSize: 10, padding: '6px 4px' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {editLines.map((l, i) => (
+                      <tr key={i}>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input type="date" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 120 }} value={l.date?.substring(0, 10) || ''} onChange={e => updateEditLine(i, 'date', e.target.value)} /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 60 }} value={l.start || ''} onChange={e => updateEditLine(i, 'start', e.target.value)} placeholder="07:00" /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 60 }} value={l.end || ''} onChange={e => updateEditLine(i, 'end', e.target.value)} placeholder="15:00" /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 55 }} value={l.pause_min || 0} onChange={e => updateEditLine(i, 'pause_min', e.target.value)} /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.25" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 55 }} value={l.hours || 0} onChange={e => updateEditLine(i, 'hours', e.target.value)} /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 65 }} value={l.rate || 0} onChange={e => updateEditLine(i, 'rate', e.target.value)} /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.5" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 50 }} value={l.garde_hours || 0} onChange={e => updateEditLine(i, 'garde_hours', e.target.value)} /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.5" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 50 }} value={l.rappel_hours || 0} onChange={e => updateEditLine(i, 'rappel_hours', e.target.value)} /></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditLine(i)}>✗</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Expense Lines */}
+          <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12 }}>
+            <div style={{ ...S.flexBetween, marginBottom: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>💲 Frais</h4>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button style={S.btn('outline', 'sm')} onClick={() => addEditExpense('km')}>+ Km</button>
+                <button style={S.btn('outline', 'sm')} onClick={() => addEditExpense('deplacement')}>+ Déplacement</button>
+                <button style={S.btn('outline', 'sm')} onClick={() => addEditExpense('autre')}>+ Autre</button>
+              </div>
+            </div>
+            {editExpenseLines.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#6C757D', textAlign: 'center', padding: 8 }}>Aucun frais</div>
+            ) : (
+              <table style={{ ...S.table, fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {['Type', 'Description', 'Quantité', 'Taux', ''].map(h => (
+                      <th key={h} style={{ ...S.th, fontSize: 10, padding: '6px 4px' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {editExpenseLines.map((e, i) => (
+                    <tr key={i}>
+                      <td style={{ ...S.td, padding: '4px 2px' }}>
+                        <select style={{ ...S.select, fontSize: 11, padding: '4px 6px' }} value={e.type || 'autre'} onChange={ev => updateEditExpense(i, 'type', ev.target.value)}>
+                          <option value="km">Kilométrage</option>
+                          <option value="deplacement">Déplacement</option>
+                          <option value="autre">Autre</option>
+                        </select>
+                      </td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: '100%' }} value={e.description || ''} onChange={ev => updateEditExpense(i, 'description', ev.target.value)} /></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={e.quantity || 0} onChange={ev => updateEditExpense(i, 'quantity', ev.target.value)} /></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={e.rate || 0} onChange={ev => updateEditExpense(i, 'rate', ev.target.value)} /></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditExpense(i)}>✗</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Notes</label>
+            <textarea style={{ ...S.input, width: '100%', minHeight: 60 }} value={editNotes} onChange={e => setEditNotes(e.target.value)} />
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 8, borderTop: '1px solid #e9ecef' }}>
             <button style={S.btn('outline')} onClick={() => setShowEdit(false)}>Annuler</button>
-            <button style={S.btn('primary')} onClick={saveInvoiceEdits}>Enregistrer</button>
+            <button style={S.btn('primary')} onClick={saveInvoiceEdits}>💾 Enregistrer les modifications</button>
           </div>
         </div>
       </Modal>
@@ -1288,18 +1482,43 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 }
 
 function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMarkPaid }) {
+  const downloadCSV = () => {
+    if (!reportData || !reportData.length) return;
+    let csv = '';
+    if (reportType === 'by-client') {
+      csv = 'Client,Facturé,Payé,En cours,En retard,Nb factures\n';
+      reportData.forEach(c => csv += `"${c.client_name}",${c.total_invoiced},${c.total_paid},${c.total_outstanding},${c.total_overdue},${c.invoice_count}\n`);
+    } else if (reportType === 'by-employee') {
+      csv = 'Employé,Titre,Facturé,Heures,Nb factures\n';
+      reportData.forEach(e => csv += `"${e.employee_name}","${e.employee_title}",${e.total_invoiced},${e.total_hours},${e.invoice_count}\n`);
+    } else {
+      csv = 'Mois,Services,Garde,Rappel,Hébergement,Frais,Sous-total,Taxes,Total\n';
+      reportData.forEach(m => csv += `${m.period},${m.services},${m.garde},${m.rappel},${m.accommodation},${m.expenses},${m.subtotal},${m.taxes},${m.total}\n`);
+    }
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `rapport_${reportType}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
   return (
     <div>
-      <div style={{ ...S.flexRow, marginBottom: 16 }}>
-        {[
-          { id: 'by-client', label: '📊 Par client' },
-          { id: 'by-employee', label: '👤 Par employé' },
-          { id: 'by-period', label: '📅 Par mois' }
-        ].map(r => (
-          <button key={r.id} style={S.btn(reportType === r.id ? 'primary' : 'outline')} onClick={() => onLoadReport(r.id)}>
-            {r.label}
-          </button>
-        ))}
+      <div style={{ ...S.flexBetween, marginBottom: 16 }}>
+        <div style={S.flexRow}>
+          {[
+            { id: 'by-client', label: '📊 Par client' },
+            { id: 'by-employee', label: '👤 Par employé' },
+            { id: 'by-period', label: '📅 Par mois' }
+          ].map(r => (
+            <button key={r.id} style={S.btn(reportType === r.id ? 'primary' : 'outline')} onClick={() => onLoadReport(r.id)}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+        {reportData && reportData.length > 0 && (
+          <button style={S.btn('outline')} onClick={downloadCSV}>📥 Télécharger CSV</button>
+        )}
       </div>
 
       {!reportData ? (
@@ -1380,20 +1599,141 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
   );
 }
 
-function CreditNotesTab({ creditNotes }) {
+function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients, invoices }) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [cnInvoiceId, setCnInvoiceId] = useState('');
+  const [cnClientId, setCnClientId] = useState('');
+  const [cnReason, setCnReason] = useState('');
+  const [cnAmount, setCnAmount] = useState('');
+  const [cnIncludeTax, setCnIncludeTax] = useState(true);
+  const [cnNotes, setCnNotes] = useState('');
+  const [creating, setCreating] = useState(false);
+
+  const createCreditNote = async () => {
+    if (!cnReason || !cnAmount || parseFloat(cnAmount) <= 0) {
+      setError('Raison et montant requis');
+      return;
+    }
+    setCreating(true);
+    try {
+      const res = await apiFetch('/invoices/credit-notes', {
+        method: 'POST',
+        body: JSON.stringify({
+          invoice_id: cnInvoiceId || null,
+          client_id: cnClientId ? Number(cnClientId) : null,
+          reason: cnReason,
+          amount: parseFloat(cnAmount),
+          include_tax: cnIncludeTax,
+          notes: cnNotes,
+        })
+      });
+      setSuccess(`Note de crédit ${res.number} créée — Total: ${fmt(res.total)}`);
+      setShowCreate(false);
+      setCnInvoiceId(''); setCnClientId(''); setCnReason(''); setCnAmount(''); setCnIncludeTax(true); setCnNotes('');
+      onRefresh();
+    } catch (e) {
+      setError(e.message);
+    }
+    setCreating(false);
+  };
+
   return (
     <div>
       <div style={{ ...S.flexBetween, marginBottom: 16 }}>
         <h3 style={S.sectionTitle}>📝 Notes de crédit</h3>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={S.btn('primary')} onClick={() => setShowCreate(true)}>+ Créer une note de crédit</button>
+          <button style={S.btn('outline')} onClick={onRefresh}>🔄 Actualiser</button>
+        </div>
       </div>
+
+      {showCreate && (
+        <div style={{ ...S.card, marginBottom: 16, border: '2px solid #2A7B88' }}>
+          <h4 style={{ ...S.sectionTitle, fontSize: 14, marginBottom: 14 }}>Nouvelle note de crédit</h4>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Facture de référence (optionnel)</label>
+                <select style={{ ...S.select, width: '100%' }} value={cnInvoiceId} onChange={e => {
+                  setCnInvoiceId(e.target.value);
+                  if (e.target.value) {
+                    const inv = invoices.find(i => i.id === e.target.value);
+                    if (inv && inv.client_id) setCnClientId(String(inv.client_id));
+                  }
+                }}>
+                  <option value="">— Aucune —</option>
+                  {invoices.map(inv => (
+                    <option key={inv.id} value={inv.id}>{inv.number} — {inv.client_name} ({fmt(inv.total)})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Client</label>
+                <select style={{ ...S.select, width: '100%' }} value={cnClientId} onChange={e => setCnClientId(e.target.value)}>
+                  <option value="">— Sélectionner —</option>
+                  {clients.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Montant ($) *</label>
+                <input type="number" step="0.01" style={{ ...S.input, width: '100%' }} value={cnAmount} onChange={e => setCnAmount(e.target.value)} placeholder="0.00" />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, paddingBottom: 4 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={cnIncludeTax} onChange={e => setCnIncludeTax(e.target.checked)} />
+                  <strong>Inclure TPS (5%) / TVQ (9.975%)</strong>
+                </label>
+              </div>
+            </div>
+
+            {cnAmount && parseFloat(cnAmount) > 0 && (
+              <div style={{ background: '#f8f9fa', borderRadius: 6, padding: 10, fontSize: 12 }}>
+                <div>Montant: <strong>{fmt(parseFloat(cnAmount))}</strong></div>
+                {cnIncludeTax ? (
+                  <>
+                    <div>TPS (5%): <strong>{fmt(parseFloat(cnAmount) * 0.05)}</strong></div>
+                    <div>TVQ (9.975%): <strong>{fmt(parseFloat(cnAmount) * 0.09975)}</strong></div>
+                    <div style={{ fontWeight: 700, color: '#DC3545', marginTop: 4 }}>Total: {fmt(parseFloat(cnAmount) * 1.14975)}</div>
+                  </>
+                ) : (
+                  <div style={{ color: '#28A745', fontStyle: 'italic' }}>Exempté de taxes — Total: {fmt(parseFloat(cnAmount))}</div>
+                )}
+              </div>
+            )}
+
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Raison *</label>
+              <textarea style={{ ...S.input, width: '100%', minHeight: 60 }} value={cnReason} onChange={e => setCnReason(e.target.value)} placeholder="Raison de la note de crédit..." />
+            </div>
+
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Notes internes (optionnel)</label>
+              <input style={{ ...S.input, width: '100%' }} value={cnNotes} onChange={e => setCnNotes(e.target.value)} />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button style={S.btn('outline')} onClick={() => setShowCreate(false)}>Annuler</button>
+              <button style={S.btn('primary')} onClick={createCreditNote} disabled={creating || !cnReason || !cnAmount}>
+                {creating ? '⏳ Création...' : '📝 Créer la note de crédit'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {creditNotes.length === 0 ? (
         <div style={S.empty}>Aucune note de crédit</div>
       ) : (
         <table style={S.table}>
           <thead>
             <tr>
-              {['Numéro', 'Date', 'Client', 'Facture réf.', 'Raison', 'Montant', 'Total', 'Statut'].map((h, i) => (
-                <th key={h} style={{ ...S.th, ...(i >= 5 && i <= 6 ? { textAlign: 'right' } : {}) }}>{h}</th>
+              {['Numéro', 'Date', 'Client', 'Facture réf.', 'Raison', 'Montant', 'TPS', 'TVQ', 'Total', 'Statut'].map((h, i) => (
+                <th key={h} style={{ ...S.th, ...(i >= 5 && i <= 8 ? { textAlign: 'right' } : {}) }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -1402,10 +1742,12 @@ function CreditNotesTab({ creditNotes }) {
               <tr key={cn.id} style={{ background: i % 2 === 0 ? '#fff' : '#f8f9fa' }}>
                 <td style={{ ...S.td, fontWeight: 600, color: '#DC3545' }}>{cn.number}</td>
                 <td style={S.td}>{fmtDate(cn.date)}</td>
-                <td style={S.td}>{cn.client_name}</td>
+                <td style={S.td}>{cn.client_name || '—'}</td>
                 <td style={S.td}>{cn.invoice_number || '—'}</td>
                 <td style={{ ...S.td, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cn.reason}</td>
                 <td style={{ ...S.td, textAlign: 'right' }}>{fmt(cn.amount)}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontSize: 11, color: '#6C757D' }}>{cn.tps ? fmt(cn.tps) : '—'}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontSize: 11, color: '#6C757D' }}>{cn.tvq ? fmt(cn.tvq) : '—'}</td>
                 <td style={{ ...S.td, textAlign: 'right', fontWeight: 600, color: '#DC3545' }}>{fmt(cn.total)}</td>
                 <td style={S.td}>
                   <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: cn.status === 'active' ? '#E8F4F6' : '#f8d7da', color: cn.status === 'active' ? '#2A7B88' : '#DC3545' }}>

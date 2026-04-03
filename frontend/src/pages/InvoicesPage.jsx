@@ -162,6 +162,19 @@ export default function InvoicesPage() {
   const [genSingleClientId, setGenSingleClientId] = useState('');
   const [genSingleEmployeeId, setGenSingleEmployeeId] = useState('');
 
+  // Manual invoice creation state
+  const [showManualForm, setShowManualForm] = useState(false);
+  const [manualClientId, setManualClientId] = useState('');
+  const [manualEmployeeId, setManualEmployeeId] = useState('');
+  const [manualPeriodStart, setManualPeriodStart] = useState('');
+  const [manualPeriodEnd, setManualPeriodEnd] = useState('');
+  const [manualDueDate, setManualDueDate] = useState('');
+  const [manualNotes, setManualNotes] = useState('');
+  const [manualPoNumber, setManualPoNumber] = useState('');
+  const [manualIncludeTax, setManualIncludeTax] = useState(true);
+  const [manualLines, setManualLines] = useState([]);
+  const [manualExpenseLines, setManualExpenseLines] = useState([]);
+
   const [clients, setClients] = useState([]);
   const [employees, setEmployees] = useState([]);
 
@@ -337,6 +350,113 @@ export default function InvoicesPage() {
         })
       });
       setSuccess(`Facture ${data.number} générée`);
+      await loadInvoices();
+      await loadStats();
+      if (data.id) await openDetail(data.id);
+    } catch (e) {
+      setError(e.message);
+    }
+    setLoading(false);
+  };
+
+  const calcHoursUtil = (start, end, pauseMin = 0) => {
+    if (!start || !end) return 0;
+    const [sh, sm] = start.split(':').map(Number);
+    const [eh, em] = end.split(':').map(Number);
+    if (isNaN(sh) || isNaN(sm) || isNaN(eh) || isNaN(em)) return 0;
+    let startMins = sh * 60 + sm;
+    let endMins = eh * 60 + em;
+    if (endMins <= startMins) endMins += 24 * 60;
+    return Math.round(Math.max(0, (endMins - startMins - (parseFloat(pauseMin) || 0)) / 60) * 100) / 100;
+  };
+
+  const addManualLine = () => {
+    setManualLines(prev => [...prev, { date: manualPeriodStart || '', employee: '', location: '', start: '07:00', end: '15:00', pause_min: 0, hours: 8, rate: 86.23, service_amount: 689.84, garde_hours: 0, garde_amount: 0, rappel_hours: 0, rappel_amount: 0 }]);
+  };
+
+  const updateManualLine = (idx, field, value) => {
+    setManualLines(prev => {
+      const next = [...prev];
+      const updated = { ...next[idx], [field]: value };
+      if (['start', 'end', 'pause_min'].includes(field)) {
+        const s = field === 'start' ? value : updated.start;
+        const e = field === 'end' ? value : updated.end;
+        const p = field === 'pause_min' ? value : updated.pause_min;
+        if (s && e) {
+          updated.hours = calcHoursUtil(s, e, p);
+          updated.service_amount = parseFloat((updated.hours * (parseFloat(updated.rate) || 0)).toFixed(2));
+        }
+      }
+      if (['hours', 'rate'].includes(field)) {
+        const h = field === 'hours' ? parseFloat(value) || 0 : parseFloat(updated.hours) || 0;
+        const r = field === 'rate' ? parseFloat(value) || 0 : parseFloat(updated.rate) || 0;
+        updated.service_amount = parseFloat((h * r).toFixed(2));
+      }
+      next[idx] = updated;
+      return next;
+    });
+  };
+
+  const addManualExpense = () => {
+    setManualExpenseLines(prev => [...prev, { type: 'km', description: 'Kilométrage', quantity: 0, rate: 0.525, amount: 0 }]);
+  };
+
+  const updateManualExpense = (idx, field, value) => {
+    setManualExpenseLines(prev => {
+      const next = [...prev];
+      const updated = { ...next[idx], [field]: value };
+      if (['quantity', 'rate'].includes(field)) {
+        updated.amount = parseFloat(((parseFloat(updated.quantity) || 0) * (parseFloat(updated.rate) || 0)).toFixed(2));
+      }
+      next[idx] = updated;
+      return next;
+    });
+  };
+
+  const createManualInvoice = async () => {
+    if (!manualClientId) { setError('Client requis'); return; }
+    if (!manualPeriodStart || !manualPeriodEnd) { setError('Période requise'); return; }
+    setLoading(true);
+    try {
+      const processedLines = manualLines.map(l => ({
+        ...l,
+        hours: parseFloat(l.hours) || 0,
+        pause_min: parseFloat(l.pause_min) || 0,
+        rate: parseFloat(l.rate) || 0,
+        service_amount: (parseFloat(l.hours) || 0) * (parseFloat(l.rate) || 0),
+        garde_hours: parseFloat(l.garde_hours) || 0,
+        garde_amount: ((parseFloat(l.garde_hours) || 0) / 8) * 86.23,
+        rappel_hours: parseFloat(l.rappel_hours) || 0,
+        rappel_amount: (parseFloat(l.rappel_hours) || 0) * (parseFloat(l.rate) || 0),
+      }));
+      const processedExpenses = manualExpenseLines.map(e => ({
+        ...e,
+        quantity: parseFloat(e.quantity) || 0,
+        rate: parseFloat(e.rate) || 0,
+        amount: (parseFloat(e.quantity) || 0) * (parseFloat(e.rate) || 0),
+      }));
+      const data = await apiFetch('/invoices/', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: Number(manualClientId),
+          employee_id: manualEmployeeId ? Number(manualEmployeeId) : null,
+          period_start: manualPeriodStart,
+          period_end: manualPeriodEnd,
+          due_date: manualDueDate || null,
+          notes: manualNotes,
+          po_number: manualPoNumber,
+          include_tax: manualIncludeTax,
+          lines: processedLines,
+          expense_lines: processedExpenses,
+          accommodation_lines: [],
+          extra_lines: [],
+        })
+      });
+      setSuccess(`Facture ${data.number} créée manuellement`);
+      setShowManualForm(false);
+      setManualLines([]);
+      setManualExpenseLines([]);
+      setManualClientId(''); setManualEmployeeId(''); setManualNotes(''); setManualPoNumber('');
       await loadInvoices();
       await loadStats();
       if (data.id) await openDetail(data.id);
@@ -659,8 +779,148 @@ export default function InvoicesPage() {
               </div>
             </div>
             <button style={S.btn('primary', 'md')} onClick={generateSingleInvoice} disabled={loading || !genSingleEmployeeId || !genSingleClientId}>
-              {loading ? 'Génération en cours...' : 'Créer la facture unique'}
+              {loading ? 'Génération en cours...' : 'Créer la facture unique (depuis horaire)'}
             </button>
+            <p style={{ fontSize: 10, color: '#6C757D', marginTop: 6 }}>⚠️ Requiert des quarts existants dans l'horaire</p>
+          </div>
+
+          {/* Manual invoice creation — no schedule needed */}
+          <div style={{ ...S.card, marginTop: 20, background: '#FFF3E0', border: '1px solid #FFB74D' }}>
+            <div style={{ ...S.flexBetween, marginBottom: 10 }}>
+              <h4 style={{ ...S.sectionTitle, fontSize: 13, margin: 0 }}>📝 Créer une facture manuelle</h4>
+              <button style={S.btn(showManualForm ? 'outline' : 'primary')} onClick={() => { setShowManualForm(!showManualForm); if (!showManualForm && manualLines.length === 0) addManualLine(); }}>
+                {showManualForm ? 'Masquer' : '+ Nouvelle facture manuelle'}
+              </button>
+            </div>
+            <p style={{ fontSize: 11, color: '#6C757D', marginBottom: 8 }}>Créer une facture sans avoir besoin de quarts dans l'horaire</p>
+
+            {showManualForm && (
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Client *</label>
+                    <select style={S.select} value={manualClientId} onChange={e => setManualClientId(e.target.value)}>
+                      <option value="">— Sélectionner —</option>
+                      {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Employé (optionnel)</label>
+                    <select style={S.select} value={manualEmployeeId} onChange={e => setManualEmployeeId(e.target.value)}>
+                      <option value="">— Aucun —</option>
+                      {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Début période *</label>
+                    <input type="date" style={S.input} value={manualPeriodStart} onChange={e => setManualPeriodStart(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Fin période *</label>
+                    <input type="date" style={S.input} value={manualPeriodEnd} onChange={e => setManualPeriodEnd(e.target.value)} />
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>No PO</label>
+                    <input style={S.input} value={manualPoNumber} onChange={e => setManualPoNumber(e.target.value)} placeholder="PO-001" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Date échéance</label>
+                    <input type="date" style={S.input} value={manualDueDate} onChange={e => setManualDueDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Notes</label>
+                    <input style={S.input} value={manualNotes} onChange={e => setManualNotes(e.target.value)} placeholder="Notes..." />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 4 }}>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={manualIncludeTax} onChange={e => setManualIncludeTax(e.target.checked)} /> Inclure TPS/TVQ
+                    </label>
+                  </div>
+                </div>
+
+                {/* Service lines */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ ...S.flexBetween, marginBottom: 6 }}>
+                    <h5 style={{ fontSize: 12, fontWeight: 600, margin: 0 }}>Lignes de service (quarts)</h5>
+                    <button style={{ ...S.btn('outline'), fontSize: 10, padding: '2px 8px' }} onClick={addManualLine}>+ Ajouter ligne</button>
+                  </div>
+                  {manualLines.length > 0 && (
+                    <table style={{ ...S.table, fontSize: 11 }}>
+                      <thead>
+                        <tr>
+                          {['Date', 'Début', 'Fin', 'Pause (min)', 'Heures', 'Taux', 'Montant', ''].map(h => (
+                            <th key={h} style={{ ...S.th, fontSize: 10, padding: '4px 6px' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {manualLines.map((l, i) => (
+                          <tr key={i}>
+                            <td style={S.td}><input type="date" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 110 }} value={l.date} onChange={e => updateManualLine(i, 'date', e.target.value)} /></td>
+                            <td style={S.td}><input style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 55 }} value={l.start} onChange={e => updateManualLine(i, 'start', e.target.value)} placeholder="07:00" /></td>
+                            <td style={S.td}><input style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 55 }} value={l.end} onChange={e => updateManualLine(i, 'end', e.target.value)} placeholder="15:00" /></td>
+                            <td style={S.td}><input type="number" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 50 }} value={l.pause_min} onChange={e => updateManualLine(i, 'pause_min', e.target.value)} /></td>
+                            <td style={S.td}><input type="number" step="0.25" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 50 }} value={l.hours} onChange={e => updateManualLine(i, 'hours', e.target.value)} /></td>
+                            <td style={S.td}><input type="number" step="0.01" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 60 }} value={l.rate} onChange={e => updateManualLine(i, 'rate', e.target.value)} /></td>
+                            <td style={{ ...S.td, fontWeight: 600, textAlign: 'right' }}>{fmt(l.service_amount || 0)}</td>
+                            <td style={S.td}><button style={{ color: '#DC3545', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12 }} onClick={() => setManualLines(p => p.filter((_, j) => j !== i))}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* Expense lines */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ ...S.flexBetween, marginBottom: 6 }}>
+                    <h5 style={{ fontSize: 12, fontWeight: 600, margin: 0 }}>Frais / Dépenses</h5>
+                    <button style={{ ...S.btn('outline'), fontSize: 10, padding: '2px 8px' }} onClick={addManualExpense}>+ Ajouter frais</button>
+                  </div>
+                  {manualExpenseLines.length > 0 && (
+                    <table style={{ ...S.table, fontSize: 11 }}>
+                      <thead>
+                        <tr>
+                          {['Type', 'Description', 'Quantité', 'Taux', 'Montant', ''].map(h => (
+                            <th key={h} style={{ ...S.th, fontSize: 10, padding: '4px 6px' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {manualExpenseLines.map((e, i) => (
+                          <tr key={i}>
+                            <td style={S.td}>
+                              <select style={{ ...S.select, fontSize: 10, padding: '3px 4px', width: 100 }} value={e.type} onChange={ev => updateManualExpense(i, 'type', ev.target.value)}>
+                                <option value="km">Kilométrage</option>
+                                <option value="deplacement">Déplacement</option>
+                                <option value="autre">Autre</option>
+                              </select>
+                            </td>
+                            <td style={S.td}><input style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 130 }} value={e.description} onChange={ev => updateManualExpense(i, 'description', ev.target.value)} /></td>
+                            <td style={S.td}><input type="number" step="0.01" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 60 }} value={e.quantity} onChange={ev => updateManualExpense(i, 'quantity', ev.target.value)} /></td>
+                            <td style={S.td}><input type="number" step="0.01" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 60 }} value={e.rate} onChange={ev => updateManualExpense(i, 'rate', ev.target.value)} /></td>
+                            <td style={{ ...S.td, fontWeight: 600, textAlign: 'right' }}>{fmt(e.amount || 0)}</td>
+                            <td style={S.td}><button style={{ color: '#DC3545', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12 }} onClick={() => setManualExpenseLines(p => p.filter((_, j) => j !== i))}>✕</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                <div style={S.flexRow}>
+                  <button style={S.btn('primary', 'md')} onClick={createManualInvoice} disabled={loading || !manualClientId}>
+                    {loading ? 'Création en cours...' : '📝 Créer la facture manuelle'}
+                  </button>
+                  <button style={S.btn('outline')} onClick={() => { setShowManualForm(false); setManualLines([]); setManualExpenseLines([]); }}>Annuler</button>
+                  <span style={{ fontSize: 11, color: '#6C757D' }}>
+                    Total lignes: {fmt(manualLines.reduce((s, l) => s + (parseFloat(l.service_amount) || 0), 0) + manualExpenseLines.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0))}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -692,6 +952,10 @@ export default function InvoicesPage() {
           onLoadReport={loadReport}
           onOpenInvoice={openDetail}
           onMarkPaid={markPaid}
+          clients={clients}
+          setError={setError}
+          setSuccess={setSuccess}
+          loadClients={loadClients}
         />
       )}
 
@@ -817,10 +1081,40 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     }
   };
 
+  // Auto-calculate billable hours: (end - start) - pause
+  const calcHours = (start, end, pauseMin = 0) => {
+    if (!start || !end) return 0;
+    const [sh, sm] = start.split(':').map(Number);
+    const [eh, em] = end.split(':').map(Number);
+    if (isNaN(sh) || isNaN(sm) || isNaN(eh) || isNaN(em)) return 0;
+    let startMins = sh * 60 + sm;
+    let endMins = eh * 60 + em;
+    if (endMins <= startMins) endMins += 24 * 60; // overnight shift
+    const totalMins = endMins - startMins - (parseFloat(pauseMin) || 0);
+    return Math.round(Math.max(0, totalMins / 60) * 100) / 100;
+  };
+
   const updateEditLine = (idx, field, value) => {
     setEditLines(prev => {
       const next = [...prev];
-      next[idx] = { ...next[idx], [field]: value };
+      const updated = { ...next[idx], [field]: value };
+      // Auto-recalculate hours when start, end, or pause_min changes
+      if (['start', 'end', 'pause_min'].includes(field)) {
+        const s = field === 'start' ? value : updated.start;
+        const e = field === 'end' ? value : updated.end;
+        const p = field === 'pause_min' ? value : updated.pause_min;
+        if (s && e) {
+          updated.hours = calcHours(s, e, p);
+          updated.service_amount = parseFloat((updated.hours * (parseFloat(updated.rate) || 0)).toFixed(2));
+        }
+      }
+      // Auto-recalculate service_amount when hours or rate changes directly
+      if (['hours', 'rate'].includes(field)) {
+        const h = field === 'hours' ? parseFloat(value) || 0 : parseFloat(updated.hours) || 0;
+        const r = field === 'rate' ? parseFloat(value) || 0 : parseFloat(updated.rate) || 0;
+        updated.service_amount = parseFloat((h * r).toFixed(2));
+      }
+      next[idx] = updated;
       return next;
     });
   };
@@ -1481,7 +1775,39 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
   );
 }
 
-function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMarkPaid }) {
+function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMarkPaid, clients, setError, setSuccess, loadClients }) {
+  const [clientDetail, setClientDetail] = useState(null);
+  const [clientDetailLoading, setClientDetailLoading] = useState(false);
+  const [showNewClient, setShowNewClient] = useState(false);
+  const [newClient, setNewClient] = useState({ name: '', address: '', email: '', phone: '' });
+  const [creatingClient, setCreatingClient] = useState(false);
+
+  const loadClientDetail = async (clientId) => {
+    setClientDetailLoading(true);
+    try {
+      const data = await apiFetch(`/invoices/reports/client/${clientId}`);
+      setClientDetail(data);
+    } catch (e) {
+      setError && setError(e.message);
+    }
+    setClientDetailLoading(false);
+  };
+
+  const createNewClient = async () => {
+    if (!newClient.name.trim()) { setError && setError('Le nom du client est requis'); return; }
+    setCreatingClient(true);
+    try {
+      await apiFetch('/clients/', { method: 'POST', body: JSON.stringify(newClient) });
+      setSuccess && setSuccess(`Client "${newClient.name}" créé`);
+      setShowNewClient(false);
+      setNewClient({ name: '', address: '', email: '', phone: '' });
+      if (loadClients) loadClients();
+    } catch (e) {
+      setError && setError(e.message);
+    }
+    setCreatingClient(false);
+  };
+
   const downloadCSV = () => {
     if (!reportData || !reportData.length) return;
     let csv = '';
@@ -1502,6 +1828,105 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
     a.click(); URL.revokeObjectURL(url);
   };
 
+  const downloadClientCSV = () => {
+    if (!clientDetail || !clientDetail.invoices?.length) return;
+    let csv = 'Numéro,Date,Employé,Période,Total,Payé,Solde,Statut\n';
+    clientDetail.invoices.forEach(inv => {
+      const statusLabel = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' }[inv.status] || inv.status;
+      csv += `"${inv.number}","${inv.date}","${inv.employee_name}","${inv.period_start} → ${inv.period_end}",${inv.total},${inv.amount_paid},${inv.balance_due},"${statusLabel}"\n`;
+    });
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `rapport_client_${clientDetail.client_name}_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  const downloadClientPDF = () => {
+    if (!clientDetail) return;
+    // Generate a printable HTML and open as PDF
+    const invoiceRows = (clientDetail.invoices || []).map(inv => {
+      const statusLabel = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' }[inv.status] || inv.status;
+      return `<tr><td>${inv.number}</td><td>${inv.date}</td><td>${inv.employee_name}</td><td>${inv.period_start} → ${inv.period_end}</td><td style="text-align:right">${Number(inv.total||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.amount_paid||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.balance_due||0).toFixed(2)}$</td><td>${statusLabel}</td></tr>`;
+    }).join('');
+    const html = `<!DOCTYPE html><html><head><title>Rapport - ${clientDetail.client_name}</title><style>body{font-family:Arial,sans-serif;margin:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;font-size:12px}th{background:#2A7B88;color:#fff}h1{color:#2A7B88;font-size:18px}h2{font-size:14px;margin-top:20px}.summary{display:flex;gap:20px;margin:10px 0}.summary div{background:#f0f0f0;padding:8px 12px;border-radius:6px;font-size:12px}.summary strong{display:block;font-size:16px}</style></head><body><h1>Rapport Client — ${clientDetail.client_name}</h1><div class="summary"><div>Facturé<strong>${Number(clientDetail.total_invoiced||0).toFixed(2)}$</strong></div><div>Payé<strong>${Number(clientDetail.total_paid||0).toFixed(2)}$</strong></div><div>En cours<strong>${Number(clientDetail.total_outstanding||0).toFixed(2)}$</strong></div><div>En retard<strong>${Number(clientDetail.total_overdue||0).toFixed(2)}$</strong></div></div><h2>Factures (${clientDetail.invoices?.length || 0})</h2><table><thead><tr><th>Numéro</th><th>Date</th><th>Employé</th><th>Période</th><th>Total</th><th>Payé</th><th>Solde</th><th>Statut</th></tr></thead><tbody>${invoiceRows}</tbody></table><p style="margin-top:20px;font-size:10px;color:#888">Généré le ${new Date().toLocaleDateString('fr-CA')}</p></body></html>`;
+    const w = window.open('', '_blank');
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => { w.print(); }, 500);
+  };
+
+  // Client detail view
+  if (clientDetail) {
+    const statusColors = { draft: '#6C757D', validated: '#2A7B88', sent: '#0D6EFD', paid: '#28A745', partially_paid: '#FFC107', cancelled: '#DC3545' };
+    const statusLabels = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' };
+    return (
+      <div>
+        <div style={{ ...S.flexBetween, marginBottom: 16 }}>
+          <div style={S.flexRow}>
+            <button style={S.btn('outline')} onClick={() => setClientDetail(null)}>← Retour aux rapports</button>
+            <h3 style={{ ...S.sectionTitle, margin: 0 }}>📋 {clientDetail.client_name}</h3>
+          </div>
+          <div style={S.flexRow}>
+            <button style={S.btn('outline')} onClick={downloadClientCSV}>📥 CSV</button>
+            <button style={S.btn('outline')} onClick={downloadClientPDF}>📄 PDF</button>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          {[
+            { label: 'Facturé', val: clientDetail.total_invoiced, color: '#2A7B88' },
+            { label: 'Payé', val: clientDetail.total_paid, color: '#28A745' },
+            { label: 'En cours', val: clientDetail.total_outstanding, color: '#FFC107' },
+            { label: 'En retard', val: clientDetail.total_overdue, color: '#DC3545' },
+          ].map(s => (
+            <div key={s.label} style={{ background: '#fff', borderRadius: 8, padding: 14, border: '1px solid #E2E8F0', textAlign: 'center' }}>
+              <div style={{ fontSize: 11, color: '#6C757D', marginBottom: 4 }}>{s.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: s.color }}>{fmt(s.val)}</div>
+            </div>
+          ))}
+        </div>
+
+        <h4 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+          Factures ({clientDetail.invoices?.length || 0})
+        </h4>
+        <table style={S.table}>
+          <thead>
+            <tr>
+              {['Numéro', 'Date', 'Employé', 'Période', 'Total', 'Payé', 'Solde', 'Statut', ''].map((h, i) => (
+                <th key={h+i} style={{ ...S.th, ...(i >= 4 && i <= 6 ? { textAlign: 'right' } : {}) }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {(clientDetail.invoices || []).map((inv, i) => (
+              <tr key={inv.id} style={{ background: i % 2 === 0 ? '#fff' : '#f8f9fa' }}>
+                <td style={{ ...S.td, fontWeight: 600 }}>{inv.number}</td>
+                <td style={S.td}>{fmtDate(inv.date)}</td>
+                <td style={S.td}>{inv.employee_name}</td>
+                <td style={{ ...S.td, fontSize: 11 }}>{fmtDate(inv.period_start)} → {fmtDate(inv.period_end)}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>{fmt(inv.total)}</td>
+                <td style={{ ...S.td, textAlign: 'right', color: '#28A745' }}>{fmt(inv.amount_paid)}</td>
+                <td style={{ ...S.td, textAlign: 'right', color: inv.balance_due > 0 ? '#DC3545' : '#6C757D' }}>{fmt(inv.balance_due)}</td>
+                <td style={S.td}>
+                  <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 600, backgroundColor: statusColors[inv.status] || '#6C757D', color: inv.status === 'partially_paid' ? '#000' : '#fff' }}>
+                    {statusLabels[inv.status] || inv.status}
+                  </span>
+                </td>
+                <td style={S.td}>
+                  <button style={{ ...S.btn('outline'), fontSize: 10, padding: '2px 8px' }} onClick={() => { setClientDetail(null); onOpenInvoice(inv.id); }}>Voir</button>
+                </td>
+              </tr>
+            ))}
+            {(!clientDetail.invoices || clientDetail.invoices.length === 0) && (
+              <tr><td colSpan={9} style={{ ...S.td, textAlign: 'center', color: '#6C757D' }}>Aucune facture pour ce client</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ ...S.flexBetween, marginBottom: 16 }}>
@@ -1516,10 +1941,44 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
             </button>
           ))}
         </div>
-        {reportData && reportData.length > 0 && (
-          <button style={S.btn('outline')} onClick={downloadCSV}>📥 Télécharger CSV</button>
-        )}
+        <div style={S.flexRow}>
+          {reportData && reportData.length > 0 && (
+            <button style={S.btn('outline')} onClick={downloadCSV}>📥 Télécharger CSV</button>
+          )}
+          <button style={S.btn('primary')} onClick={() => setShowNewClient(true)}>+ Nouveau client</button>
+        </div>
       </div>
+
+      {/* Create new client form */}
+      {showNewClient && (
+        <div style={{ ...S.card, marginBottom: 16, background: '#E8F4F6', border: '1px solid #B5D8DC' }}>
+          <h4 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>➕ Créer un nouveau client</h4>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Nom *</label>
+              <input style={S.input} value={newClient.name} onChange={e => setNewClient(p => ({ ...p, name: e.target.value }))} placeholder="Nom du client" />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Courriel</label>
+              <input style={S.input} value={newClient.email} onChange={e => setNewClient(p => ({ ...p, email: e.target.value }))} placeholder="email@exemple.com" />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Adresse</label>
+              <input style={S.input} value={newClient.address} onChange={e => setNewClient(p => ({ ...p, address: e.target.value }))} placeholder="Adresse" />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Téléphone</label>
+              <input style={S.input} value={newClient.phone} onChange={e => setNewClient(p => ({ ...p, phone: e.target.value }))} placeholder="514-000-0000" />
+            </div>
+          </div>
+          <div style={S.flexRow}>
+            <button style={S.btn('primary')} onClick={createNewClient} disabled={creatingClient}>
+              {creatingClient ? 'Création...' : 'Créer le client'}
+            </button>
+            <button style={S.btn('outline')} onClick={() => setShowNewClient(false)}>Annuler</button>
+          </div>
+        </div>
+      )}
 
       {!reportData ? (
         <div style={S.empty}>Sélectionnez un rapport</div>
@@ -1529,24 +1988,27 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
             <thead>
               <tr>
                 {['Client', 'Facturé', 'Payé', 'En cours', 'En retard', 'Nb factures', ''].map((h, i) => (
-                  <th key={h} style={{ ...S.th, ...(i >= 1 && i <= 4 ? { textAlign: 'right' } : {}), ...(i === 0 ? { borderRadius: '8px 0 0 0' } : i === 6 ? { borderRadius: '0 8px 0 0' } : {}) }}>{h}</th>
+                  <th key={h+i} style={{ ...S.th, ...(i >= 1 && i <= 4 ? { textAlign: 'right' } : {}), ...(i === 0 ? { borderRadius: '8px 0 0 0' } : i === 6 ? { borderRadius: '0 8px 0 0' } : {}) }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {reportData.map((c, i) => (
-                <tr key={c.client_id} style={{ background: i % 2 === 0 ? '#fff' : '#f8f9fa' }}>
-                  <td style={{ ...S.td, fontWeight: 600 }}>{c.client_name}</td>
+                <tr key={c.client_id} style={{ background: i % 2 === 0 ? '#fff' : '#f8f9fa', cursor: 'pointer' }} onClick={() => loadClientDetail(c.client_id)}>
+                  <td style={{ ...S.td, fontWeight: 600, color: '#2A7B88' }}>{c.client_name}</td>
                   <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>{fmt(c.total_invoiced)}</td>
                   <td style={{ ...S.td, textAlign: 'right', color: '#28A745' }}>{fmt(c.total_paid)}</td>
                   <td style={{ ...S.td, textAlign: 'right', color: '#FFC107' }}>{fmt(c.total_outstanding)}</td>
                   <td style={{ ...S.td, textAlign: 'right', color: c.total_overdue > 0 ? '#DC3545' : '#6C757D', fontWeight: c.total_overdue > 0 ? 700 : 400 }}>{fmt(c.total_overdue)}</td>
                   <td style={{ ...S.td, textAlign: 'center' }}>{c.invoice_count}</td>
-                  <td style={S.td}></td>
+                  <td style={S.td}>
+                    <button style={{ ...S.btn('outline'), fontSize: 10, padding: '2px 8px' }} onClick={(e) => { e.stopPropagation(); loadClientDetail(c.client_id); }}>📋 Détail</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <p style={{ fontSize: 11, color: '#6C757D', marginTop: 8 }}>💡 Cliquez sur un client pour voir ses factures en détail</p>
         </div>
       ) : reportType === 'by-employee' ? (
         <table style={S.table}>

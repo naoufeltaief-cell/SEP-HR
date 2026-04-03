@@ -1,12 +1,16 @@
-"""Schedule routes — CRUD with recurrence, publish, bulk operations, week approval"""
+"""Schedule routes — CRUD with recurrence, publish, bulk operations, week approval, import/export"""
 from datetime import timedelta, date as date_type, datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
+import io, csv, re, logging
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from ..database import get_db
-from ..models.models import Schedule, ScheduleApproval, Employee, new_id
+from ..models.models import Schedule, ScheduleApproval, Employee, Client, new_id
 from ..models.schemas import ScheduleCreate, ScheduleUpdate, ScheduleOut
 from ..services.auth_service import require_admin, get_current_user
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -85,6 +89,338 @@ async def publish_all(db: AsyncSession = Depends(get_db), user=Depends(require_a
         count += 1
     await db.commit()
     return {"published": count}
+
+
+# ── CSV / Excel IMPORT ──
+
+def _normalise_time(raw: str) -> str:
+    """Convert time string to HH:MM format."""
+    if not raw or not str(raw).strip():
+        return "00:00"
+    raw = str(raw).strip()
+    # Handle "7:00" → "07:00", "15:15" stays, "0:00" → "00:00"
+    m = re.match(r'^(\d{1,2}):(\d{2})(?::\d{2})?$', raw)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    return "00:00"
+
+
+def _safe_float(val, default=0.0):
+    try:
+        if val is None or str(val).strip() == '':
+            return default
+        return float(str(val).strip().replace(',', '.'))
+    except (ValueError, TypeError):
+        return default
+
+
+@router.post("/import-csv")
+async def import_csv(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Import schedules from CSV or Excel file.
+    
+    Expected CSV columns (from AgendRH export):
+    Prénom, Nom, Numero_employe, Courriel, Date_du_quart, Heure_debut, Heure_fin,
+    Heures_travaillees, Taux_horaire, Temps de Préparation, Cout, Equipe, Position,
+    Lieu, Code_lieu, Sous_lieu, Code_sous_lieu, Statut, Note, Note_employe, Note_interne,
+    Assigne_par, Date_assignation
+    """
+    import pandas as pd
+
+    # ── Read file ──
+    content = await file.read()
+    fname = (file.filename or "").lower()
+    try:
+        if fname.endswith(".xlsx") or fname.endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(content), dtype=str)
+        else:
+            # Try utf-8, then latin-1
+            try:
+                df = pd.read_csv(io.BytesIO(content), dtype=str, encoding="utf-8")
+            except UnicodeDecodeError:
+                df = pd.read_csv(io.BytesIO(content), dtype=str, encoding="latin-1")
+    except Exception as exc:
+        raise HTTPException(400, f"Impossible de lire le fichier: {exc}")
+
+    if df.empty:
+        return {"success": 0, "errors": 0, "error_details": [], "message": "Fichier vide"}
+
+    # ── Normalize column names ──
+    col_map = {
+        'prénom': 'prenom', 'prenom': 'prenom',
+        'nom': 'nom',
+        'numero_employe': 'numero_employe',
+        'courriel': 'courriel',
+        'date_du_quart': 'date_du_quart',
+        'heure_debut': 'heure_debut',
+        'heure_fin': 'heure_fin',
+        'heures_travaillees': 'heures_travaillees',
+        'taux_horaire': 'taux_horaire',
+        'temps de préparation': 'temps_preparation',
+        'temps de preparation': 'temps_preparation',
+        'cout': 'cout', 'coût': 'cout',
+        'equipe': 'equipe', 'équipe': 'equipe',
+        'position': 'position',
+        'lieu': 'lieu',
+        'code_lieu': 'code_lieu',
+        'sous_lieu': 'sous_lieu',
+        'code_sous_lieu': 'code_sous_lieu',
+        'statut': 'statut',
+        'note': 'note',
+        'note_employe': 'note_employe',
+        'note_interne': 'note_interne',
+        'assigne_par': 'assigne_par',
+        'date_assignation': 'date_assignation',
+    }
+    df.columns = [col_map.get(c.strip().lower().replace('é', 'e').replace('ê', 'e').replace('û', 'u').replace('ô', 'o'), c.strip().lower()) for c in df.columns]
+    # More robust: remap with accent-insensitive matching
+    remap = {}
+    for orig_col in df.columns:
+        norm = orig_col.strip().lower()
+        for k, v in col_map.items():
+            if norm == k or norm.replace('é', 'e').replace('ê', 'e').replace('û', 'u').replace('ô', 'o') == k:
+                remap[orig_col] = v
+                break
+    if remap:
+        df.rename(columns=remap, inplace=True)
+
+    # ── Load employees and clients from DB ──
+    emp_result = await db.execute(select(Employee))
+    employees = emp_result.scalars().all()
+    emp_by_name = {}
+    for e in employees:
+        emp_by_name[e.name.strip().lower()] = e
+        # Also index by parts
+        parts = e.name.strip().lower().split()
+        if len(parts) >= 2:
+            emp_by_name[f"{parts[0]} {parts[-1]}"] = e
+            emp_by_name[f"{parts[-1]} {parts[0]}"] = e
+
+    client_result = await db.execute(select(Client))
+    clients_db = client_result.scalars().all()
+    client_by_name = {c.name.strip().lower(): c for c in clients_db}
+
+    # ── Process rows ──
+    success_count = 0
+    error_details = []
+    created_ids = []
+
+    for idx, row in df.iterrows():
+        row_num = idx + 2  # +2 for header + 0-indexed
+        try:
+            # ── Find employee ──
+            prenom = str(row.get('prenom', '') or '').strip()
+            nom = str(row.get('nom', '') or '').strip()
+            full_name = f"{prenom} {nom}".strip().lower()
+            reverse_name = f"{nom} {prenom}".strip().lower()
+            
+            emp = emp_by_name.get(full_name) or emp_by_name.get(reverse_name)
+            if not emp:
+                # Try partial matching
+                for key, e in emp_by_name.items():
+                    if prenom.lower() in key and nom.lower() in key:
+                        emp = e
+                        break
+            if not emp:
+                error_details.append({"row": row_num, "error": f"Employé introuvable: {prenom} {nom}"})
+                continue
+
+            # ── Parse date ──
+            date_str = str(row.get('date_du_quart', '') or '').strip()
+            if not date_str or date_str == 'nan':
+                error_details.append({"row": row_num, "error": "Date manquante"})
+                continue
+            try:
+                shift_date = date_type.fromisoformat(date_str)
+            except ValueError:
+                # Try other formats
+                for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y/%m/%d'):
+                    try:
+                        shift_date = datetime.strptime(date_str, fmt).date()
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    error_details.append({"row": row_num, "error": f"Format de date invalide: {date_str}"})
+                    continue
+
+            # ── Parse times ──
+            start_time = _normalise_time(row.get('heure_debut', ''))
+            end_time = _normalise_time(row.get('heure_fin', ''))
+
+            # ── Parse numeric fields ──
+            hours = _safe_float(row.get('heures_travaillees'), 0)
+            rate = _safe_float(row.get('taux_horaire'), 0)
+            prep = _safe_float(row.get('temps_preparation'), 0)
+
+            # ── Location ──
+            lieu = str(row.get('lieu', '') or '').strip()
+            if lieu == 'nan':
+                lieu = ''
+            sous_lieu = str(row.get('sous_lieu', '') or '').strip()
+            if sous_lieu and sous_lieu != 'nan':
+                lieu = f"{lieu} - {sous_lieu}" if lieu else sous_lieu
+
+            # ── Notes ──
+            note_parts = []
+            for nf in ('note', 'note_employe', 'note_interne'):
+                v = str(row.get(nf, '') or '').strip()
+                if v and v != 'nan':
+                    note_parts.append(v)
+            notes = '; '.join(note_parts)
+
+            # ── Client lookup from location ──
+            client_id = None
+            if lieu:
+                lieu_lower = lieu.lower()
+                for cn, cl in client_by_name.items():
+                    if cn in lieu_lower or lieu_lower in cn:
+                        client_id = cl.id
+                        break
+            # Fallback to employee default client
+            if not client_id and emp.client_id:
+                client_id = emp.client_id
+
+            # ── Status mapping ──
+            statut_raw = str(row.get('statut', '') or '').strip().lower()
+            if 'annul' in statut_raw:
+                # Skip cancelled shifts
+                continue
+            elif statut_raw in ('quart assigné', 'quart assigne', 'assigné', 'assigne', 'publié', 'publie', 'published'):
+                status = 'published'
+            else:
+                status = 'draft'
+
+            # ── Create schedule record ──
+            sched = Schedule(
+                id=new_id(),
+                employee_id=emp.id,
+                date=shift_date,
+                start=start_time,
+                end=end_time,
+                hours=hours,
+                pause=0,
+                location=lieu,
+                billable_rate=rate,
+                status=status,
+                notes=notes,
+                client_id=client_id,
+                km=0,
+                deplacement=0,
+                autre_dep=0,
+                garde_hours=0,
+                rappel_hours=0,
+            )
+            db.add(sched)
+            created_ids.append(sched.id)
+            success_count += 1
+
+        except Exception as exc:
+            error_details.append({"row": row_num, "error": str(exc)})
+
+    if created_ids:
+        await db.commit()
+
+    return {
+        "success": success_count,
+        "errors": len(error_details),
+        "total_rows": len(df),
+        "error_details": error_details[:100],  # Cap at 100 errors
+        "message": f"{success_count} quarts importés avec succès"
+                   + (f", {len(error_details)} erreurs" if error_details else ""),
+    }
+
+
+# ── CSV / Excel EXPORT ──
+
+@router.get("/export-csv")
+async def export_csv(
+    date_start: str = Query(None),
+    date_end: str = Query(None),
+    employee_id: int = Query(None),
+    client_id: int = Query(None),
+    format: str = Query("csv", description="csv or xlsx"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    """Export schedules as CSV or Excel file."""
+    import pandas as pd
+
+    q = select(Schedule)
+    if date_start:
+        q = q.where(Schedule.date >= date_start)
+    if date_end:
+        q = q.where(Schedule.date <= date_end)
+    if employee_id:
+        q = q.where(Schedule.employee_id == employee_id)
+    if client_id:
+        q = q.where(Schedule.client_id == client_id)
+    q = q.order_by(Schedule.date, Schedule.start)
+
+    result = await db.execute(q)
+    schedules = result.scalars().all()
+
+    # Load employees and clients for display names
+    emp_result = await db.execute(select(Employee))
+    emp_map = {e.id: e for e in emp_result.scalars().all()}
+    client_result = await db.execute(select(Client))
+    client_map = {c.id: c for c in client_result.scalars().all()}
+
+    rows = []
+    for s in schedules:
+        emp = emp_map.get(s.employee_id)
+        cl = client_map.get(s.client_id) if s.client_id else None
+        emp_name = emp.name if emp else ""
+        name_parts = emp_name.split(maxsplit=1)
+        prenom = name_parts[0] if name_parts else ""
+        nom = name_parts[1] if len(name_parts) > 1 else ""
+
+        rows.append({
+            "Prénom": prenom,
+            "Nom": nom,
+            "Employé_ID": s.employee_id,
+            "Courriel": emp.email if emp else "",
+            "Date": str(s.date),
+            "Début": s.start,
+            "Fin": s.end,
+            "Heures": s.hours,
+            "Pause": s.pause,
+            "Taux horaire": s.billable_rate,
+            "Lieu": s.location or "",
+            "Client": cl.name if cl else "",
+            "Client_ID": s.client_id or "",
+            "KM": s.km,
+            "Déplacement": s.deplacement,
+            "Autre dépense": s.autre_dep,
+            "Heures garde": s.garde_hours,
+            "Heures rappel": s.rappel_hours,
+            "Statut": s.status,
+            "Notes": s.notes or "",
+        })
+
+    df = pd.DataFrame(rows)
+
+    if format == "xlsx":
+        buf = io.BytesIO()
+        df.to_excel(buf, index=False, engine="openpyxl")
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=horaires_export.xlsx"},
+        )
+    else:
+        buf = io.StringIO()
+        df.to_csv(buf, index=False)
+        content = buf.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": "attachment; filename=horaires_export.csv"},
+        )
 
 
 @router.post("/approve-week")

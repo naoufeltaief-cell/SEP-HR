@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import api from '../utils/api';
 import { fmtDay, fmtISO, fmtMoney, getWeekDates, getMonthDates, RATE_KM } from '../utils/helpers';
 import { Avatar, Modal } from '../components/UI';
-import { ChevronLeft, ChevronRight, Plus, Send, Calendar, Search, FileText, Trash2, Eye } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Send, Calendar, Search, FileText, Trash2, Eye, Upload, Download } from 'lucide-react';
 
 const MONTHS_FULL = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
 const TPS_RATE = 0.05;
@@ -113,8 +113,194 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const openReviewAttachment = async (attId) => { if (!currentReview?.id || !attId) return; const base = import.meta.env.VITE_API_URL || '/api'; window.open(`${base}/schedule-reviews/${currentReview.id}/attachments/${attId}`, '_blank'); };
   const generateInvoice = async (empId, clientId) => { const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we || !empId || !clientId) return; if (currentReview?.status !== 'approved') { toast?.('Approuve les heures avant de générer la facture'); return; } try { setBillingLoading(true); const result = await api.generateFromSchedules({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we }); setCurrentInvoice(result || null); toast?.(`Facture ${result.number} générée`); } catch (err) { const msg = err.message || 'Erreur réseau'; toast?.('Erreur: ' + (msg.includes('fetch') ? 'Impossible de joindre le serveur.' : msg)); } finally { setBillingLoading(false); } };
   const generateAllApproved = async () => { const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we) { toast?.('Période invalide — sélectionnez une semaine valide'); return; } try { setBulkLoading(true); const result = await api.generateAllApprovedInvoices({ period_start: ws, period_end: we }); const skippedMsg = (result.skipped && result.skipped.length > 0) ? ` (${result.skipped.length} ignorée(s))` : ''; toast?.(`${result.count || 0} facture(s) approuvée(s) générée(s)${skippedMsg}`); if ((result.count || 0) > 0 && onNavigate) onNavigate('invoices'); } catch (err) { const msg = err.message || 'Erreur réseau'; toast?.('Erreur génération: ' + (msg.includes('fetch') ? 'Impossible de joindre le serveur. Vérifiez que le backend est démarré.' : msg)); } finally { setBulkLoading(false); } };
+  // ── Import / Export CSV/Excel ──
+  const [importModal, setImportModal] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [exportModal, setExportModal] = useState(false);
+  const [exportOpts, setExportOpts] = useState({ date_start: '', date_end: '', employee_id: '', client_id: '', format: 'csv' });
+  const [exporting, setExporting] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = React.useRef(null);
+
+  const handleImport = async () => {
+    if (!importFile) { toast?.('Sélectionnez un fichier'); return; }
+    setImporting(true); setImportResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', importFile);
+      const base = import.meta.env.VITE_API_URL || '/api';
+      const token = localStorage.getItem('token');
+      const resp = await fetch(`${base}/schedules/import-csv`, {
+        method: 'POST', body: formData,
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+      if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Erreur ${resp.status}`); }
+      const data = await resp.json();
+      setImportResult(data);
+      if (data.success > 0) { reload(); toast?.(`${data.success} quart(s) importé(s)`); }
+    } catch (err) { setImportResult({ success: 0, errors: 1, error_details: [{ row: 0, error: err.message }], message: err.message }); toast?.('Erreur import: ' + err.message); }
+    finally { setImporting(false); }
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const base = import.meta.env.VITE_API_URL || '/api';
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams();
+      if (exportOpts.date_start) params.set('date_start', exportOpts.date_start);
+      if (exportOpts.date_end) params.set('date_end', exportOpts.date_end);
+      if (exportOpts.employee_id) params.set('employee_id', exportOpts.employee_id);
+      if (exportOpts.client_id) params.set('client_id', exportOpts.client_id);
+      params.set('format', exportOpts.format);
+      const resp = await fetch(`${base}/schedules/export-csv?${params}`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      });
+      if (!resp.ok) throw new Error(`Erreur ${resp.status}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `horaires_export.${exportOpts.format === 'xlsx' ? 'xlsx' : 'csv'}`;
+      a.click(); URL.revokeObjectURL(url);
+      setExportModal(false); toast?.('Export téléchargé');
+    } catch (err) { toast?.('Erreur export: ' + err.message); }
+    finally { setExporting(false); }
+  };
+
+  const handleDrop = (e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer?.files?.[0]; if (f) setImportFile(f); };
+
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text3)' }}>Chargement des horaires...</div>;
-  return <><div className="page-header"><h1 className="page-title"><Calendar size={22} style={{ marginRight: 8, verticalAlign: 'text-bottom', color: 'var(--brand)' }} />Horaires</h1><div style={{ display: 'flex', gap: 8 }}>{viewMode === 'week' && <button className="btn btn-outline btn-sm" onClick={generateAllApproved} disabled={bulkLoading}><FileText size={13} /> {bulkLoading ? 'Génération…' : 'Générer toutes les factures approuvées'}</button>}<button className="btn btn-outline btn-sm" onClick={() => api.publishAll().then(() => { toast?.('Quarts publiés'); reload(); }).catch(err => toast?.('Erreur: ' + err.message))}><Send size={13} /> Publier tout</button><button className="btn btn-primary btn-sm" onClick={() => openAdd()}><Plus size={14} /> Ajouter</button></div></div><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}><ChevronLeft size={16} /></button><span style={{ fontSize: 13, fontWeight: 600, minWidth: 230, textAlign: 'center' }}>{periodLabel}</span><button className="btn btn-outline btn-sm" onClick={() => navigate(1)}><ChevronRight size={16} /></button></div><div style={{ display: 'flex', gap: 6 }}><button className={`btn btn-sm ${viewMode === 'week' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('week')}>Semaine</button><button className={`btn btn-sm ${viewMode === 'month' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('month')}>Mois</button></div></div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ position: 'relative', maxWidth: 300 }}><Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text3)' }} /><input className="input" style={{ paddingLeft: 32, padding: '7px 12px 7px 32px', fontSize: 12 }} placeholder="Rechercher un employé..." value={filterText} onChange={e => setFilterText(e.target.value)} /></div><div style={{ fontSize: 12, color: 'var(--text3)' }}>{schedules.length} quarts · {employees.length} employés</div></div></div><div className="schedule-grid"><table><thead><tr><th>Employé</th>{viewDates.map((d, i) => <th key={i}>{fmtDay(d)}</th>)}<th style={{ minWidth: 120, background: 'var(--brand-xl)' }}>Total</th></tr></thead><tbody>{activeEmps.map(e => { const periodShifts = schedules.filter(s => s.employee_id === e.id && viewISOs.includes(s.date)); const totalHrs = periodShifts.reduce((sum, s) => sum + Number(s.hours || 0), 0); const totalKm = periodShifts.reduce((sum, s) => sum + Number(s.km || 0), 0); const totalDep = periodShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0), 0); const totalFrais = totalDep + totalKm * RATE_KM; const empClientIds = getEmployeeClientIds(e, periodShifts); return <React.Fragment key={e.id}><tr><td><div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('employees')}><Avatar name={e.name} size={30} /><div><div style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div></div></div></td>{viewDates.map((d, i) => { const iso = fmtISO(d); const shifts = schedules.filter(s => s.employee_id === e.id && s.date === iso); return <td key={i} onDoubleClick={() => openAdd(e.id, iso)}>{shifts.map(s => <ShiftPill key={s.id} shift={s} onClick={() => openEdit(s)} />)}{shifts.length === 0 && <div onClick={() => openAdd(e.id, iso)} style={{ opacity: .25, textAlign: 'center', fontSize: 16, lineHeight: '30px', color: 'var(--brand)', cursor: 'pointer' }}>+</div>}</td>; })}<td style={{ minWidth: 160, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}><div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>{totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}{totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}{viewMode === 'week' && empClientIds.map(cid => { const appr = getWeekApprovalStatus(e.id, cid); const isApproved = appr && appr.status === 'approved'; const cl = clients.find(c => c.id === cid); return <div key={cid} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6 }}><div style={{ fontSize: 9, color: 'var(--text3)' }}>{(cl?.name || 'Client').slice(0, 18)}</div><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer', background: isApproved ? '#28A745' : '#FFC107', color: isApproved ? '#fff' : '#000' }} onClick={() => isApproved ? revokeWeek(e.id, cid) : saveReview(e.id, cid, e.client_id || null, true)}>{isApproved ? '✓ Approuvé' : 'Approuver heures'}</button><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'var(--brand)' : 'var(--surface)', color: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? '#fff' : 'var(--text2)' }} onClick={() => toggleBillingPanel(e.id, cid, e.client_id || null)}>📋 {expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'Fermer' : 'Détails'}</button></div>; })}</td></tr>{viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} onSave={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeek(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoice(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onOpenAttachment={openReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} toast={toast} />}</div></td></tr>}</React.Fragment>; })}</tbody></table></div><Modal open={!!modal} onClose={() => setModal(null)} title={modal?.type === 'edit' ? 'Modifier le quart' : 'Ajouter un quart'}>{modal && <div style={{ display: 'grid', gap: 10 }}><div><label>Employé</label><select className="input" value={modal.data.employeeId} onChange={e => updateModalField('employeeId', e.target.value)}><option value="">Choisir</option>{employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label>Date</label><input className="input" type="date" value={modal.data.date} onChange={e => updateModalField('date', e.target.value)} /></div><div><label>Client</label><select className="input" value={modal.data.clientId} onChange={e => updateModalField('clientId', e.target.value)}><option value="">—</option>{clients.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}</select></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Début</label><input className="input" type="time" value={modal.data.start} onChange={e => updateModalField('start', e.target.value)} /></div><div><label>Fin</label><input className="input" type="time" value={modal.data.end} onChange={e => updateModalField('end', e.target.value)} /></div><div><label>Pause min</label><input className="input" type="number" value={modal.data.pauseMinutes} onChange={e => updateModalField('pauseMinutes', e.target.value)} /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Heures</label><input className="input" value={Number(modal.data.hours || 0).toFixed(2)} readOnly /></div><div><label>KM</label><input className="input" type="number" value={modal.data.km} onChange={e => updateModalField('km', e.target.value)} /></div><div><label>Déplacement</label><input className="input" type="number" step="0.01" value={modal.data.deplacement} onChange={e => updateModalField('deplacement', e.target.value)} /></div></div><div><label>Autre dépense</label><input className="input" type="number" step="0.01" value={modal.data.autreDep} onChange={e => updateModalField('autreDep', e.target.value)} /></div><div><label>Lieu</label><input className="input" value={modal.data.location} onChange={e => updateModalField('location', e.target.value)} /></div><div><label>Notes</label><input className="input" value={modal.data.notes} onChange={e => updateModalField('notes', e.target.value)} /></div><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}><div>{modal.type === 'edit' && <button className="btn btn-outline btn-sm" onClick={deleteShift}><Trash2 size={14} /> Supprimer</button>}</div><div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline btn-sm" onClick={() => setModal(null)}>Annuler</button><button className="btn btn-primary btn-sm" onClick={saveShift}>Sauvegarder</button></div></div></div>}</Modal></>; }
+  return <><div className="page-header"><h1 className="page-title"><Calendar size={22} style={{ marginRight: 8, verticalAlign: 'text-bottom', color: 'var(--brand)' }} />Horaires</h1><div style={{ display: 'flex', gap: 8 }}>{viewMode === 'week' && <button className="btn btn-outline btn-sm" onClick={generateAllApproved} disabled={bulkLoading}><FileText size={13} /> {bulkLoading ? 'Génération…' : 'Générer toutes les factures approuvées'}</button>}<button className="btn btn-outline btn-sm" onClick={() => api.publishAll().then(() => { toast?.('Quarts publiés'); reload(); }).catch(err => toast?.('Erreur: ' + err.message))}><Send size={13} /> Publier tout</button><button className="btn btn-outline btn-sm" onClick={() => { setImportFile(null); setImportResult(null); setImportModal(true); }}><Upload size={13} /> Importer</button><button className="btn btn-outline btn-sm" onClick={() => setExportModal(true)}><Download size={13} /> Exporter</button><button className="btn btn-primary btn-sm" onClick={() => openAdd()}><Plus size={14} /> Ajouter</button></div></div><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}><ChevronLeft size={16} /></button><span style={{ fontSize: 13, fontWeight: 600, minWidth: 230, textAlign: 'center' }}>{periodLabel}</span><button className="btn btn-outline btn-sm" onClick={() => navigate(1)}><ChevronRight size={16} /></button></div><div style={{ display: 'flex', gap: 6 }}><button className={`btn btn-sm ${viewMode === 'week' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('week')}>Semaine</button><button className={`btn btn-sm ${viewMode === 'month' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('month')}>Mois</button></div></div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ position: 'relative', maxWidth: 300 }}><Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text3)' }} /><input className="input" style={{ paddingLeft: 32, padding: '7px 12px 7px 32px', fontSize: 12 }} placeholder="Rechercher un employé..." value={filterText} onChange={e => setFilterText(e.target.value)} /></div><div style={{ fontSize: 12, color: 'var(--text3)' }}>{schedules.length} quarts · {employees.length} employés</div></div></div><div className="schedule-grid"><table><thead><tr><th>Employé</th>{viewDates.map((d, i) => <th key={i}>{fmtDay(d)}</th>)}<th style={{ minWidth: 120, background: 'var(--brand-xl)' }}>Total</th></tr></thead><tbody>{activeEmps.map(e => { const periodShifts = schedules.filter(s => s.employee_id === e.id && viewISOs.includes(s.date)); const totalHrs = periodShifts.reduce((sum, s) => sum + Number(s.hours || 0), 0); const totalKm = periodShifts.reduce((sum, s) => sum + Number(s.km || 0), 0); const totalDep = periodShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0), 0); const totalFrais = totalDep + totalKm * RATE_KM; const empClientIds = getEmployeeClientIds(e, periodShifts); return <React.Fragment key={e.id}><tr><td><div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('employees')}><Avatar name={e.name} size={30} /><div><div style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div></div></div></td>{viewDates.map((d, i) => { const iso = fmtISO(d); const shifts = schedules.filter(s => s.employee_id === e.id && s.date === iso); return <td key={i} onDoubleClick={() => openAdd(e.id, iso)}>{shifts.map(s => <ShiftPill key={s.id} shift={s} onClick={() => openEdit(s)} />)}{shifts.length === 0 && <div onClick={() => openAdd(e.id, iso)} style={{ opacity: .25, textAlign: 'center', fontSize: 16, lineHeight: '30px', color: 'var(--brand)', cursor: 'pointer' }}>+</div>}</td>; })}<td style={{ minWidth: 160, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}><div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>{totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}{totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}{viewMode === 'week' && empClientIds.map(cid => { const appr = getWeekApprovalStatus(e.id, cid); const isApproved = appr && appr.status === 'approved'; const cl = clients.find(c => c.id === cid); return <div key={cid} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6 }}><div style={{ fontSize: 9, color: 'var(--text3)' }}>{(cl?.name || 'Client').slice(0, 18)}</div><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer', background: isApproved ? '#28A745' : '#FFC107', color: isApproved ? '#fff' : '#000' }} onClick={() => isApproved ? revokeWeek(e.id, cid) : saveReview(e.id, cid, e.client_id || null, true)}>{isApproved ? '✓ Approuvé' : 'Approuver heures'}</button><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'var(--brand)' : 'var(--surface)', color: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? '#fff' : 'var(--text2)' }} onClick={() => toggleBillingPanel(e.id, cid, e.client_id || null)}>📋 {expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'Fermer' : 'Détails'}</button></div>; })}</td></tr>{viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} onSave={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeek(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoice(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onOpenAttachment={openReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} toast={toast} />}</div></td></tr>}</React.Fragment>; })}</tbody></table></div><Modal open={!!modal} onClose={() => setModal(null)} title={modal?.type === 'edit' ? 'Modifier le quart' : 'Ajouter un quart'}>{modal && <div style={{ display: 'grid', gap: 10 }}><div><label>Employé</label><select className="input" value={modal.data.employeeId} onChange={e => updateModalField('employeeId', e.target.value)}><option value="">Choisir</option>{employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label>Date</label><input className="input" type="date" value={modal.data.date} onChange={e => updateModalField('date', e.target.value)} /></div><div><label>Client</label><select className="input" value={modal.data.clientId} onChange={e => updateModalField('clientId', e.target.value)}><option value="">—</option>{clients.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}</select></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Début</label><input className="input" type="time" value={modal.data.start} onChange={e => updateModalField('start', e.target.value)} /></div><div><label>Fin</label><input className="input" type="time" value={modal.data.end} onChange={e => updateModalField('end', e.target.value)} /></div><div><label>Pause min</label><input className="input" type="number" value={modal.data.pauseMinutes} onChange={e => updateModalField('pauseMinutes', e.target.value)} /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Heures</label><input className="input" value={Number(modal.data.hours || 0).toFixed(2)} readOnly /></div><div><label>KM</label><input className="input" type="number" value={modal.data.km} onChange={e => updateModalField('km', e.target.value)} /></div><div><label>Déplacement</label><input className="input" type="number" step="0.01" value={modal.data.deplacement} onChange={e => updateModalField('deplacement', e.target.value)} /></div></div><div><label>Autre dépense</label><input className="input" type="number" step="0.01" value={modal.data.autreDep} onChange={e => updateModalField('autreDep', e.target.value)} /></div><div><label>Lieu</label><input className="input" value={modal.data.location} onChange={e => updateModalField('location', e.target.value)} /></div><div><label>Notes</label><input className="input" value={modal.data.notes} onChange={e => updateModalField('notes', e.target.value)} /></div><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}><div>{modal.type === 'edit' && <button className="btn btn-outline btn-sm" onClick={deleteShift}><Trash2 size={14} /> Supprimer</button>}</div><div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline btn-sm" onClick={() => setModal(null)}>Annuler</button><button className="btn btn-primary btn-sm" onClick={saveShift}>Sauvegarder</button></div></div></div>}</Modal>
+
+{/* ── Import Modal ── */}
+<Modal open={importModal} onClose={() => setImportModal(false)} title="Importer des horaires (CSV / Excel)" wide>
+  <div style={{ display: 'grid', gap: 16 }}>
+    <div
+      onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      onClick={() => fileInputRef.current?.click()}
+      style={{
+        border: `2px dashed ${dragOver ? 'var(--brand)' : 'var(--border)'}`,
+        borderRadius: 8, padding: '32px 20px', textAlign: 'center', cursor: 'pointer',
+        background: dragOver ? 'var(--brand-xl)' : 'var(--surface)',
+        transition: 'all .2s',
+      }}
+    >
+      <Upload size={28} style={{ color: 'var(--brand)', marginBottom: 8 }} />
+      <div style={{ fontSize: 13, fontWeight: 600 }}>
+        {importFile ? importFile.name : 'Glissez un fichier ici ou cliquez pour sélectionner'}
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
+        Formats acceptés: .csv, .xlsx, .xls
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv,.xlsx,.xls"
+        style={{ display: 'none' }}
+        onChange={e => { if (e.target.files?.[0]) setImportFile(e.target.files[0]); }}
+      />
+    </div>
+
+    {importResult && (
+      <div style={{
+        padding: 14, borderRadius: 8,
+        background: importResult.success > 0 ? '#d4edda' : '#f8d7da',
+        border: `1px solid ${importResult.success > 0 ? '#c3e6cb' : '#f5c6cb'}`,
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>
+          {importResult.message}
+        </div>
+        {importResult.success > 0 && (
+          <div style={{ fontSize: 12, color: '#155724' }}>
+            ✅ {importResult.success} quart(s) importé(s) sur {importResult.total_rows} lignes
+          </div>
+        )}
+        {importResult.errors > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#721c24', marginBottom: 4 }}>
+              ⚠️ {importResult.errors} erreur(s):
+            </div>
+            <div style={{ maxHeight: 150, overflowY: 'auto', fontSize: 11 }}>
+              {(importResult.error_details || []).slice(0, 20).map((err, i) => (
+                <div key={i} style={{ padding: '2px 0', color: '#721c24' }}>
+                  Ligne {err.row}: {err.error}
+                </div>
+              ))}
+              {importResult.errors > 20 && (
+                <div style={{ fontStyle: 'italic', marginTop: 4 }}>
+                  ... et {importResult.errors - 20} autres erreurs
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    )}
+
+    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+      <button className="btn btn-outline btn-sm" onClick={() => setImportModal(false)}>Fermer</button>
+      <button
+        className="btn btn-primary btn-sm"
+        onClick={handleImport}
+        disabled={!importFile || importing}
+      >
+        {importing ? '⏳ Importation en cours...' : '📥 Importer'}
+      </button>
+    </div>
+  </div>
+</Modal>
+
+{/* ── Export Modal ── */}
+<Modal open={exportModal} onClose={() => setExportModal(false)} title="Exporter les horaires">
+  <div style={{ display: 'grid', gap: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Date début</label>
+        <input className="input" type="date" value={exportOpts.date_start} onChange={e => setExportOpts(p => ({ ...p, date_start: e.target.value }))} />
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Date fin</label>
+        <input className="input" type="date" value={exportOpts.date_end} onChange={e => setExportOpts(p => ({ ...p, date_end: e.target.value }))} />
+      </div>
+    </div>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Employé</label>
+        <select className="input" value={exportOpts.employee_id} onChange={e => setExportOpts(p => ({ ...p, employee_id: e.target.value }))}>
+          <option value="">Tous</option>
+          {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+        </select>
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Client</label>
+        <select className="input" value={exportOpts.client_id} onChange={e => setExportOpts(p => ({ ...p, client_id: e.target.value }))}>
+          <option value="">Tous</option>
+          {clients.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}
+        </select>
+      </div>
+    </div>
+    <div>
+      <label style={{ fontSize: 12, fontWeight: 600 }}>Format</label>
+      <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+        <button className={`btn btn-sm ${exportOpts.format === 'csv' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setExportOpts(p => ({ ...p, format: 'csv' }))}>CSV</button>
+        <button className={`btn btn-sm ${exportOpts.format === 'xlsx' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setExportOpts(p => ({ ...p, format: 'xlsx' }))}>Excel (.xlsx)</button>
+      </div>
+    </div>
+    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+      <button className="btn btn-outline btn-sm" onClick={() => setExportModal(false)}>Annuler</button>
+      <button className="btn btn-primary btn-sm" onClick={handleExport} disabled={exporting}>
+        {exporting ? '⏳ Exportation...' : '📤 Exporter'}
+      </button>
+    </div>
+  </div>
+</Modal>
+
+</>; }
 
 function ApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewDraft, setReviewDraft, currentReview, currentInvoice, reviewAttachments, onSave, onApprove, onRevoke, onGenerateInvoice, onUpload, onDeleteAttachment, onOpenAttachment, onGoInvoices, onRefreshParent, toast }) {
   const [editableShifts, setEditableShifts] = useState([]);

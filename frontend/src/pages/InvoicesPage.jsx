@@ -532,7 +532,7 @@ export default function InvoicesPage() {
   };
 
   const bulkDelete = async () => {
-    if (!confirm(`Supprimer ${selected.size} facture(s) sélectionnée(s)? (brouillon/annulées seulement)`)) return;
+    if (!confirm(`Supprimer ${selected.size} facture(s) sélectionnée(s)? (brouillon/validées/annulées seulement)`)) return;
     try {
       const res = await apiFetch('/invoices/bulk/delete', { method: 'POST', body: JSON.stringify([...selected]) });
       const count = res.deleted?.length || 0;
@@ -705,7 +705,7 @@ export default function InvoicesPage() {
                         <div style={{ display: 'flex', gap: 4 }}>
                           <button style={S.btn('ghost')} title="PDF" onClick={() => openPdf(inv.id)}>📄</button>
                           <button style={S.btn('ghost')} title="Détail" onClick={() => openDetail(inv.id)}>👁</button>
-                          {(inv.status === 'draft' || inv.status === 'cancelled') && (
+                          {(inv.status === 'draft' || inv.status === 'validated' || inv.status === 'cancelled') && (
                             <button style={S.btn('ghost')} title="Supprimer" onClick={() => deleteInvoice(inv.id)}>🗑</button>
                           )}
                         </div>
@@ -1293,7 +1293,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           <button style={S.btn('outline')} onClick={() => onPdf(inv.id)}>📄 PDF</button>
           <button style={S.btn('outline')} onClick={() => onEmail(inv.id)}>✉️ Courriel</button>
           <button style={S.btn('ghost')} onClick={() => onDuplicate(inv.id)}>📋 Dupliquer</button>
-          {(inv.status === 'draft' || inv.status === 'cancelled') && (
+          {(inv.status === 'draft' || inv.status === 'validated' || inv.status === 'cancelled') && (
             <button style={S.btn('danger')} onClick={() => onDelete(inv.id)}>🗑 Supprimer</button>
           )}
         </div>

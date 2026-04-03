@@ -626,7 +626,9 @@ async def delete_invoice(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    """Delete invoice (draft or cancelled)"""
+    """Delete invoice (draft, validated, or cancelled)"""
+    import logging
+    logger = logging.getLogger(__name__)
     result = await db.execute(
         select(Invoice).options(
             selectinload(Invoice.payments),
@@ -637,8 +639,10 @@ async def delete_invoice(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
-    if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
-        raise HTTPException(400, "Seules les factures brouillon ou annulées peuvent être supprimées")
+    deletable_statuses = (InvoiceStatus.DRAFT.value, InvoiceStatus.VALIDATED.value, InvoiceStatus.CANCELLED.value)
+    if invoice.status not in deletable_statuses:
+        raise HTTPException(400, "Seules les factures brouillon, validées ou annulées peuvent être supprimées")
+    logger.info(f"Deleting invoice {invoice.number} (status={invoice.status}, id={invoice.id}) by user={getattr(user, 'email', 'unknown')}")
     # Delete related attachments
     att_result = await db.execute(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id))
     for att in att_result.scalars().all():
@@ -1306,100 +1310,8 @@ async def get_audit_log(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# BULK ACTIONS
+# BULK ACTIONS — moved to invoices_bulk.py to avoid route conflicts
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-@router.post("/bulk/delete")
-@router.post("/bulk-delete")
-async def bulk_delete(
-    invoice_ids: List[str],
-    db: AsyncSession = Depends(get_db),
-    user=Depends(require_admin),
-):
-    """Delete multiple invoices (draft or cancelled only)"""
-    deleted, skipped = [], []
-    for invoice_id in invoice_ids:
-        result = await db.execute(
-            select(Invoice).options(
-                selectinload(Invoice.payments),
-                selectinload(Invoice.audit_logs),
-                selectinload(Invoice.credit_notes),
-            ).where(Invoice.id == invoice_id)
-        )
-        invoice = result.scalar_one_or_none()
-        if not invoice:
-            skipped.append({"id": invoice_id, "reason": "Non trouvée"})
-            continue
-        if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
-            skipped.append({"id": invoice_id, "number": invoice.number, "reason": "Seules les factures brouillon/annulées peuvent être supprimées"})
-            continue
-        att_result = await db.execute(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id))
-        for att in att_result.scalars().all():
-            await db.delete(att)
-        for payment in list(invoice.payments or []):
-            await db.delete(payment)
-        for audit in list(invoice.audit_logs or []):
-            await db.delete(audit)
-        for cn in list(invoice.credit_notes or []):
-            await db.delete(cn)
-        deleted.append({"id": invoice.id, "number": invoice.number})
-        await db.delete(invoice)
-    await db.commit()
-    return {"deleted": deleted, "skipped": skipped, "count": len(deleted)}
-
-
-@router.post("/bulk/validate")
-async def bulk_validate(
-    invoice_ids: List[str],
-    db: AsyncSession = Depends(get_db),
-    user=Depends(require_admin),
-):
-    success, errors = [], []
-    for inv_id in invoice_ids:
-        r = await db.execute(select(Invoice).where(Invoice.id == inv_id))
-        inv = r.scalar_one_or_none()
-        if not inv:
-            errors.append({"id": inv_id, "error": "Not found"})
-            continue
-        try:
-            await change_invoice_status(
-                db, inv, InvoiceStatus.VALIDATED.value,
-                getattr(user, "email", ""),
-            )
-            success.append(inv_id)
-        except ValueError as e:
-            errors.append({"id": inv_id, "error": str(e)})
-    return {"validated": success, "errors": errors}
-
-
-@router.post("/bulk/send")
-async def bulk_send(
-    invoice_ids: List[str],
-    db: AsyncSession = Depends(get_db),
-    user=Depends(require_admin),
-):
-    success, errors = [], []
-    for inv_id in invoice_ids:
-        r = await db.execute(select(Invoice).where(Invoice.id == inv_id))
-        inv = r.scalar_one_or_none()
-        if not inv:
-            errors.append({"id": inv_id, "error": "Not found"})
-            continue
-        try:
-            if inv.status == InvoiceStatus.DRAFT.value:
-                await change_invoice_status(
-                    db, inv, InvoiceStatus.VALIDATED.value,
-                    getattr(user, "email", ""),
-                )
-            await change_invoice_status(
-                db, inv, InvoiceStatus.SENT.value,
-                getattr(user, "email", ""),
-            )
-            success.append(inv_id)
-        except ValueError as e:
-            errors.append({"id": inv_id, "error": str(e)})
-    return {"sent": success, "errors": errors}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

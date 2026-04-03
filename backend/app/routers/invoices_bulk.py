@@ -1,3 +1,4 @@
+import logging
 from typing import List
 from datetime import datetime
 
@@ -15,10 +16,16 @@ from ..models.models_invoice import (
 from ..services.invoice_service import change_invoice_status
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# Statuses that allow deletion
+DELETABLE_STATUSES = (InvoiceStatus.DRAFT.value, InvoiceStatus.VALIDATED.value, InvoiceStatus.CANCELLED.value)
 
 
+@router.post('/bulk/delete')
 @router.post('/bulk-delete')
 async def bulk_delete_invoices(invoice_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Delete multiple invoices (draft, validated, or cancelled)."""
     deleted, skipped = [], []
     for invoice_id in invoice_ids:
         result = await db.execute(select(Invoice).options(selectinload(Invoice.payments), selectinload(Invoice.audit_logs), selectinload(Invoice.credit_notes)).where(Invoice.id == invoice_id))
@@ -26,9 +33,10 @@ async def bulk_delete_invoices(invoice_ids: List[str], db: AsyncSession = Depend
         if not invoice:
             skipped.append({'id': invoice_id, 'reason': 'Not found'})
             continue
-        if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
-            skipped.append({'id': invoice_id, 'number': invoice.number, 'reason': 'Seules les factures brouillon/annulées peuvent être supprimées'})
+        if invoice.status not in DELETABLE_STATUSES:
+            skipped.append({'id': invoice_id, 'number': invoice.number, 'reason': 'Seules les factures brouillon, validées ou annulées peuvent être supprimées'})
             continue
+        logger.info(f"Bulk deleting invoice {invoice.number} (status={invoice.status}) by user={getattr(user, 'email', 'unknown')}")
         att_result = await db.execute(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id))
         for att in att_result.scalars().all():
             await db.delete(att)
@@ -117,5 +125,5 @@ async def bulk_send_invoices(invoice_ids: List[str], db: AsyncSession = Depends(
 
 @router.post('/anomalies/bulk-delete')
 async def bulk_delete_anomaly_invoices(invoice_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
-    """Delete invoices linked to anomalies (must be draft/cancelled)."""
+    """Delete invoices linked to anomalies (must be draft/validated/cancelled)."""
     return await bulk_delete_invoices(invoice_ids, db, user)

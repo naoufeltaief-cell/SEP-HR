@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,7 @@ from ..models.models_invoice import Invoice, InvoiceAuditLog
 from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _build_prorated_accommodation_lines(accom_records, all_employee_worked_dates, billed_worked_dates, period_start, period_end, employee_name):
@@ -40,8 +42,16 @@ def _build_prorated_accommodation_lines(accom_records, all_employee_worked_dates
     return accom_lines, applicable_ids
 
 
-@router.post('/generate-from-approved-schedules')
-async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+async def _create_invoice_from_approved(data: dict, db: AsyncSession, user, auto_commit: bool = True):
+    """Core logic for creating an invoice from approved schedules.
+
+    Args:
+        data: Dict with employee_id, client_id, period_start, period_end.
+        db: Database session.
+        user: Authenticated user.
+        auto_commit: If True, commits the transaction. If False, only flushes
+                     (caller is responsible for commit/rollback).
+    """
     employee_id = data.get('employee_id')
     client_id = data.get('client_id')
     period_start = data.get('period_start')
@@ -142,13 +152,27 @@ async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession 
             db.add(InvoiceAttachment(invoice_id=invoice.id, filename=src.filename, original_filename=src.original_filename, file_type=src.file_type, file_size=src.file_size, file_data=src.file_data, category='hebergement', description=src.description or "Pièce d'hébergement", uploaded_by=src.uploaded_by))
 
     db.add(InvoiceAuditLog(invoice_id=invoice.id, action='created', new_status='validated', user_email=getattr(user, 'email', ''), details=f"Facture approuvée générée — {employee.name} / {client_name} / {ps} → {pe} / {approved_hours:.2f}h approuvées / {raw_total_hours:.2f}h planifiées"))
-    await db.commit()
-    await db.refresh(invoice)
+
+    if auto_commit:
+        await db.commit()
+        await db.refresh(invoice)
+
     return {'id': invoice.id, 'number': invoice.number, 'total': invoice.total, 'status': invoice.status, 'employee_name': invoice.employee_name, 'client_name': invoice.client_name, 'approved_hours': approved_hours, 'planned_hours': raw_total_hours}
+
+
+@router.post('/generate-from-approved-schedules')
+async def generate_invoice_from_approved_schedules(data: dict, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Generate a single invoice from approved schedules (commits immediately)."""
+    return await _create_invoice_from_approved(data, db, user, auto_commit=True)
 
 
 @router.post('/generate-all-approved-schedules')
 async def generate_all_approved_schedules(data: dict, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    """Generate invoices for all approved schedules in a period.
+
+    Uses savepoints (nested transactions) so that a failure for one approval
+    does not corrupt the session or roll back previously created invoices.
+    """
     period_start = data.get('period_start')
     period_end = data.get('period_end')
     if not all([period_start, period_end]):
@@ -164,12 +188,30 @@ async def generate_all_approved_schedules(data: dict, db: AsyncSession = Depends
     created, skipped = [], []
     for approval in approvals:
         try:
-            inv = await generate_invoice_from_approved_schedules({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'period_start': period_start, 'period_end': period_end}, db, user)
-            created.append(inv)
-        except HTTPException as e:
-            await db.rollback()
-            skipped.append({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'reason': e.detail})
-        except Exception as e:
-            await db.rollback()
-            skipped.append({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'reason': str(e)})
+            # Use a savepoint so failures don't corrupt the session
+            nested = await db.begin_nested()
+            try:
+                inv = await _create_invoice_from_approved(
+                    {'employee_id': approval.employee_id, 'client_id': approval.client_id,
+                     'period_start': period_start, 'period_end': period_end},
+                    db, user, auto_commit=False
+                )
+                await nested.commit()
+                created.append(inv)
+            except HTTPException as e:
+                await nested.rollback()
+                logger.warning(f"Skipped invoice for employee={approval.employee_id}, client={approval.client_id}: {e.detail}")
+                skipped.append({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'reason': e.detail})
+            except Exception as e:
+                await nested.rollback()
+                logger.error(f"Error generating invoice for employee={approval.employee_id}, client={approval.client_id}: {e}", exc_info=True)
+                skipped.append({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'reason': str(e)})
+        except Exception as outer_err:
+            logger.error(f"Savepoint error for employee={approval.employee_id}, client={approval.client_id}: {outer_err}", exc_info=True)
+            skipped.append({'employee_id': approval.employee_id, 'client_id': approval.client_id, 'reason': str(outer_err)})
+
+    # Single commit for all successfully created invoices
+    if created:
+        await db.commit()
+
     return {'created': created, 'skipped': skipped, 'count': len(created)}

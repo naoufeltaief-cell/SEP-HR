@@ -173,7 +173,8 @@ export default function InvoicesPage() {
       if (filterSearch) params.set('search', filterSearch);
       if (filterClientId) params.set('client_id', filterClientId);
       if (filterEmployeeId) params.set('employee_id', filterEmployeeId);
-      const data = await apiFetch(`/invoices?${params}`);
+      const qs = params.toString();
+      const data = await apiFetch(`/invoices/${qs ? '?' + qs : ''}`);
       setInvoices(data);
     } catch (e) {
       setError(e.message);
@@ -189,11 +190,11 @@ export default function InvoicesPage() {
   }, []);
 
   const loadClients = useCallback(async () => {
-    try { setClients(await apiFetch('/clients')); } catch (_) {}
+    try { setClients(await apiFetch('/clients/')); } catch (_) {}
   }, []);
 
   const loadEmployees = useCallback(async () => {
-    try { setEmployees(await apiFetch('/employees')); } catch (_) {}
+    try { setEmployees(await apiFetch('/employees/')); } catch (_) {}
   }, []);
 
   useEffect(() => {

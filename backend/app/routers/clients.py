@@ -10,6 +10,7 @@ from ..services.auth_service import require_admin
 router = APIRouter()
 
 
+@router.get("")
 @router.get("/")
 async def list_clients(db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     result = await db.execute(select(Client).where(Client.is_active == True).order_by(Client.name))

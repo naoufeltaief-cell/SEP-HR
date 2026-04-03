@@ -10,6 +10,7 @@ from ..services.auth_service import require_admin, get_current_user
 router = APIRouter()
 
 
+@router.get("")
 @router.get("/")
 async def list_timesheets(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
     q = select(Timesheet).order_by(Timesheet.created_at.desc())

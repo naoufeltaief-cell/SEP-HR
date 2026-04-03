@@ -18,6 +18,7 @@ export default function InvoiceEditModal({ open, onClose, invoice, onSave }) {
     po_number: '',
     lines: [],
     expense_lines: [],
+    accommodation_lines: [],
     extra_lines: [],
   });
 
@@ -30,6 +31,7 @@ export default function InvoiceEditModal({ open, onClose, invoice, onSave }) {
       po_number: invoice.po_number || '',
       lines: Array.isArray(invoice.lines) ? JSON.parse(JSON.stringify(invoice.lines)) : [],
       expense_lines: Array.isArray(invoice.expense_lines) ? JSON.parse(JSON.stringify(invoice.expense_lines)) : [],
+      accommodation_lines: Array.isArray(invoice.accommodation_lines) ? JSON.parse(JSON.stringify(invoice.accommodation_lines)) : [],
       extra_lines: Array.isArray(invoice.extra_lines) ? JSON.parse(JSON.stringify(invoice.extra_lines)) : [],
     });
   }, [invoice]);
@@ -87,6 +89,15 @@ export default function InvoiceEditModal({ open, onClose, invoice, onSave }) {
     return { ...prev, extra_lines: next };
   });
 
+  const addAccommodationLine = () => setForm(prev => ({ ...prev, accommodation_lines: [...prev.accommodation_lines, { employee: invoice.employee_name || '', period: '', days: 1, cost_per_day: 0, amount: 0 }] }));
+  const removeAccommodationLine = (index) => setForm(prev => ({ ...prev, accommodation_lines: prev.accommodation_lines.filter((_, i) => i !== index) }));
+  const updateAccommodationLine = (index, field, value) => setForm(prev => {
+    const next = [...prev.accommodation_lines];
+    next[index] = { ...next[index], [field]: value };
+    if (field === 'days' || field === 'cost_per_day') next[index].amount = Math.round(Number(next[index].days || 0) * Number(next[index].cost_per_day || 0) * 100) / 100;
+    return { ...prev, accommodation_lines: next };
+  });
+
   const submit = () => {
     onSave({
       include_tax: !!form.include_tax,
@@ -95,6 +106,7 @@ export default function InvoiceEditModal({ open, onClose, invoice, onSave }) {
       po_number: form.po_number || '',
       lines: (form.lines || []).map(l => ({ ...l, pause_min: Number(l.pause_min || 0), hours: Number(l.hours || 0), rate: Number(l.rate || 0), service_amount: Number(l.service_amount || 0), garde_hours: Number(l.garde_hours || 0), garde_amount: Number(l.garde_amount || 0), rappel_hours: Number(l.rappel_hours || 0), rappel_amount: Number(l.rappel_amount || 0) })),
       expense_lines: (form.expense_lines || []).map(l => ({ ...l, quantity: Number(l.quantity || 0), rate: Number(l.rate || 0), amount: Number(l.amount || 0) })),
+      accommodation_lines: (form.accommodation_lines || []).map(l => ({ ...l, days: Number(l.days || 0), cost_per_day: Number(l.cost_per_day || 0), amount: Number(l.amount || 0) })),
       extra_lines: (form.extra_lines || []).map(l => ({ ...l, quantity: Number(l.quantity || 0), rate: Number(l.rate || 0), amount: Number(l.amount || 0) })),
     });
   };
@@ -174,6 +186,26 @@ export default function InvoiceEditModal({ open, onClose, invoice, onSave }) {
               <button style={btn('danger')} onClick={() => removeExpenseLine(index)}>🗑</button>
             </div>
           ))}
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <h4 style={{ margin: 0, fontSize: 14, color: '#2A7B88' }}>🏠 Hébergement</h4>
+            <button style={btn('outline')} onClick={addAccommodationLine}>+ Ajouter hébergement</button>
+          </div>
+          {(form.accommodation_lines || []).length === 0 ? <div style={{ fontSize: 12, color: '#6C757D' }}>Aucun hébergement</div> : form.accommodation_lines.map((line, index) => (
+            <div key={index} style={{ display: 'grid', gridTemplateColumns: '1.5fr 2fr 1fr 1fr 1fr auto', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <input style={input} value={line.employee || ''} onChange={e => updateAccommodationLine(index, 'employee', e.target.value)} placeholder="Employé" />
+              <input style={input} value={line.period || ''} onChange={e => updateAccommodationLine(index, 'period', e.target.value)} placeholder="Période (ex: 2026-03-01 → 2026-03-07)" />
+              <input type="number" step="1" style={input} value={line.days ?? 0} onChange={e => updateAccommodationLine(index, 'days', e.target.value)} placeholder="Jours" />
+              <input type="number" step="0.01" style={input} value={line.cost_per_day ?? 0} onChange={e => updateAccommodationLine(index, 'cost_per_day', e.target.value)} placeholder="$/jour" />
+              <input type="number" step="0.01" style={{ ...input, background: '#f8f9fa' }} value={line.amount ?? 0} readOnly />
+              <button style={btn('danger')} onClick={() => removeAccommodationLine(index)}>🗑</button>
+            </div>
+          ))}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 2fr 1fr 1fr 1fr auto', gap: 8, fontSize: 11, color: '#6C757D', marginTop: 4 }}>
+            <div>Employé</div><div>Période</div><div>Jours</div><div>$/jour</div><div>Montant</div><div></div>
+          </div>
         </div>
 
         <div style={{ marginBottom: 18 }}>

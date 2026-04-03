@@ -1148,10 +1148,17 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     setEditExpenseLines(prev => [...prev, defaults[type] || defaults.autre]);
   };
 
+  const addEditAccom = () => {
+    setEditAccomLines(prev => [...prev, { employee: inv.employee_name || '', period: '', days: 1, cost_per_day: 0, amount: 0 }]);
+  };
+
   const updateEditAccom = (idx, field, value) => {
     setEditAccomLines(prev => {
       const next = [...prev];
       next[idx] = { ...next[idx], [field]: value };
+      if (field === 'days' || field === 'cost_per_day') {
+        next[idx].amount = Math.round((parseFloat(next[idx].days) || 0) * (parseFloat(next[idx].cost_per_day) || 0) * 100) / 100;
+      }
       return next;
     });
   };
@@ -1752,6 +1759,39 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                       <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={e.quantity || 0} onChange={ev => updateEditExpense(i, 'quantity', ev.target.value)} /></td>
                       <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={e.rate || 0} onChange={ev => updateEditExpense(i, 'rate', ev.target.value)} /></td>
                       <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditExpense(i)}>✗</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Accommodation Lines */}
+          <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12 }}>
+            <div style={{ ...S.flexBetween, marginBottom: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>🏠 Hébergement</h4>
+              <button style={S.btn('outline', 'sm')} onClick={addEditAccom}>+ Ajouter hébergement</button>
+            </div>
+            {editAccomLines.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#6C757D', textAlign: 'center', padding: 8 }}>Aucun hébergement</div>
+            ) : (
+              <table style={{ ...S.table, fontSize: 11 }}>
+                <thead>
+                  <tr>
+                    {['Employé', 'Période', 'Jours', '$/jour', 'Montant', ''].map(h => (
+                      <th key={h} style={{ ...S.th, fontSize: 10, padding: '6px 4px' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {editAccomLines.map((a, i) => (
+                    <tr key={i}>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 120 }} value={a.employee || ''} onChange={e => updateEditAccom(i, 'employee', e.target.value)} /></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: '100%' }} value={a.period || ''} onChange={e => updateEditAccom(i, 'period', e.target.value)} placeholder="ex: 2026-03-01 → 2026-03-07" /></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="1" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 55 }} value={a.days || 0} onChange={e => updateEditAccom(i, 'days', e.target.value)} /></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={a.cost_per_day || 0} onChange={e => updateEditAccom(i, 'cost_per_day', e.target.value)} /></td>
+                      <td style={{ ...S.td, padding: '4px 2px', fontWeight: 600, fontSize: 11 }}>{((parseFloat(a.days) || 0) * (parseFloat(a.cost_per_day) || 0)).toFixed(2)} $</td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditAccom(i)}>✗</button></td>
                     </tr>
                   ))}
                 </tbody>

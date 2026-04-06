@@ -183,6 +183,8 @@ export default function InvoicesPage() {
   const [anomalies, setAnomalies] = useState([]);
   const [creditNotes, setCreditNotes] = useState([]);
   const [selected, setSelected] = useState(new Set());
+  const [billingEmailStatus, setBillingEmailStatus] = useState(null);
+  const [billingEmailBusy, setBillingEmailBusy] = useState(false);
 
   const loadInvoices = useCallback(async () => {
     setLoading(true);
@@ -217,11 +219,18 @@ export default function InvoicesPage() {
     try { setEmployees(await apiFetch('/employees/')); } catch (_) {}
   }, []);
 
+  const loadBillingEmailStatus = useCallback(async () => {
+    try {
+      setBillingEmailStatus(await apiFetch('/billing-email/status'));
+    } catch (_) {}
+  }, []);
+
   useEffect(() => {
     loadInvoices();
     loadStats();
     loadClients();
     loadEmployees();
+    loadBillingEmailStatus();
   }, []);
 
   useEffect(() => { loadInvoices(); }, [filterStatus, filterSearch, filterClientId, filterEmployeeId]);
@@ -239,6 +248,19 @@ export default function InvoicesPage() {
       return () => clearTimeout(t);
     }
   }, [error]);
+
+  useEffect(() => {
+    const onMessage = (event) => {
+      const data = event?.data || {};
+      if (data.type !== 'sep-billing-gmail-oauth') return;
+      setBillingEmailBusy(false);
+      if (data.ok) setSuccess(data.message || 'Gmail connecté');
+      else setError(data.message || 'Échec de connexion Gmail');
+      loadBillingEmailStatus();
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [loadBillingEmailStatus]);
 
   const openDetail = async (id) => {
     try {
@@ -320,12 +342,52 @@ export default function InvoicesPage() {
   const testBillingEmail = async () => {
     const toEmail = window.prompt("Adresse pour le test de courriel (laisser vide = votre compte admin):", "") || "";
     try {
-      const res = await apiFetch('/invoices/test-email', {
+      const res = await apiFetch('/billing-email/test', {
         method: 'POST',
         body: JSON.stringify({ to_email: toEmail || null })
       });
       setSuccess(res.message || 'Test courriel OK');
     } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const disconnectBillingEmail = async () => {
+    if (!window.confirm('Déconnecter le compte Gmail de facturation ?')) return;
+    setBillingEmailBusy(true);
+    try {
+      const res = await apiFetch('/billing-email/disconnect', { method: 'DELETE' });
+      setSuccess(res.message || 'Connexion Gmail supprimée');
+      await loadBillingEmailStatus();
+    } catch (e) {
+      setError(e.message);
+    }
+    setBillingEmailBusy(false);
+  };
+
+  const startBillingEmailConnect = async () => {
+    setBillingEmailBusy(true);
+    const popup = window.open('', 'sepBillingGmailConnect', 'width=560,height=760');
+    if (!popup) {
+      setBillingEmailBusy(false);
+      setError('Le navigateur a bloque la fenetre pop-up Gmail');
+      return;
+    }
+    popup.document.write('<p style="font-family:Arial,sans-serif;padding:16px">Ouverture de Gmail...</p>');
+    try {
+      const res = await apiFetch('/billing-email/connect');
+      popup.location.href = res.url;
+      popup.focus();
+      const timer = window.setInterval(() => {
+        if (popup.closed) {
+          window.clearInterval(timer);
+          setBillingEmailBusy(false);
+          loadBillingEmailStatus();
+        }
+      }, 500);
+    } catch (e) {
+      try { popup.close(); } catch (_) {}
+      setBillingEmailBusy(false);
       setError(e.message);
     }
   };
@@ -661,7 +723,6 @@ export default function InvoicesPage() {
                   <option key={emp.id} value={emp.id}>{emp.name}</option>
                 ))}
               </select>
-              <button style={S.btn('outline')} onClick={testBillingEmail}>Tester courriel</button>
             </div>
             <div style={S.flexRow}>
               {selected.size > 0 && (
@@ -673,6 +734,43 @@ export default function InvoicesPage() {
                 </>
               )}
               <button style={S.btn('primary')} onClick={() => setActiveTab('generate')}>+ Générer factures</button>
+            </div>
+          </div>
+
+          <div style={{
+            background: billingEmailStatus?.connected ? '#eef7ff' : '#fff8e8',
+            border: `1px solid ${billingEmailStatus?.connected ? '#c7e1ff' : '#ffe0a3'}`,
+            borderRadius: 10,
+            padding: '12px 14px',
+            marginBottom: 14,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 12,
+            flexWrap: 'wrap'
+          }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#2A7B88', marginBottom: 4 }}>Courriel de facturation</div>
+              <div style={{ fontSize: 12, color: '#6C757D', maxWidth: 760 }}>
+                {!billingEmailStatus && 'Chargement du statut Gmail...'}
+                {billingEmailStatus && billingEmailStatus.connected && `Connecte comme ${billingEmailStatus.connected_email}. Les factures partiront via cette boite, pas via le compte admin rh.`}
+                {billingEmailStatus && !billingEmailStatus.connected && billingEmailStatus.configured && `Aucune connexion Gmail active. Connecte ${billingEmailStatus.expected_email} pour envoyer les factures comme QuickBooks.`}
+                {billingEmailStatus && !billingEmailStatus.connected && !billingEmailStatus.configured && 'Google OAuth n est pas configure sur le serveur. Ajoute BILLING_GMAIL_CLIENT_ID et BILLING_GMAIL_CLIENT_SECRET sur Render.'}
+                {billingEmailStatus?.last_error ? ` Derniere erreur: ${billingEmailStatus.last_error}` : ''}
+              </div>
+            </div>
+            <div style={S.flexRow}>
+              <button style={S.btn('outline')} onClick={testBillingEmail}>Tester courriel</button>
+              <button
+                style={S.btn('outline')}
+                onClick={startBillingEmailConnect}
+                disabled={billingEmailBusy || (billingEmailStatus && !billingEmailStatus.configured)}
+              >
+                {billingEmailBusy ? 'Connexion...' : billingEmailStatus?.connected ? 'Reconnecter Gmail' : 'Connecter Gmail'}
+              </button>
+              {billingEmailStatus?.connected && (
+                <button style={S.btn('ghost')} onClick={disconnectBillingEmail} disabled={billingEmailBusy}>Deconnecter</button>
+              )}
             </div>
           </div>
 

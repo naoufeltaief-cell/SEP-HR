@@ -3,7 +3,7 @@ Soins Expert Plus — Invoice Router (Phase 1 Complete Rewrite)
 All endpoints for invoicing, payments, credit notes, reports, anomalies, PDF.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, extract, desc
@@ -36,7 +36,6 @@ from ..services.invoice_service import (
     COMPANY_INFO
 )
 from ..services.invoice_delivery import email_invoice_and_mark_sent
-from ..services.email_service import test_billing_email_connection
 from ..services.invoice_pdf import generate_invoice_pdf, generate_credit_note_pdf
 
 router = APIRouter()
@@ -268,34 +267,6 @@ async def next_invoice_number(db: AsyncSession = Depends(get_db), user=Depends(r
     """Get next invoice number (backward compat)"""
     number = await generate_invoice_number(db)
     return {"number": number}
-
-
-@router.post("/test-email")
-async def test_invoice_email(
-    payload: Optional[dict] = Body(default=None),
-    user=Depends(require_admin),
-):
-    """Test billing email delivery using the configured SMTP account."""
-    to_email = ""
-    if isinstance(payload, dict):
-        to_email = (payload.get("to_email") or "").strip()
-    if not to_email:
-        to_email = (getattr(user, "email", "") or "").strip()
-    if not to_email:
-        raise HTTPException(400, "Aucune adresse de test fournie")
-    try:
-        result = await test_billing_email_connection(to_email)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        raise HTTPException(500, f"Test courriel echoue: {str(e)}")
-    return {
-        **result,
-        "message": (
-            f"Test courriel OK. Envoye de {result['sender_email']} "
-            f"vers {result['to_email']} via SMTP."
-        ),
-    }
 
 
 @router.get("/anomalies/check")
@@ -1095,13 +1066,11 @@ async def mark_paid(
     if not invoice:
         raise HTTPException(404, "Invoice not found")
     if invoice.status in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
-        raise HTTPException(400, "Impossible de marquer payée une facture brouillon ou annulée")
+        raise HTTPException(400, "Impossible de marquer payee une facture brouillon ou annulee")
     # If validated but not sent, send it first
     if invoice.status == InvoiceStatus.VALIDATED.value:
-        invoice = await change_invoice_status(
-            db, invoice, InvoiceStatus.SENT.value,
-            getattr(user, "email", ""), "Auto-envoyée lors du paiement",
-        )
+        await email_invoice_and_mark_sent(db, invoice, getattr(user, "email", ""))
+        await db.refresh(invoice)
     if invoice.balance_due > 0:
         await add_payment(
             db=db, invoice=invoice,
@@ -1385,48 +1354,8 @@ async def email_invoice(
             f"via {delivery.get('transport', 'unknown')}"
         )
     }
-    if not invoice.client_email:
-        raise HTTPException(400, "Le client n'a pas d'adresse courriel")
-
-    # Générer le PDF de la facture
-    pdf_buffer = generate_invoice_pdf(invoice)
-    pdf_bytes = pdf_buffer.getvalue()
-    pdf_filename = f"facture_{invoice.number}.pdf"
-
-    try:
-        from ..services.gmail_service import send_invoice_via_gmail
-        await send_invoice_via_gmail(
-            to_email=invoice.client_email,
-            invoice=invoice,
-            pdf_bytes=pdf_bytes,
-            pdf_filename=pdf_filename,
-        )
-    except RuntimeError as e:
-        raise HTTPException(500, f"Erreur Gmail: {str(e)}")
-    except Exception as e:
-        raise HTTPException(500, f"Échec de l'envoi du courriel: {str(e)}")
-
-    # Mettre à jour le statut de la facture
-    if invoice.status in (InvoiceStatus.VALIDATED.value, InvoiceStatus.DRAFT.value):
-        if invoice.status == InvoiceStatus.DRAFT.value:
-            invoice.status = InvoiceStatus.VALIDATED.value
-            invoice.validated_at = datetime.utcnow()
-        invoice.status = InvoiceStatus.SENT.value
-        invoice.sent_at = datetime.utcnow()
-
-    audit = InvoiceAuditLog(
-        invoice_id=invoice.id,
-        action=AuditAction.EMAILED.value,
-        user_email=getattr(user, "email", ""),
-        details=f"Envoyé par Gmail à {invoice.client_email} (PDF + HTML)",
-    )
-    db.add(audit)
-    await db.commit()
-
-    return {"message": f"Facture envoyée par courriel à {invoice.client_email}"}
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # AUDIT LOG
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

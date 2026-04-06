@@ -34,6 +34,23 @@ class User(Base):
     magic_token_expires = Column(DateTime, nullable=True)
 
 
+class BillingEmailConnection(Base):
+    __tablename__ = "billing_email_connections"
+    id = Column(String, primary_key=True, default=new_id)
+    provider = Column(String, default="gmail", nullable=False)
+    purpose = Column(String, default="billing", nullable=False, unique=True, index=True)
+    email = Column(String, default="", nullable=False)
+    access_token = Column(Text, default="")
+    refresh_token = Column(Text, default="")
+    token_expires_at = Column(DateTime, nullable=True)
+    scope = Column(Text, default="")
+    connected_by = Column(String, default="")
+    is_active = Column(Boolean, default=True)
+    last_error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Employee(Base):
     __tablename__ = "employees"
     id = Column(Integer, primary_key=True, autoincrement=True)

@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import os
 
 from .database import engine, Base
-from .routers import auth, employees, schedules, schedule_reviews, timesheets, invoices, accommodations, clients, chatbot, invoices_approved, invoices_bulk
+from .routers import auth, employees, schedules, schedule_reviews, timesheets, invoices, accommodations, clients, chatbot, invoices_approved, invoices_bulk, billing_email
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,6 +53,7 @@ app.include_router(employees.router, prefix="/api/employees", tags=["Employees"]
 app.include_router(schedules.router, prefix="/api/schedules", tags=["Schedules"])
 app.include_router(schedule_reviews.router, prefix="/api/schedule-reviews", tags=["Schedule Reviews"])
 app.include_router(timesheets.router, prefix="/api/timesheets", tags=["Timesheets"])
+app.include_router(billing_email.router, prefix="/api/billing-email", tags=["Billing Email"])
 # IMPORTANT: bulk router MUST be included BEFORE the main invoices router
 # because routes like /bulk/validate and /bulk/send would otherwise be
 # intercepted by /{invoice_id}/validate and /{invoice_id}/send

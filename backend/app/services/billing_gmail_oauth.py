@@ -1,0 +1,316 @@
+import base64
+import os
+from datetime import datetime, timedelta
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from typing import Optional
+from urllib.parse import urlencode
+
+import httpx
+from jose import JWTError, jwt
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models.models import BillingEmailConnection
+from .auth_service import ALGORITHM, SECRET_KEY
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+
+BILLING_GMAIL_CLIENT_ID = (
+    os.getenv("BILLING_GMAIL_CLIENT_ID")
+    or os.getenv("GOOGLE_CLIENT_ID")
+    or os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+    or ""
+)
+BILLING_GMAIL_CLIENT_SECRET = (
+    os.getenv("BILLING_GMAIL_CLIENT_SECRET")
+    or os.getenv("GOOGLE_CLIENT_SECRET")
+    or os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+    or ""
+)
+BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", "paie@soins-expert-plus.com").strip().lower()
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "openid",
+    "email",
+]
+
+
+def gmail_oauth_configured() -> bool:
+    return bool(BILLING_GMAIL_CLIENT_ID and BILLING_GMAIL_CLIENT_SECRET)
+
+
+async def get_billing_gmail_connection(db: AsyncSession) -> Optional[BillingEmailConnection]:
+    result = await db.execute(
+        select(BillingEmailConnection)
+        .where(BillingEmailConnection.purpose == "billing")
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_billing_gmail_status(db: AsyncSession) -> dict:
+    conn = await get_billing_gmail_connection(db)
+    return {
+        "configured": gmail_oauth_configured(),
+        "connected": bool(conn and conn.is_active and conn.refresh_token),
+        "provider": "gmail",
+        "purpose": "billing",
+        "expected_email": BILLING_SENDER_EMAIL,
+        "connected_email": (conn.email if conn else "") or "",
+        "connected_by": (conn.connected_by if conn else "") or "",
+        "updated_at": conn.updated_at.isoformat() if conn and conn.updated_at else None,
+        "last_error": (conn.last_error if conn else "") or "",
+    }
+
+
+def create_oauth_state(user_email: str) -> str:
+    payload = {
+        "type": "billing_gmail_connect",
+        "user_email": user_email or "",
+        "exp": datetime.utcnow() + timedelta(minutes=15),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def parse_oauth_state(state: str) -> dict:
+    try:
+        payload = jwt.decode(state, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError as e:
+        raise RuntimeError(f"Etat OAuth invalide: {str(e)}")
+    if payload.get("type") != "billing_gmail_connect":
+        raise RuntimeError("Etat OAuth invalide")
+    return payload
+
+
+def build_google_oauth_url(redirect_uri: str, state: str) -> str:
+    params = {
+        "client_id": BILLING_GMAIL_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(GMAIL_SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "state": state,
+        "login_hint": BILLING_SENDER_EMAIL,
+    }
+    if "@" in BILLING_SENDER_EMAIL:
+        params["hd"] = BILLING_SENDER_EMAIL.split("@", 1)[1]
+    return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+
+
+async def exchange_code_for_tokens(code: str, redirect_uri: str) -> dict:
+    if not gmail_oauth_configured():
+        raise RuntimeError("Google OAuth non configuré sur le serveur")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": BILLING_GMAIL_CLIENT_ID,
+                "client_secret": BILLING_GMAIL_CLIENT_SECRET,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            headers={"Accept": "application/json"},
+        )
+    if response.status_code != 200:
+        detail = response.text
+        try:
+            detail = response.json().get("error_description") or response.json().get("error") or detail
+        except Exception:
+            pass
+        raise RuntimeError(f"Echange OAuth échoué: {detail}")
+    return response.json()
+
+
+async def fetch_google_account_email(access_token: str) -> str:
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.get(
+            GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if response.status_code != 200:
+        raise RuntimeError(f"Impossible de lire le profil Google: {response.text}")
+    data = response.json()
+    email = (data.get("email") or "").strip().lower()
+    if not email:
+        raise RuntimeError("Adresse courriel Google introuvable")
+    return email
+
+
+async def store_billing_gmail_tokens(
+    db: AsyncSession,
+    tokens: dict,
+    account_email: str,
+    connected_by: str,
+) -> BillingEmailConnection:
+    conn = await get_billing_gmail_connection(db)
+    if not conn:
+        conn = BillingEmailConnection(purpose="billing")
+        db.add(conn)
+
+    refresh_token = (tokens.get("refresh_token") or "").strip() or (conn.refresh_token or "")
+    if not refresh_token:
+        raise RuntimeError("Aucun refresh token Google reçu")
+
+    expires_in = int(tokens.get("expires_in") or 3600)
+    conn.provider = "gmail"
+    conn.purpose = "billing"
+    conn.email = account_email
+    conn.access_token = (tokens.get("access_token") or "").strip()
+    conn.refresh_token = refresh_token
+    conn.token_expires_at = datetime.utcnow() + timedelta(seconds=max(expires_in - 60, 60))
+    conn.scope = tokens.get("scope") or " ".join(GMAIL_SCOPES)
+    conn.connected_by = connected_by or ""
+    conn.is_active = True
+    conn.last_error = ""
+    conn.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(conn)
+    return conn
+
+
+async def disconnect_billing_gmail(db: AsyncSession) -> None:
+    conn = await get_billing_gmail_connection(db)
+    if not conn:
+        return
+    conn.is_active = False
+    conn.access_token = ""
+    conn.refresh_token = ""
+    conn.token_expires_at = None
+    conn.last_error = ""
+    conn.updated_at = datetime.utcnow()
+    await db.commit()
+
+
+async def _refresh_access_token(db: AsyncSession, conn: BillingEmailConnection) -> str:
+    if not conn.refresh_token:
+        raise RuntimeError("Refresh token Gmail absent. Reconnectez le compte de facturation.")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id": BILLING_GMAIL_CLIENT_ID,
+                "client_secret": BILLING_GMAIL_CLIENT_SECRET,
+                "refresh_token": conn.refresh_token,
+                "grant_type": "refresh_token",
+            },
+            headers={"Accept": "application/json"},
+        )
+    if response.status_code != 200:
+        conn.last_error = response.text
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(f"Refresh token Gmail invalide: {response.text}")
+    data = response.json()
+    expires_in = int(data.get("expires_in") or 3600)
+    conn.access_token = (data.get("access_token") or "").strip()
+    conn.token_expires_at = datetime.utcnow() + timedelta(seconds=max(expires_in - 60, 60))
+    conn.last_error = ""
+    conn.updated_at = datetime.utcnow()
+    await db.commit()
+    return conn.access_token
+
+
+async def get_valid_billing_access_token(db: AsyncSession, conn: BillingEmailConnection) -> str:
+    if not gmail_oauth_configured():
+        raise RuntimeError("Google OAuth non configuré sur le serveur")
+    if not conn or not conn.is_active or not conn.refresh_token:
+        raise RuntimeError("Le compte Gmail de facturation n'est pas connecté")
+    if conn.email.strip().lower() != BILLING_SENDER_EMAIL:
+        raise RuntimeError(
+            f"Le compte connecté est {conn.email}. Connectez {BILLING_SENDER_EMAIL}."
+        )
+    if conn.access_token and conn.token_expires_at and conn.token_expires_at > datetime.utcnow():
+        return conn.access_token
+    return await _refresh_access_token(db, conn)
+
+
+def _build_raw_message(
+    to_email: str,
+    subject: str,
+    body_text: str,
+    attachment_bytes: bytes = b"",
+    attachment_name: str = "",
+) -> str:
+    msg = MIMEMultipart("mixed")
+    msg["From"] = f"Soins Expert Plus <{BILLING_SENDER_EMAIL}>"
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body_text, "plain", "utf-8"))
+    if attachment_bytes:
+        part = MIMEApplication(attachment_bytes, _subtype="pdf")
+        part.add_header(
+            "Content-Disposition",
+            "attachment",
+            filename=attachment_name or "document.pdf",
+        )
+        msg.attach(part)
+    return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+
+async def send_via_connected_billing_gmail(
+    db: AsyncSession,
+    to_email: str,
+    subject: str,
+    body_text: str,
+    attachment_bytes: bytes = b"",
+    attachment_name: str = "",
+) -> Optional[dict]:
+    conn = await get_billing_gmail_connection(db)
+    if not conn or not conn.is_active or not conn.refresh_token:
+        return None
+
+    access_token = await get_valid_billing_access_token(db, conn)
+    raw = _build_raw_message(
+        to_email=to_email,
+        subject=subject,
+        body_text=body_text,
+        attachment_bytes=attachment_bytes,
+        attachment_name=attachment_name,
+    )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            GMAIL_SEND_URL,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={"raw": raw},
+        )
+
+    if response.status_code == 401:
+        access_token = await _refresh_access_token(db, conn)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                GMAIL_SEND_URL,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"raw": raw},
+            )
+
+    if response.status_code != 200:
+        conn.last_error = response.text
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(f"Envoi Gmail échoué: {response.text}")
+
+    conn.last_error = ""
+    conn.updated_at = datetime.utcnow()
+    await db.commit()
+    result = response.json()
+    return {
+        "transport": "gmail_oauth",
+        "from_email": BILLING_SENDER_EMAIL,
+        "account_email": conn.email,
+        "message_id": result.get("id", ""),
+    }

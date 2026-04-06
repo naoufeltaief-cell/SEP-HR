@@ -27,8 +27,14 @@ services:
         value: paie@soins-expert-plus.com
       - key: SMTP_PASS
         sync: false  # Set manually
+      - key: BILLING_SENDER_EMAIL
+        value: paie@soins-expert-plus.com
       - key: BILLING_EMAIL_TRANSPORT
         value: smtp
+      - key: BILLING_GMAIL_CLIENT_ID
+        sync: false
+      - key: BILLING_GMAIL_CLIENT_SECRET
+        sync: false
     healthCheckPath: /api/health
 
   # Frontend (static site)

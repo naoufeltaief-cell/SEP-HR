@@ -131,6 +131,14 @@ export default function ScheduleApprovalPanel({
     loadAccommodations();
   }, [loadAccommodations]);
 
+  const originalShiftMap = useMemo(
+    () => new Map((shifts || []).map(shift => {
+      const normalized = normalizeEditableShift(shift);
+      return [normalized.id, normalized];
+    })),
+    [shifts]
+  );
+
   const updateEditableShift = (id, field, value) => {
     setDirtyIds(prev => new Set(prev).add(id));
     setEditableShifts(prev => prev.map(shift => {
@@ -174,15 +182,18 @@ export default function ScheduleApprovalPanel({
     ]);
   };
 
-  const buildShiftPayload = (shift) => {
+  const getValidatedTimeRange = (shift) => {
     const start = normalizeTimeForInput(shift.start);
     const end = normalizeTimeForInput(shift.end);
     if (!start || !end) {
       throw new Error(`Heure invalide pour le quart du ${shift.date || 'jour en cours'}. Utilise HH:MM en 24 h.`);
     }
+    return { start, end };
+  };
 
+  const buildBaseShiftPayload = (shift) => {
+    const { start, end } = getValidatedTimeRange(shift);
     return {
-      date: shift.date,
       start,
       end,
       pause: Number(shift.pause || 0),
@@ -191,12 +202,106 @@ export default function ScheduleApprovalPanel({
       deplacement: Number(shift.deplacement || 0),
       autre_dep: Number(shift.other_dep || 0),
       notes: shift.notes || '',
-      location: shift.location || '',
-      client_id: client?.id || shift.client_id || null,
-      billable_rate: Number(shift.billable_rate || employee?.rate || 0),
-      garde_hours: Number(shift.garde_hours || 0),
-      rappel_hours: Number(shift.rappel_hours || 0),
     };
+  };
+
+  const buildCreatePayload = (shift) => ({
+    employee_id: employee.id,
+    client_id: client?.id || shift.client_id || null,
+    date: shift.date,
+    ...buildBaseShiftPayload(shift),
+    billable_rate: Number(shift.billable_rate || employee?.rate || 0),
+    garde_hours: Number(shift.garde_hours || 0),
+    rappel_hours: Number(shift.rappel_hours || 0),
+    status: 'published',
+    location: shift.location || '',
+  });
+
+  const buildUpdatePayload = (shift) => {
+    const payload = buildBaseShiftPayload(shift);
+    const original = originalShiftMap.get(shift.id);
+
+    if (!original) {
+      return {
+        ...payload,
+        date: shift.date,
+        billable_rate: Number(shift.billable_rate || employee?.rate || 0),
+        garde_hours: Number(shift.garde_hours || 0),
+        rappel_hours: Number(shift.rappel_hours || 0),
+        location: shift.location || '',
+      };
+    }
+
+    if ((shift.date || '') !== (original.date || '')) {
+      payload.date = shift.date;
+    }
+    if ((shift.location || '') !== (original.location || '')) {
+      payload.location = shift.location || '';
+    }
+    if (Number(shift.billable_rate || 0) !== Number(original.billable_rate || 0)) {
+      payload.billable_rate = Number(shift.billable_rate || employee?.rate || 0);
+    }
+    if (Number(shift.garde_hours || 0) !== Number(original.garde_hours || 0)) {
+      payload.garde_hours = Number(shift.garde_hours || 0);
+    }
+    if (Number(shift.rappel_hours || 0) !== Number(original.rappel_hours || 0)) {
+      payload.rappel_hours = Number(shift.rappel_hours || 0);
+    }
+
+    return payload;
+  };
+
+  const buildFallbackUpdatePayload = (shift) => {
+    const payload = buildBaseShiftPayload(shift);
+    const original = originalShiftMap.get(shift.id);
+    if ((shift.date || '') !== (original?.date || '')) {
+      payload.date = shift.date;
+    }
+    return payload;
+  };
+
+  const persistShift = async (shift) => {
+    if (shift.is_new) {
+      return api.createSchedule(buildCreatePayload(shift));
+    }
+
+    const updatePayload = buildUpdatePayload(shift);
+    try {
+      return await api.updateSchedule(shift.id, updatePayload);
+    } catch (err) {
+      const fallbackPayload = buildFallbackUpdatePayload(shift);
+      const updateKeys = Object.keys(updatePayload).sort().join('|');
+      const fallbackKeys = Object.keys(fallbackPayload).sort().join('|');
+      if (updateKeys === fallbackKeys) {
+        throw err;
+      }
+      return await api.updateSchedule(shift.id, fallbackPayload);
+    }
+  };
+
+  const saveShiftLine = async (shift) => {
+    const snapshot = editableShifts.map(row => ({ ...row }));
+    try {
+      setSavingShiftId(shift.id);
+      isSavingRef.current = true;
+      const saved = await persistShift(shift);
+      if (saved && saved.id) {
+        setEditableShifts(prev => prev.map(row => row.id === shift.id ? normalizeEditableShift(saved) : row));
+      }
+      setDirtyIds(prev => {
+        const next = new Set(prev);
+        next.delete(shift.id);
+        return next;
+      });
+      toast?.(shift.is_new ? 'Quart ajoute' : 'Quart modifie');
+      await onRefreshParent?.();
+    } catch (err) {
+      setEditableShifts(snapshot);
+      toast?.('Erreur: ' + (err.message || 'Echec de la sauvegarde'));
+    } finally {
+      isSavingRef.current = false;
+      setSavingShiftId(null);
+    }
   };
 
   const saveAllDirtyShifts = async () => {
@@ -209,19 +314,7 @@ export default function ScheduleApprovalPanel({
 
     for (const shift of dirtyShifts) {
       try {
-        const payload = buildShiftPayload(shift);
-        let saved;
-
-        if (shift.is_new) {
-          saved = await api.createSchedule({
-            employee_id: employee.id,
-            status: 'published',
-            ...payload,
-          });
-        } else {
-          saved = await api.updateSchedule(shift.id, payload);
-        }
-
+        const saved = await persistShift(shift);
         if (saved && saved.id) {
           setEditableShifts(prev => prev.map(row => row.id === shift.id ? normalizeEditableShift(saved) : row));
         }
@@ -419,7 +512,7 @@ export default function ScheduleApprovalPanel({
                 <table style={tableStyle}>
                   <thead>
                     <tr>
-                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
+                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'TAUX', 'GARDE H', 'RAPPEL H', '', ''].map(header => (
                         <th key={header} style={thStyle}>{header}</th>
                       ))}
                     </tr>
@@ -437,6 +530,11 @@ export default function ScheduleApprovalPanel({
                           <td style={tdStyle}><input className="input" type="number" step="0.01" style={getDirtyInputStyle(rowDirty)} value={shift.billable_rate || 0} onChange={e => updateEditableShift(shift.id, 'billable_rate', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.garde_hours || 0} onChange={e => updateEditableShift(shift.id, 'garde_hours', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.rappel_hours || 0} onChange={e => updateEditableShift(shift.id, 'rappel_hours', e.target.value)} /></td>
+                          <td style={{ ...tdStyle, width: 86, textAlign: 'center' }}>
+                            <button className="btn btn-outline btn-sm" style={rowDirty ? { borderColor: '#e0b53b', background: '#fff8e1' } : {}} onClick={() => saveShiftLine(shift)} disabled={savingShiftId === shift.id || savingAll}>
+                              {savingShiftId === shift.id ? '...' : 'Sauver'}
+                            </button>
+                          </td>
                           <td style={{ ...tdStyle, width: 54, textAlign: 'center' }}>
                             <button className="btn btn-outline btn-sm" style={{ padding: '6px 8px', color: '#DC3545', borderColor: '#DC3545' }} onClick={() => removeShiftLine(shift)} disabled={savingShiftId === shift.id || savingAll}>
                               <Trash2 size={12} />

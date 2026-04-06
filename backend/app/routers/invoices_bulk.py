@@ -13,6 +13,7 @@ from ..models.models import InvoiceAttachment
 from ..models.models_invoice import (
     Invoice, CreditNote, InvoiceAuditLog, InvoiceStatus, AuditAction
 )
+from ..services.invoice_delivery import email_invoice_and_mark_sent
 from ..services.invoice_service import change_invoice_status
 
 router = APIRouter()
@@ -96,7 +97,7 @@ async def bulk_validate_invoices(invoice_ids: List[str], db: AsyncSession = Depe
 
 @router.post('/bulk/send')
 async def bulk_send_invoices(invoice_ids: List[str], db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
-    """Send multiple invoices at once (validates draft ones first)."""
+    """Email multiple invoices and only mark them sent after delivery."""
     sent, skipped = [], []
     for invoice_id in invoice_ids:
         result = await db.execute(
@@ -111,13 +112,11 @@ async def bulk_send_invoices(invoice_ids: List[str], db: AsyncSession = Depends(
             skipped.append({'id': invoice_id, 'reason': 'Not found'})
             continue
         try:
-            if invoice.status == InvoiceStatus.DRAFT.value:
-                invoice = await change_invoice_status(db, invoice, InvoiceStatus.VALIDATED.value, getattr(user, 'email', ''))
-            if invoice.status == InvoiceStatus.VALIDATED.value:
-                invoice = await change_invoice_status(db, invoice, InvoiceStatus.SENT.value, getattr(user, 'email', ''))
-                sent.append({'id': invoice.id, 'number': invoice.number})
-            else:
+            if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.VALIDATED.value):
                 skipped.append({'id': invoice_id, 'number': getattr(invoice, 'number', '?'), 'reason': f'Status {invoice.status} cannot be sent'})
+                continue
+            delivery = await email_invoice_and_mark_sent(db, invoice, getattr(user, 'email', ''))
+            sent.append({'id': invoice.id, 'number': invoice.number, 'transport': delivery.get('transport', 'unknown')})
         except Exception as e:
             skipped.append({'id': invoice_id, 'number': getattr(invoice, 'number', '?'), 'reason': str(e)})
     return {'sent': sent, 'skipped': skipped, 'count': len(sent)}

@@ -7,9 +7,10 @@ from email.mime.application import MIMEApplication
 
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "rh@soins-expert-plus.com")
+SMTP_USER = os.getenv("SMTP_USER", "paie@soins-expert-plus.com")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", os.getenv("GMAIL_SENDER_EMAIL", SMTP_USER))
 
 
 async def send_magic_link(email: str, token: str, name: str = ""):
@@ -87,7 +88,7 @@ async def send_email_with_attachment(
     """Send email with PDF attachment — utilise Gmail API OAuth2 en priorité, SMTP en fallback"""
     # Essayer d'abord via Gmail API OAuth2
     try:
-        from .gmail_service import send_invoice_via_gmail, _load_gmail_tokens, _build_mime_message
+        from .gmail_service import _load_gmail_tokens
         import httpx
         import base64
 
@@ -100,7 +101,7 @@ async def send_email_with_attachment(
         from email.mime.application import MIMEApplication as _MIMEApplication
 
         msg = _MIMEMultipart("mixed")
-        msg["From"] = f"Soins Expert Plus <paie@soins-expert-plus.com>"
+        msg["From"] = f"Soins Expert Plus <{BILLING_SENDER_EMAIL}>"
         msg["To"] = to_email
         msg["Subject"] = subject
         msg.attach(_MIMEText(body, "plain", "utf-8"))
@@ -119,7 +120,10 @@ async def send_email_with_attachment(
             )
             if response.status_code == 200:
                 print(f"[GMAIL OK] Sent to {to_email}: {subject} with {attachment_name}")
-                return
+                return {
+                    "transport": "gmail_api",
+                    "from_email": BILLING_SENDER_EMAIL,
+                }
             else:
                 print(f"[GMAIL WARN] Gmail API returned {response.status_code}, falling back to SMTP")
     except Exception as e:
@@ -128,10 +132,10 @@ async def send_email_with_attachment(
     # Fallback SMTP
     if not SMTP_PASS:
         print(f"[EMAIL SKIP] No SMTP_PASS set and Gmail API failed. Would send to {to_email}: {subject} with attachment {attachment_name}")
-        return
+        raise RuntimeError("No SMTP_PASS configured and Gmail API delivery failed")
 
     msg = MIMEMultipart()
-    msg["From"] = f"Soins Expert Plus <{SMTP_USER}>"
+    msg["From"] = f"Soins Expert Plus <{BILLING_SENDER_EMAIL}>"
     msg["To"] = to_email
     msg["Subject"] = subject
 
@@ -147,6 +151,10 @@ async def send_email_with_attachment(
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)
         print(f"[EMAIL OK] Sent to {to_email}: {subject} with {attachment_name}")
+        return {
+            "transport": "smtp",
+            "from_email": BILLING_SENDER_EMAIL,
+        }
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send to {to_email}: {e}")
         raise

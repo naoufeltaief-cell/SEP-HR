@@ -35,6 +35,7 @@ from ..services.invoice_service import (
     duplicate_invoice, get_client_invoice_summary,
     COMPANY_INFO
 )
+from ..services.invoice_delivery import email_invoice_and_mark_sent
 from ..services.invoice_pdf import generate_invoice_pdf, generate_credit_note_pdf
 
 router = APIRouter()
@@ -1039,18 +1040,12 @@ async def send_invoice(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
-    if invoice.status == InvoiceStatus.DRAFT.value:
-        invoice = await change_invoice_status(
-            db, invoice, InvoiceStatus.VALIDATED.value,
-            getattr(user, "email", ""),
-        )
     try:
-        invoice = await change_invoice_status(
-            db, invoice, InvoiceStatus.SENT.value,
-            getattr(user, "email", ""),
-        )
+        await email_invoice_and_mark_sent(db, invoice, getattr(user, "email", ""))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, f"Erreur d'envoi du courriel: {str(e)}")
     return _serialize_invoice(invoice, include_relations=True)
 
 
@@ -1348,6 +1343,19 @@ async def email_invoice(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
+    try:
+        delivery = await email_invoice_and_mark_sent(db, invoice, getattr(user, "email", ""))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Echec de l'envoi du courriel: {str(e)}")
+
+    return {
+        "message": (
+            f"Facture envoyee par courriel a {invoice.client_email} "
+            f"via {delivery.get('transport', 'unknown')}"
+        )
+    }
     if not invoice.client_email:
         raise HTTPException(400, "Le client n'a pas d'adresse courriel")
 

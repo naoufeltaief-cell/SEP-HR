@@ -84,7 +84,6 @@ export default function ScheduleApprovalPanel({
   currentReview,
   currentInvoice,
   reviewAttachments,
-  onSave,
   onApprove,
   onRevoke,
   onGenerateInvoice,
@@ -358,14 +357,6 @@ export default function ScheduleApprovalPanel({
       return;
     }
     await saveAllDirtyShifts();
-  };
-
-  const handleSaveReview = async () => {
-    try {
-      await onSave?.();
-    } catch (err) {
-      toast?.('Erreur revision: ' + (err.message || 'Echec'));
-    }
   };
 
   const handleApprove = async () => {
@@ -663,7 +654,6 @@ export default function ScheduleApprovalPanel({
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
             {dirtyIds.size > 0 && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center' }}>⚠️ {dirtyIds.size} modification(s) non sauvegardée(s)</div>}
             <button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll}>{savingAll ? '⏳ Sauvegarde…' : 'Sauvegarder'}</button>
-            <button className="btn btn-outline btn-sm" onClick={handleSaveReview} disabled={savingAll}>Enregistrer la revision</button>
             <button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={handleApprove} disabled={!editableShifts.length || savingAll}>{savingAll ? '⏳…' : 'Approuver les heures'}</button>
             <button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>Révoquer</button>
             <button className="btn btn-primary btn-sm" onClick={handleGenerateInvoice} disabled={!canGenerateInvoice || savingAll}>Générer la facture approuvée</button>

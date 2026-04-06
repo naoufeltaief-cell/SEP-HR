@@ -11,6 +11,7 @@ SMTP_USER = os.getenv("SMTP_USER", "paie@soins-expert-plus.com")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", os.getenv("GMAIL_SENDER_EMAIL", SMTP_USER))
+BILLING_EMAIL_TRANSPORT = os.getenv("BILLING_EMAIL_TRANSPORT", "auto").lower()
 
 
 async def send_magic_link(email: str, token: str, name: str = ""):
@@ -88,6 +89,8 @@ async def send_email_with_attachment(
     """Send email with PDF attachment — utilise Gmail API OAuth2 en priorité, SMTP en fallback"""
     # Essayer d'abord via Gmail API OAuth2
     try:
+        if BILLING_EMAIL_TRANSPORT == "smtp":
+            raise RuntimeError("SMTP preferred transport")
         from .gmail_service import _load_gmail_tokens
         import httpx
         import base64

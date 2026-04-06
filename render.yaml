@@ -27,6 +27,8 @@ services:
         value: paie@soins-expert-plus.com
       - key: SMTP_PASS
         sync: false  # Set manually
+      - key: BILLING_EMAIL_TRANSPORT
+        value: smtp
     healthCheckPath: /api/health
 
   # Frontend (static site)

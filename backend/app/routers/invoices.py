@@ -3,7 +3,7 @@ Soins Expert Plus — Invoice Router (Phase 1 Complete Rewrite)
 All endpoints for invoicing, payments, credit notes, reports, anomalies, PDF.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, Body
 from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, extract, desc
@@ -36,6 +36,7 @@ from ..services.invoice_service import (
     COMPANY_INFO
 )
 from ..services.invoice_delivery import email_invoice_and_mark_sent
+from ..services.email_service import test_billing_email_connection
 from ..services.invoice_pdf import generate_invoice_pdf, generate_credit_note_pdf
 
 router = APIRouter()
@@ -267,6 +268,34 @@ async def next_invoice_number(db: AsyncSession = Depends(get_db), user=Depends(r
     """Get next invoice number (backward compat)"""
     number = await generate_invoice_number(db)
     return {"number": number}
+
+
+@router.post("/test-email")
+async def test_invoice_email(
+    payload: Optional[dict] = Body(default=None),
+    user=Depends(require_admin),
+):
+    """Test billing email delivery using the configured SMTP account."""
+    to_email = ""
+    if isinstance(payload, dict):
+        to_email = (payload.get("to_email") or "").strip()
+    if not to_email:
+        to_email = (getattr(user, "email", "") or "").strip()
+    if not to_email:
+        raise HTTPException(400, "Aucune adresse de test fournie")
+    try:
+        result = await test_billing_email_connection(to_email)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Test courriel echoue: {str(e)}")
+    return {
+        **result,
+        "message": (
+            f"Test courriel OK. Envoye de {result['sender_email']} "
+            f"vers {result['to_email']} via SMTP."
+        ),
+    }
 
 
 @router.get("/anomalies/check")

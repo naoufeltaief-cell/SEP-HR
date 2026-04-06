@@ -317,6 +317,19 @@ export default function InvoicesPage() {
     }
   };
 
+  const testBillingEmail = async () => {
+    const toEmail = window.prompt("Adresse pour le test de courriel (laisser vide = votre compte admin):", "") || "";
+    try {
+      const res = await apiFetch('/invoices/test-email', {
+        method: 'POST',
+        body: JSON.stringify({ to_email: toEmail || null })
+      });
+      setSuccess(res.message || 'Test courriel OK');
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const generateInvoices = async () => {
     setLoading(true);
     try {
@@ -648,6 +661,7 @@ export default function InvoicesPage() {
                   <option key={emp.id} value={emp.id}>{emp.name}</option>
                 ))}
               </select>
+              <button style={S.btn('outline')} onClick={testBillingEmail}>Tester courriel</button>
             </div>
             <div style={S.flexRow}>
               {selected.size > 0 && (

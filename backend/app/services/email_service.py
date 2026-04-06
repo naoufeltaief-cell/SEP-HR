@@ -1,6 +1,7 @@
 """Email service — SMTP via soins-expert-plus.com domain"""
 import os
 import smtplib
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -161,3 +162,45 @@ async def send_email_with_attachment(
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send to {to_email}: {e}")
         raise
+
+
+async def test_billing_email_connection(to_email: str):
+    """Test the billing SMTP connection by sending a small email."""
+    to_email = (to_email or "").strip()
+    if not to_email:
+        raise ValueError("Aucune adresse de destination pour le test")
+    if not SMTP_USER:
+        raise RuntimeError("SMTP_USER manquant")
+    if not SMTP_PASS:
+        raise RuntimeError("SMTP_PASS manquant")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Test courriel facturation - Soins Expert Plus"
+    msg["From"] = f"Soins Expert Plus <{BILLING_SENDER_EMAIL}>"
+    msg["To"] = to_email
+    msg.attach(MIMEText(
+        (
+            "Ceci est un test de connexion SMTP pour la facturation.\n\n"
+            f"Expediteur configure: {BILLING_SENDER_EMAIL}\n"
+            f"Compte SMTP: {SMTP_USER}\n"
+            f"Transport configure: {BILLING_EMAIL_TRANSPORT}\n"
+            f"Date: {datetime.utcnow().isoformat()}Z"
+        ),
+        "plain",
+        "utf-8",
+    ))
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.send_message(msg)
+
+    return {
+        "ok": True,
+        "smtp_host": SMTP_HOST,
+        "smtp_port": SMTP_PORT,
+        "smtp_user": SMTP_USER,
+        "sender_email": BILLING_SENDER_EMAIL,
+        "transport": BILLING_EMAIL_TRANSPORT,
+        "to_email": to_email,
+    }

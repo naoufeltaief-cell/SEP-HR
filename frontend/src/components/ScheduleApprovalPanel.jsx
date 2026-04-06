@@ -104,11 +104,40 @@ export default function ScheduleApprovalPanel({
   const [accomForm, setAccomForm] = useState({ total_cost: '', start_date: '', end_date: '', notes: '' });
   const [savingAccommodation, setSavingAccommodation] = useState(false);
   const isSavingRef = React.useRef(false);
+  const editableShiftsRef = React.useRef([]);
+  const dirtyIdsRef = React.useRef(new Set());
+
+  useEffect(() => {
+    editableShiftsRef.current = editableShifts;
+  }, [editableShifts]);
+
+  useEffect(() => {
+    dirtyIdsRef.current = dirtyIds;
+  }, [dirtyIds]);
 
   useEffect(() => {
     if (isSavingRef.current) return;
-    setEditableShifts((shifts || []).map(normalizeEditableShift));
-    setDirtyIds(new Set());
+
+    const normalizedIncoming = (shifts || []).map(normalizeEditableShift);
+    const currentEditableShifts = editableShiftsRef.current;
+    const currentDirtyIds = dirtyIdsRef.current;
+
+    if (!currentEditableShifts.length || currentDirtyIds.size === 0) {
+      setEditableShifts(normalizedIncoming);
+      return;
+    }
+
+    const currentById = new Map(currentEditableShifts.map(shift => [shift.id, shift]));
+    const mergedShifts = normalizedIncoming.map(shift => currentDirtyIds.has(shift.id) ? (currentById.get(shift.id) || shift) : shift);
+
+    currentEditableShifts.forEach(shift => {
+      const isLocalOnly = shift.is_new || String(shift.id).startsWith('new-');
+      if (isLocalOnly && currentDirtyIds.has(shift.id)) {
+        mergedShifts.push(shift);
+      }
+    });
+
+    setEditableShifts(mergedShifts);
   }, [shifts]);
 
   const loadAccommodations = useCallback(async () => {
@@ -276,31 +305,6 @@ export default function ScheduleApprovalPanel({
         throw err;
       }
       return await api.updateSchedule(shift.id, fallbackPayload);
-    }
-  };
-
-  const saveShiftLine = async (shift) => {
-    const snapshot = editableShifts.map(row => ({ ...row }));
-    try {
-      setSavingShiftId(shift.id);
-      isSavingRef.current = true;
-      const saved = await persistShift(shift);
-      if (saved && saved.id) {
-        setEditableShifts(prev => prev.map(row => row.id === shift.id ? normalizeEditableShift(saved) : row));
-      }
-      setDirtyIds(prev => {
-        const next = new Set(prev);
-        next.delete(shift.id);
-        return next;
-      });
-      toast?.(shift.is_new ? 'Quart ajoute' : 'Quart modifie');
-      await onRefreshParent?.();
-    } catch (err) {
-      setEditableShifts(snapshot);
-      toast?.('Erreur: ' + (err.message || 'Echec de la sauvegarde'));
-    } finally {
-      isSavingRef.current = false;
-      setSavingShiftId(null);
     }
   };
 
@@ -512,7 +516,7 @@ export default function ScheduleApprovalPanel({
                 <table style={tableStyle}>
                   <thead>
                     <tr>
-                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'TAUX', 'GARDE H', 'RAPPEL H', '', ''].map(header => (
+                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
                         <th key={header} style={thStyle}>{header}</th>
                       ))}
                     </tr>
@@ -530,11 +534,6 @@ export default function ScheduleApprovalPanel({
                           <td style={tdStyle}><input className="input" type="number" step="0.01" style={getDirtyInputStyle(rowDirty)} value={shift.billable_rate || 0} onChange={e => updateEditableShift(shift.id, 'billable_rate', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.garde_hours || 0} onChange={e => updateEditableShift(shift.id, 'garde_hours', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.rappel_hours || 0} onChange={e => updateEditableShift(shift.id, 'rappel_hours', e.target.value)} /></td>
-                          <td style={{ ...tdStyle, width: 86, textAlign: 'center' }}>
-                            <button className="btn btn-outline btn-sm" style={rowDirty ? { borderColor: '#e0b53b', background: '#fff8e1' } : {}} onClick={() => saveShiftLine(shift)} disabled={savingShiftId === shift.id || savingAll}>
-                              {savingShiftId === shift.id ? '...' : 'Sauver'}
-                            </button>
-                          </td>
                           <td style={{ ...tdStyle, width: 54, textAlign: 'center' }}>
                             <button className="btn btn-outline btn-sm" style={{ padding: '6px 8px', color: '#DC3545', borderColor: '#DC3545' }} onClick={() => removeShiftLine(shift)} disabled={savingShiftId === shift.id || savingAll}>
                               <Trash2 size={12} />
@@ -656,7 +655,7 @@ export default function ScheduleApprovalPanel({
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
             {dirtyIds.size > 0 && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center' }}>⚠️ {dirtyIds.size} modification(s) non sauvegardée(s)</div>}
-            <button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll}>{savingAll ? '⏳ Sauvegarde…' : 'Enregistrer'}</button>
+            <button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll}>{savingAll ? '⏳ Sauvegarde…' : 'Sauvegarder'}</button>
             <button className="btn btn-outline btn-sm" onClick={handleSaveReview} disabled={savingAll}>Enregistrer la revision</button>
             <button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={handleApprove} disabled={!editableShifts.length || savingAll}>{savingAll ? '⏳…' : 'Approuver les heures'}</button>
             <button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>Révoquer</button>

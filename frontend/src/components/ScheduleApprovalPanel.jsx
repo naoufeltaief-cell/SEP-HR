@@ -315,32 +315,39 @@ export default function ScheduleApprovalPanel({
     setSavingAll(true);
     isSavingRef.current = true;
     let allOk = true;
+    const savedShiftIds = [];
+    const savedShiftMap = new Map();
 
     for (const shift of dirtyShifts) {
       try {
         const saved = await persistShift(shift);
         if (saved && saved.id) {
-          setEditableShifts(prev => prev.map(row => row.id === shift.id ? normalizeEditableShift(saved) : row));
+          savedShiftMap.set(shift.id, normalizeEditableShift(saved));
         }
 
-        setDirtyIds(prev => {
-          const next = new Set(prev);
-          next.delete(shift.id);
-          return next;
-        });
+        savedShiftIds.push(shift.id);
       } catch (err) {
         allOk = false;
         toast?.(`Erreur sauvegarde ${shift.date || ''}: ${err.message || 'Échec'}`);
       }
     }
 
-    isSavingRef.current = false;
-    setSavingAll(false);
-
     if (allOk && dirtyShifts.length > 0) {
       toast?.(`${dirtyShifts.length} quart(s) sauvegardé(s)`);
+      if (savedShiftIds.length > 0) {
+        const nextEditableShifts = editableShiftsRef.current.map(row => savedShiftMap.get(row.id) || row);
+        editableShiftsRef.current = nextEditableShifts;
+        setEditableShifts(nextEditableShifts);
+        const nextDirtyIds = new Set(dirtyIdsRef.current);
+        savedShiftIds.forEach(id => nextDirtyIds.delete(id));
+        dirtyIdsRef.current = nextDirtyIds;
+        setDirtyIds(nextDirtyIds);
+      }
       await onRefreshParent?.();
     }
+
+    isSavingRef.current = false;
+    setSavingAll(false);
 
     return allOk;
   };

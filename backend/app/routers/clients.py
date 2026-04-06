@@ -1,8 +1,8 @@
 """Client routes — CRUD"""
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from ..database import get_db
 from ..models.models import Client
 from ..models.schemas import ClientCreate, ClientUpdate
@@ -20,6 +20,22 @@ def _serialize_client(client: Client) -> dict:
         "phone": client.phone or "",
         "tax_exempt": bool(client.tax_exempt),
     }
+
+
+def _is_clients_pk_conflict(exc: Exception) -> bool:
+    message = str(exc)
+    return "clients_pkey" in message and "duplicate key value" in message
+
+
+async def _sync_clients_sequence(db: AsyncSession) -> None:
+    await db.execute(text("""
+        SELECT setval(
+            pg_get_serial_sequence('clients', 'id'),
+            COALESCE((SELECT MAX(id) FROM clients), 0) + 1,
+            false
+        )
+    """))
+    await db.commit()
 
 
 @router.get("")
@@ -45,6 +61,20 @@ async def create_client(data: ClientCreate, db: AsyncSession = Depends(get_db), 
     try:
         await db.commit()
         await db.refresh(client)
+    except IntegrityError as e:
+        await db.rollback()
+        if not _is_clients_pk_conflict(e):
+            raise HTTPException(status_code=500, detail=f"Echec de creation du client: {str(e)}")
+
+        try:
+            await _sync_clients_sequence(db)
+            client = Client(**payload)
+            db.add(client)
+            await db.commit()
+            await db.refresh(client)
+        except SQLAlchemyError as retry_error:
+            await db.rollback()
+            raise HTTPException(status_code=500, detail=f"Echec de creation du client: {str(retry_error)}")
     except SQLAlchemyError as e:
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Echec de creation du client: {str(e)}")

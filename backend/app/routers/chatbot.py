@@ -17,7 +17,7 @@ from ..models.models import Employee, Schedule, Client, Accommodation, new_id
 from ..models.models_invoice import Invoice
 from ..models.schemas import ChatMessage
 from ..services.auth_service import require_admin
-from ..services.billing_gmail_oauth import list_recent_billing_gmail_messages
+from ..services.billing_gmail_oauth import get_billing_gmail_connection, list_recent_billing_gmail_messages
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
 from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS
 
@@ -446,6 +446,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
                 result['period_end'] = period_end.isoformat()
             return json.dumps(result, ensure_ascii=False)
         if name == 'read_recent_emails':
+            gmail_connection = await get_billing_gmail_connection(db)
             try:
                 gmail_result = await list_recent_billing_gmail_messages(
                     db,
@@ -457,6 +458,8 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
                 if gmail_result:
                     return json.dumps(gmail_result, ensure_ascii=False)
             except Exception as gmail_error:
+                if gmail_connection and getattr(gmail_connection, 'is_active', False) and getattr(gmail_connection, 'refresh_token', ''):
+                    return f"Lecture du courriel paie impossible: {str(gmail_error)}"
                 if not IMAP_USER or not IMAP_PASS:
                     return f"Lecture du courriel paie impossible: {str(gmail_error)}"
             if not IMAP_USER or not IMAP_PASS:
@@ -746,9 +749,9 @@ AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. T
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les employés actifs, lire les courriels, proposer des candidats et créer des quarts de travail. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as accès aux outils de facturation, recrutement, courriels et rapports. Utilise les outils dès qu'une action ou une donnée système est demandée. Réponds en français.\n\n" + BUSINESS_KNOWLEDGE
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
-GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 
 def _detect_prompt(message: str):
     m = message.lower()

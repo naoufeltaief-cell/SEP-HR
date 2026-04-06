@@ -9,6 +9,9 @@ const QUICK_ACTIONS = [
   { icon: '💰', label: 'Taux et calendrier paie', msg: 'Quels sont les taux de facturation par titre et le calendrier de paie?' },
   { icon: '🚗', label: 'Règles déplacement', msg: 'Quelles sont les règles pour les frais de déplacement et kilométrage?' },
   { icon: '📋', label: 'Vérifier FDT', msg: 'Vérifie les feuilles de temps reçues par courriel cette semaine et compare avec les horaires planifiés' },
+  { icon: '🗓', label: 'Modifier horaire', msg: 'Je veux modifier un quart dans l horaire' },
+  { icon: '🏨', label: 'Ajouter hebergement', msg: 'Ajoute un hebergement pour un employe' },
+  { icon: '🧾', label: 'Generer facture', msg: 'Genere une facture pour un employe sur une periode' },
 ];
 
 export default function ChatWidget() {

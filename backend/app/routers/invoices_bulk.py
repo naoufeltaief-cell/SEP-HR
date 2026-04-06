@@ -112,7 +112,11 @@ async def bulk_send_invoices(invoice_ids: List[str], db: AsyncSession = Depends(
             skipped.append({'id': invoice_id, 'reason': 'Not found'})
             continue
         try:
-            if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.VALIDATED.value):
+            if invoice.status not in (
+                InvoiceStatus.DRAFT.value,
+                InvoiceStatus.VALIDATED.value,
+                InvoiceStatus.SENT.value,
+            ):
                 skipped.append({'id': invoice_id, 'number': getattr(invoice, 'number', '?'), 'reason': f'Status {invoice.status} cannot be sent'})
                 continue
             delivery = await email_invoice_and_mark_sent(db, invoice, getattr(user, 'email', ''))

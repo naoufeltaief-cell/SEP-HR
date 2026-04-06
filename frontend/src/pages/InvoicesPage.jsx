@@ -522,6 +522,16 @@ export default function InvoicesPage() {
   const bulkSend = async () => {
     try {
       const res = await apiFetch('/invoices/bulk/send', { method: 'POST', body: JSON.stringify([...selected]) });
+      const sentCount = res.sent?.length || 0;
+      const skipped = res.skipped || [];
+      if (sentCount === 0 && skipped.length > 0) {
+        const reasons = skipped.slice(0, 3).map(item => item.reason).filter(Boolean).join(' | ');
+        setError(`Aucune facture envoyee. ${reasons || `${skipped.length} facture(s) ignoree(s)`}`);
+        setSelected(new Set());
+        loadInvoices();
+        loadStats();
+        return;
+      }
       setSuccess(`${res.sent?.length || 0} facture(s) envoyée(s)`);
       setSelected(new Set());
       loadInvoices();

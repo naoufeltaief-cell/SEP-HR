@@ -35,6 +35,8 @@ services:
         sync: false
       - key: BILLING_GMAIL_CLIENT_SECRET
         sync: false
+      - key: BACKEND_PUBLIC_URL
+        sync: false
     healthCheckPath: /api/health
 
   # Frontend (static site)

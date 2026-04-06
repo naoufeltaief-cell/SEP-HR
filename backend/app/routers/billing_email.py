@@ -1,4 +1,5 @@
 import json
+import os
 from html import escape
 from typing import Optional
 
@@ -24,6 +25,32 @@ from ..services.billing_gmail_oauth import (
 from ..services.email_service import test_billing_email_connection
 
 router = APIRouter()
+
+
+def _billing_redirect_uri(request: Request) -> str:
+    configured_base = (
+        os.getenv("BACKEND_PUBLIC_URL")
+        or os.getenv("RENDER_EXTERNAL_URL")
+        or ""
+    ).strip()
+    if configured_base:
+        return f"{configured_base.rstrip('/')}/api/billing-email/callback"
+
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto")
+        or request.url.scheme
+        or "https"
+    ).split(",", 1)[0].strip()
+    forwarded_host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+        or ""
+    ).split(",", 1)[0].strip()
+    if forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}/api/billing-email/callback"
+
+    return str(request.url_for("billing_email_callback")).replace("http://", "https://", 1)
 
 
 def _popup_html(ok: bool, message: str) -> HTMLResponse:
@@ -74,8 +101,8 @@ async def billing_email_connect(
             "Google OAuth non configuré. Ajoutez BILLING_GMAIL_CLIENT_ID et BILLING_GMAIL_CLIENT_SECRET.",
         )
     state = create_oauth_state(getattr(user, "email", ""))
-    redirect_uri = str(request.url_for("billing_email_callback"))
-    return {"url": build_google_oauth_url(redirect_uri, state)}
+    redirect_uri = _billing_redirect_uri(request)
+    return {"url": build_google_oauth_url(redirect_uri, state), "redirect_uri": redirect_uri}
 
 
 @router.get("/callback", name="billing_email_callback")
@@ -92,7 +119,7 @@ async def billing_email_callback(
         return _popup_html(False, "Réponse OAuth incomplète.")
     try:
         payload = parse_oauth_state(state)
-        redirect_uri = str(request.url_for("billing_email_callback"))
+        redirect_uri = _billing_redirect_uri(request)
         tokens = await exchange_code_for_tokens(code, redirect_uri)
         account_email = await fetch_google_account_email(tokens.get("access_token", ""))
         if account_email.lower() != BILLING_SENDER_EMAIL.lower():

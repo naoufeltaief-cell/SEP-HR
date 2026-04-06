@@ -144,17 +144,6 @@ export default function ScheduleApprovalPanel({
     }));
   };
 
-  const normalizeShiftTimeField = (id, field) => {
-    setEditableShifts(prev => prev.map(shift => {
-      if (shift.id !== id) return shift;
-      const normalized = normalizeTimeForInput(shift[field]);
-      if (!normalized || normalized === shift[field]) return shift;
-      const next = { ...shift, [field]: normalized };
-      next.hours = calcHours(next.start, next.end, Number(next.pause || 0));
-      return next;
-    }));
-  };
-
   const addQuickShiftRow = () => {
     const baseDate = shifts?.[0]?.date || fmtISO(new Date());
     const newId = `new-${Date.now()}-${editableShifts.length}`;
@@ -260,8 +249,19 @@ export default function ScheduleApprovalPanel({
   };
 
   const handleEnregistrer = async () => {
-    const ok = await saveAllDirtyShifts();
-    if (ok) onSave?.();
+    if (dirtyIds.size === 0) {
+      toast?.('Aucune modification de quart a sauvegarder');
+      return;
+    }
+    await saveAllDirtyShifts();
+  };
+
+  const handleSaveReview = async () => {
+    try {
+      await onSave?.();
+    } catch (err) {
+      toast?.('Erreur revision: ' + (err.message || 'Echec'));
+    }
   };
 
   const handleApprove = async () => {
@@ -430,8 +430,8 @@ export default function ScheduleApprovalPanel({
                       return (
                         <tr key={shift.id}>
                           <td style={tdStyle}><input className="input" type="date" style={getDirtyInputStyle(rowDirty)} value={shift.date || ''} onChange={e => updateEditableShift(shift.id, 'date', e.target.value)} /></td>
-                          <td style={tdStyle}><input className="input" type="text" inputMode="numeric" maxLength={5} placeholder="07:00" style={getDirtyInputStyle(rowDirty)} value={shift.start || ''} onChange={e => updateEditableShift(shift.id, 'start', e.target.value)} onBlur={() => normalizeShiftTimeField(shift.id, 'start')} /></td>
-                          <td style={tdStyle}><input className="input" type="text" inputMode="numeric" maxLength={5} placeholder="15:00" style={getDirtyInputStyle(rowDirty)} value={shift.end || ''} onChange={e => updateEditableShift(shift.id, 'end', e.target.value)} onBlur={() => normalizeShiftTimeField(shift.id, 'end')} /></td>
+                          <td style={tdStyle}><input className="input" type="time" step="60" lang="fr-CA" style={getDirtyInputStyle(rowDirty)} value={shift.start || ''} onChange={e => updateEditableShift(shift.id, 'start', e.target.value)} /></td>
+                          <td style={tdStyle}><input className="input" type="time" step="60" lang="fr-CA" style={getDirtyInputStyle(rowDirty)} value={shift.end || ''} onChange={e => updateEditableShift(shift.id, 'end', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="1" style={getDirtyInputStyle(rowDirty)} value={shift.pause_minutes || 0} onChange={e => updateEditableShift(shift.id, 'pause_minutes', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.25" style={getDirtyInputStyle(rowDirty, true)} value={Number(shift.hours || 0).toFixed(2)} readOnly /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.01" style={getDirtyInputStyle(rowDirty)} value={shift.billable_rate || 0} onChange={e => updateEditableShift(shift.id, 'billable_rate', e.target.value)} /></td>
@@ -559,6 +559,7 @@ export default function ScheduleApprovalPanel({
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
             {dirtyIds.size > 0 && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center' }}>⚠️ {dirtyIds.size} modification(s) non sauvegardée(s)</div>}
             <button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll}>{savingAll ? '⏳ Sauvegarde…' : 'Enregistrer'}</button>
+            <button className="btn btn-outline btn-sm" onClick={handleSaveReview} disabled={savingAll}>Enregistrer la revision</button>
             <button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={handleApprove} disabled={!editableShifts.length || savingAll}>{savingAll ? '⏳…' : 'Approuver les heures'}</button>
             <button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>Révoquer</button>
             <button className="btn btn-primary btn-sm" onClick={handleGenerateInvoice} disabled={!canGenerateInvoice || savingAll}>Générer la facture approuvée</button>

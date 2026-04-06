@@ -7,6 +7,7 @@ from io import BytesIO
 from datetime import date
 from typing import Optional
 from pathlib import Path
+from html import escape
 import os
 import logging
 
@@ -146,6 +147,111 @@ def get_styles():
         fontName="Helvetica-Bold",
         alignment=TA_RIGHT,
     ))
+    styles.add(ParagraphStyle(
+        name="MetaLabel",
+        fontSize=7.5,
+        textColor=TEXT_MUTED,
+        fontName="Helvetica-Bold",
+        leading=9,
+    ))
+    styles.add(ParagraphStyle(
+        name="MetaValue",
+        fontSize=9,
+        textColor=TEXT_PRIMARY,
+        fontName="Helvetica-Bold",
+        leading=11,
+        alignment=TA_RIGHT,
+    ))
+    styles.add(ParagraphStyle(
+        name="CardTitle",
+        fontSize=8.5,
+        textColor=PRIMARY_LIGHT,
+        fontName="Helvetica-Bold",
+        leading=10,
+    ))
+    styles.add(ParagraphStyle(
+        name="CardPrimary",
+        fontSize=10.5,
+        textColor=TEXT_PRIMARY,
+        fontName="Helvetica-Bold",
+        leading=13,
+    ))
+    styles.add(ParagraphStyle(
+        name="CardSecondary",
+        fontSize=8.5,
+        textColor=TEXT_SECONDARY,
+        leading=11,
+    ))
+    styles.add(ParagraphStyle(
+        name="TableHeader",
+        fontSize=8,
+        textColor=WHITE,
+        fontName="Helvetica-Bold",
+        leading=10,
+    ))
+    styles.add(ParagraphStyle(
+        name="TableCell",
+        fontSize=8.5,
+        textColor=TEXT_PRIMARY,
+        leading=10,
+    ))
+    styles.add(ParagraphStyle(
+        name="TableCellRight",
+        fontSize=8.5,
+        textColor=TEXT_PRIMARY,
+        leading=10,
+        alignment=TA_RIGHT,
+    ))
+    styles.add(ParagraphStyle(
+        name="TableCellCenter",
+        fontSize=8.5,
+        textColor=TEXT_PRIMARY,
+        leading=10,
+        alignment=TA_CENTER,
+    ))
+    styles.add(ParagraphStyle(
+        name="TotalCardLabel",
+        fontSize=9,
+        textColor=TEXT_SECONDARY,
+        leading=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="TotalCardLabelBold",
+        fontSize=9,
+        textColor=TEXT_PRIMARY,
+        fontName="Helvetica-Bold",
+        leading=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="TotalCardValue",
+        fontSize=9,
+        textColor=TEXT_PRIMARY,
+        alignment=TA_RIGHT,
+        leading=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="TotalCardValueBold",
+        fontSize=9,
+        textColor=TEXT_PRIMARY,
+        fontName="Helvetica-Bold",
+        alignment=TA_RIGHT,
+        leading=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="GrandTotalLabel",
+        fontSize=10.5,
+        textColor=WHITE,
+        fontName="Helvetica-Bold",
+        leading=13,
+    ))
+    styles.add(ParagraphStyle(
+        name="GrandTotalValue",
+        fontSize=14,
+        textColor=WHITE,
+        fontName="Helvetica-Bold",
+        leading=16,
+        alignment=TA_RIGHT,
+    ))
     return styles
 
 
@@ -190,11 +296,201 @@ def _get_logo_image(max_width=1.6 * inch, max_height=0.6 * inch):
     return None
 
 
+def _safe_text(value, default=""):
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text if text else default
+
+
+def _fmt_date_value(value):
+    if not value:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%d/%m/%Y")
+    text = str(value)
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return f"{text[8:10]}/{text[5:7]}/{text[0:4]}"
+    return text
+
+
+def _fmt_pause(value):
+    if value in (None, ""):
+        return "0 min"
+    try:
+        pause = float(value)
+        if pause.is_integer():
+            return f"{int(pause)} min"
+        return f"{pause:.0f} min"
+    except (TypeError, ValueError):
+        return _safe_text(value, "0 min")
+
+
+def _build_paragraph(text, style, fallback="&nbsp;"):
+    safe = escape(_safe_text(text, ""))
+    safe = safe.replace("\n", "<br/>")
+    return Paragraph(safe or fallback, style)
+
+
+def _scale_widths(raw_widths, total_width):
+    total = sum(raw_widths) or 1
+    factor = total_width / total
+    return [width * factor for width in raw_widths]
+
+
+def _build_info_card(title, primary_line, secondary_lines, width, styles):
+    rows = [[_build_paragraph(title.upper(), styles["CardTitle"])]]
+    rows.append([_build_paragraph(primary_line or "-", styles["CardPrimary"])])
+
+    visible_lines = [line for line in secondary_lines if _safe_text(line)]
+    for line in visible_lines:
+        rows.append([_build_paragraph(line, styles["CardSecondary"])])
+
+    while len(rows) < 5:
+        rows.append([_build_paragraph("", styles["CardSecondary"])])
+
+    card = Table(rows, colWidths=[width])
+    card.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), ACCENT),
+        ("BOX", (0, 0), (-1, -1), 0.75, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+    ]))
+    return card
+
+
+def _build_data_table(columns, rows, styles, total_width):
+    col_widths = _scale_widths([column["width"] for column in columns], total_width)
+    header_row = [_build_paragraph(column["label"], styles["TableHeader"]) for column in columns]
+    data = [header_row]
+
+    for row in rows:
+        table_row = []
+        for column in columns:
+            style_name = column.get("style", "TableCell")
+            table_row.append(_build_paragraph(row.get(column["key"], ""), styles[style_name]))
+        data.append(table_row)
+
+    table = Table(data, colWidths=col_widths, repeatRows=1)
+    table_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), PRIMARY),
+        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, BG_LIGHT]),
+        ("BOX", (0, 0), (-1, -1), 0.75, BORDER),
+        ("INNERGRID", (0, 1), (-1, -1), 0.4, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, 0), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 7),
+        ("TOPPADDING", (0, 1), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
+    ]
+
+    for idx, column in enumerate(columns):
+        table_style.append(("ALIGN", (idx, 0), (idx, -1), column.get("align", "LEFT")))
+
+    table.setStyle(TableStyle(table_style))
+    return table
+
+
+def _build_totals_card(invoice, styles, width):
+    rows = []
+    if getattr(invoice, "subtotal_services", 0):
+        rows.append(("Services", fmt(invoice.subtotal_services), False))
+    if getattr(invoice, "subtotal_garde", 0):
+        rows.append(("Garde", fmt(invoice.subtotal_garde), False))
+    if getattr(invoice, "subtotal_rappel", 0):
+        rows.append(("Rappel", fmt(invoice.subtotal_rappel), False))
+    if getattr(invoice, "subtotal_accom", 0):
+        rows.append(("H\u00e9bergement", fmt(invoice.subtotal_accom), False))
+    if getattr(invoice, "subtotal_deplacement", 0):
+        rows.append(("D\u00e9placement", fmt(invoice.subtotal_deplacement), False))
+    if getattr(invoice, "subtotal_km", 0):
+        rows.append(("Kilom\u00e9trage", fmt(invoice.subtotal_km), False))
+    if getattr(invoice, "subtotal_autres_frais", 0):
+        rows.append(("Autres frais", fmt(invoice.subtotal_autres_frais), False))
+
+    rows.append(("Sous-total", fmt(invoice.subtotal), True))
+
+    if getattr(invoice, "include_tax", False) and getattr(invoice, "tps", 0) > 0:
+        rows.append(("TPS (5 %)", fmt(invoice.tps), False))
+        rows.append(("TVQ (9,975 %)", fmt(invoice.tvq), False))
+    elif not getattr(invoice, "include_tax", False):
+        rows.append(("Taxes", "Exempt\u00e9", False))
+
+    data = []
+    subtotal_index = None
+    for idx, (label, value, is_bold) in enumerate(rows):
+        if is_bold:
+            subtotal_index = idx
+        label_style = styles["TotalCardLabelBold"] if is_bold else styles["TotalCardLabel"]
+        value_style = styles["TotalCardValueBold"] if is_bold else styles["TotalCardValue"]
+        data.append([
+            _build_paragraph(label, label_style),
+            _build_paragraph(value, value_style),
+        ])
+
+    data.append([
+        _build_paragraph("TOTAL", styles["GrandTotalLabel"]),
+        _build_paragraph(fmt(invoice.total), styles["GrandTotalValue"]),
+    ])
+
+    card = Table(data, colWidths=[width * 0.56, width * 0.44])
+    card_style = [
+        ("BACKGROUND", (0, 0), (-1, -2), BG_LIGHT),
+        ("BOX", (0, 0), (-1, -1), 0.75, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -2), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -2), 14),
+        ("TOPPADDING", (0, 0), (-1, -2), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -2), 5),
+        ("BACKGROUND", (0, -1), (-1, -1), PRIMARY),
+        ("TEXTCOLOR", (0, -1), (-1, -1), WHITE),
+        ("LEFTPADDING", (0, -1), (-1, -1), 14),
+        ("RIGHTPADDING", (0, -1), (-1, -1), 14),
+        ("TOPPADDING", (0, -1), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 10),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+    ]
+    if subtotal_index is not None:
+        card_style.append(("LINEABOVE", (0, subtotal_index), (-1, subtotal_index), 0.75, BORDER))
+    card.setStyle(TableStyle(card_style))
+    return card
+
+
+def _build_payment_card(invoice, width):
+    pay_color = GREEN if getattr(invoice, "balance_due", 0) <= 0 else RED
+    data = [
+        ["Montant pay\u00e9", fmt(getattr(invoice, "amount_paid", 0))],
+        ["Solde d\u00fb", fmt(getattr(invoice, "balance_due", 0))],
+    ]
+    table = Table(data, colWidths=[width * 0.56, width * 0.44])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), WHITE),
+        ("BOX", (0, 0), (-1, -1), 0.75, BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 14),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica"),
+        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, 1), (-1, 1), pay_color),
+        ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+    ]))
+    return table
+
+
 # ──────────────────────────────────────────────
 # Generate Invoice PDF
 # ──────────────────────────────────────────────
 
-def generate_invoice_pdf(invoice) -> BytesIO:
+def _legacy_generate_invoice_pdf(invoice) -> BytesIO:
     buffer = BytesIO()
     styles = get_styles()
 
@@ -582,6 +878,359 @@ def generate_invoice_pdf(invoice) -> BytesIO:
 # ──────────────────────────────────────────────
 # Generate Credit Note PDF
 # ──────────────────────────────────────────────
+
+def generate_invoice_pdf(invoice) -> BytesIO:
+    buffer = BytesIO()
+    styles = get_styles()
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=0.6 * inch,
+        rightMargin=0.6 * inch,
+        topMargin=0.5 * inch,
+        bottomMargin=0.75 * inch,
+    )
+
+    elements = []
+    page_width = doc.width
+    left_col_width = page_width * 0.56
+    right_col_width = page_width - left_col_width
+
+    def _has_amount(value):
+        try:
+            return float(value or 0) != 0
+        except (TypeError, ValueError):
+            return bool(_safe_text(value))
+
+    status_text = _safe_text(getattr(invoice, "status", "draft"), "draft").upper()
+    status_display = {
+        "DRAFT": "BROUILLON",
+        "VALIDATED": "VALID\u00c9E",
+        "SENT": "ENVOY\u00c9E",
+        "PARTIALLY_PAID": "PARTIELLEMENT PAY\u00c9E",
+        "PAID": "PAY\u00c9E",
+        "CANCELLED": "ANNUL\u00c9E",
+    }.get(status_text, status_text or "BROUILLON")
+
+    invoice_date = _fmt_date_value(getattr(invoice, "date", None)) or "-"
+    period_parts = [
+        part
+        for part in [
+            _fmt_date_value(getattr(invoice, "period_start", None)),
+            _fmt_date_value(getattr(invoice, "period_end", None)),
+        ]
+        if part
+    ]
+    period_text = " au ".join(period_parts) or "-"
+
+    company_block = []
+    logo_img = _get_logo_image(max_width=1.85 * inch, max_height=0.72 * inch)
+    if logo_img:
+        company_block.append(logo_img)
+        company_block.append(Spacer(1, 8))
+    else:
+        company_block.append(
+            Paragraph(
+                _safe_text(COMPANY_INFO.get("name"), "Soins Expert Plus"),
+                styles["CompanyName"],
+            )
+        )
+
+    company_legal = _safe_text(COMPANY_INFO.get("legal"))
+    company_address = _safe_text(COMPANY_INFO.get("address"))
+    company_phone = _safe_text(COMPANY_INFO.get("phone"))
+    company_email = _safe_text(COMPANY_INFO.get("email"))
+
+    if company_legal:
+        company_block.append(_build_paragraph(company_legal, styles["CompanyDetail"]))
+    if company_address:
+        company_block.append(_build_paragraph(company_address, styles["CompanyDetail"]))
+    if company_phone:
+        company_block.append(_build_paragraph(company_phone, styles["CompanyDetail"]))
+    if company_email:
+        company_block.append(_build_paragraph(company_email, styles["CompanyDetail"]))
+
+    meta_pairs = [
+        ("Num\u00e9ro", _safe_text(getattr(invoice, "number", None), "-")),
+        ("Date", invoice_date),
+        ("P\u00e9riode", period_text),
+        ("Statut", status_display),
+    ]
+
+    po_number = _safe_text(getattr(invoice, "po_number", None))
+    if po_number:
+        meta_pairs.append(("R\u00e9f. PO", po_number))
+
+    due_date = _fmt_date_value(getattr(invoice, "due_date", None))
+    if due_date:
+        meta_pairs.append(("\u00c9ch\u00e9ance", due_date))
+
+    meta_label_width = min(0.95 * inch, right_col_width * 0.34)
+    meta_rows = [
+        [
+            _build_paragraph(label, styles["MetaLabel"]),
+            _build_paragraph(value, styles["MetaValue"]),
+        ]
+        for label, value in meta_pairs
+    ]
+    meta_table = Table(
+        meta_rows,
+        colWidths=[meta_label_width, right_col_width - meta_label_width],
+    )
+    meta_table.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+
+    right_block = [
+        Paragraph("FACTURE", styles["InvoiceLabel"]),
+        Spacer(1, 10),
+        meta_table,
+    ]
+
+    header_table = Table(
+        [[company_block, right_block]],
+        colWidths=[left_col_width, right_col_width],
+    )
+    header_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 10))
+    elements.append(HRFlowable(width=page_width, thickness=2, color=PRIMARY, spaceAfter=16))
+
+    card_gap = 0.16 * inch
+    card_width = (page_width - card_gap) / 2
+    client_card = _build_info_card(
+        "Facturer \u00e0",
+        _safe_text(getattr(invoice, "client_name", None), "-"),
+        [
+            _safe_text(getattr(invoice, "client_address", None)),
+            _safe_text(getattr(invoice, "client_email", None)),
+            _safe_text(getattr(invoice, "client_phone", None)),
+        ],
+        card_width,
+        styles,
+    )
+    resource_card = _build_info_card(
+        "Ressource factur\u00e9e",
+        _safe_text(getattr(invoice, "employee_name", None), "-"),
+        [
+            _safe_text(getattr(invoice, "employee_title", None)),
+        ],
+        card_width,
+        styles,
+    )
+
+    info_table = Table(
+        [[client_card, Spacer(card_gap, 1), resource_card]],
+        colWidths=[card_width, card_gap, card_width],
+    )
+    info_table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("BACKGROUND", (1, 0), (1, 0), WHITE),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 18))
+
+    lines = getattr(invoice, "lines", None) or []
+    if lines:
+        any_garde = any(_has_amount(line.get("garde_amount")) for line in lines)
+        any_rappel = any(_has_amount(line.get("rappel_amount")) for line in lines)
+
+        service_columns = [
+            {"key": "date", "label": "Date", "width": 1.15, "style": "TableCell"},
+            {"key": "schedule", "label": "Horaire", "width": 1.2, "style": "TableCellCenter", "align": "CENTER"},
+            {"key": "pause", "label": "Pause", "width": 0.78, "style": "TableCellCenter", "align": "CENTER"},
+            {"key": "hours", "label": "Heures", "width": 0.8, "style": "TableCellRight", "align": "RIGHT"},
+            {"key": "rate", "label": "Taux", "width": 0.96, "style": "TableCellRight", "align": "RIGHT"},
+            {"key": "service_amount", "label": "Services", "width": 1.04, "style": "TableCellRight", "align": "RIGHT"},
+        ]
+        if any_garde:
+            service_columns.append({"key": "garde_amount", "label": "Garde", "width": 0.96, "style": "TableCellRight", "align": "RIGHT"})
+        if any_rappel:
+            service_columns.append({"key": "rappel_amount", "label": "Rappel", "width": 0.96, "style": "TableCellRight", "align": "RIGHT"})
+
+        service_rows = []
+        for line in lines:
+            start_time = _safe_text(line.get("start"))
+            end_time = _safe_text(line.get("end"))
+            if start_time and end_time:
+                schedule = f"{start_time} - {end_time}"
+            else:
+                schedule = start_time or end_time or "-"
+
+            row = {
+                "date": _fmt_date_value(line.get("date")) or "-",
+                "schedule": schedule,
+                "pause": _fmt_pause(line.get("pause_min")),
+                "hours": fmt_num(line.get("hours", 0)),
+                "rate": fmt(line.get("rate", 0)),
+                "service_amount": fmt(line.get("service_amount", 0)),
+            }
+            if any_garde:
+                row["garde_amount"] = fmt(line.get("garde_amount", 0)) if _has_amount(line.get("garde_amount")) else "-"
+            if any_rappel:
+                row["rappel_amount"] = fmt(line.get("rappel_amount", 0)) if _has_amount(line.get("rappel_amount")) else "-"
+            service_rows.append(row)
+
+        elements.append(section_header("SERVICES", styles, page_width))
+        elements.append(_build_data_table(service_columns, service_rows, styles, page_width))
+        elements.append(Spacer(1, 10))
+
+    accommodation_lines = getattr(invoice, "accommodation_lines", None) or []
+    if accommodation_lines:
+        accommodation_columns = [
+            {"key": "employee", "label": "Employ\u00e9", "width": 1.45, "style": "TableCell"},
+            {"key": "period", "label": "P\u00e9riode", "width": 1.8, "style": "TableCell"},
+            {"key": "days", "label": "Jours", "width": 0.75, "style": "TableCellRight", "align": "RIGHT"},
+            {"key": "cost_per_day", "label": "Co\u00fbt / jour", "width": 1.0, "style": "TableCellRight", "align": "RIGHT"},
+            {"key": "amount", "label": "Montant", "width": 1.05, "style": "TableCellRight", "align": "RIGHT"},
+        ]
+        accommodation_rows = [
+            {
+                "employee": _safe_text(line.get("employee"), "-"),
+                "period": _safe_text(line.get("period"), "-"),
+                "days": fmt_num(line.get("days", 0)),
+                "cost_per_day": fmt(line.get("cost_per_day", 0)),
+                "amount": fmt(line.get("amount", 0)),
+            }
+            for line in accommodation_lines
+        ]
+
+        elements.append(section_header("H\u00c9BERGEMENT", styles, page_width))
+        elements.append(_build_data_table(accommodation_columns, accommodation_rows, styles, page_width))
+        elements.append(Spacer(1, 10))
+
+    expense_lines = getattr(invoice, "expense_lines", None) or []
+    extra_lines = getattr(invoice, "extra_lines", None) or []
+    if expense_lines or extra_lines:
+        expense_columns = [
+            {"key": "description", "label": "Description", "width": 2.95, "style": "TableCell"},
+            {"key": "quantity", "label": "Quantit\u00e9", "width": 0.9, "style": "TableCellRight", "align": "RIGHT"},
+            {"key": "rate", "label": "Taux", "width": 1.0, "style": "TableCellRight", "align": "RIGHT"},
+            {"key": "amount", "label": "Montant", "width": 1.0, "style": "TableCellRight", "align": "RIGHT"},
+        ]
+        expense_rows = []
+        for line in expense_lines:
+            expense_type = _safe_text(line.get("type"))
+            description = _safe_text(line.get("description"))
+            if expense_type == "km":
+                description = description or "Kilom\u00e9trage"
+            elif expense_type == "deplacement":
+                description = description or "D\u00e9placement"
+            else:
+                description = description or "Frais"
+
+            expense_rows.append({
+                "description": description,
+                "quantity": fmt_num(line.get("quantity", 0)),
+                "rate": fmt(line.get("rate", 0)),
+                "amount": fmt(line.get("amount", 0)),
+            })
+
+        for line in extra_lines:
+            expense_rows.append({
+                "description": _safe_text(line.get("description"), "Ligne additionnelle"),
+                "quantity": fmt_num(line.get("quantity", 1)),
+                "rate": fmt(line.get("rate", 0)),
+                "amount": fmt(line.get("amount", 0)),
+            })
+
+        elements.append(section_header("FRAIS", styles, page_width))
+        elements.append(_build_data_table(expense_columns, expense_rows, styles, page_width))
+        elements.append(Spacer(1, 14))
+
+    totals_card_width = page_width * 0.47
+    totals_layout = Table(
+        [[Spacer(1, 1), _build_totals_card(invoice, styles, totals_card_width)]],
+        colWidths=[page_width - totals_card_width, totals_card_width],
+    )
+    totals_layout.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(totals_layout)
+
+    if getattr(invoice, "amount_paid", 0) > 0:
+        elements.append(Spacer(1, 10))
+        payment_layout = Table(
+            [[Spacer(1, 1), _build_payment_card(invoice, totals_card_width)]],
+            colWidths=[page_width - totals_card_width, totals_card_width],
+        )
+        payment_layout.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elements.append(payment_layout)
+
+    notes = _safe_text(getattr(invoice, "notes", None))
+    if notes:
+        elements.append(Spacer(1, 18))
+        elements.append(section_header("NOTES", styles, page_width))
+        notes_table = Table(
+            [[_build_paragraph(notes, styles["TableCell"])]],
+            colWidths=[page_width],
+        )
+        notes_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), BG_LIGHT),
+            ("BOX", (0, 0), (-1, -1), 0.75, BORDER),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+            ("TOPPADDING", (0, 0), (-1, -1), 9),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+            ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+        ]))
+        elements.append(notes_table)
+
+    elements.append(Spacer(1, 28))
+    elements.append(HRFlowable(width=page_width, thickness=0.5, color=BORDER))
+    elements.append(Spacer(1, 7))
+
+    company_name = _safe_text(COMPANY_INFO.get("name"), "Soins Expert Plus")
+    footer_identity = company_name
+    if company_legal:
+        footer_identity = f"{company_name} | {company_legal}"
+
+    footer_contact_parts = [part for part in [company_address, company_email, company_phone] if part]
+    footer_contact = " | ".join(footer_contact_parts)
+
+    elements.append(Paragraph(footer_identity, styles["Footer"]))
+    if footer_contact:
+        elements.append(Paragraph(footer_contact, styles["Footer"]))
+    elements.append(Paragraph(
+        f"TPS : {_safe_text(COMPANY_INFO.get('tps_number'), '-')} | TVQ : {_safe_text(COMPANY_INFO.get('tvq_number'), '-')}",
+        styles["Footer"],
+    ))
+    elements.append(Spacer(1, 4))
+    elements.append(Paragraph(
+        "Merci de votre confiance. Paiement attendu dans les 30 jours suivant la r\u00e9ception de la facture.",
+        styles["Footer"],
+    ))
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
 
 def generate_credit_note_pdf(credit_note) -> BytesIO:
     buffer = BytesIO()

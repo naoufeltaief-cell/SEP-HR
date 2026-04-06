@@ -2,16 +2,21 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import api from '../utils/api';
 import { fmtDay, fmtISO, fmtMoney, getWeekDates, getMonthDates, RATE_KM } from '../utils/helpers';
 import { Avatar, Modal } from '../components/UI';
+import ScheduleApprovalPanel from '../components/ScheduleApprovalPanel';
 import { ChevronLeft, ChevronRight, Plus, Send, Calendar, Search, FileText, Trash2, Eye, Upload, Download } from 'lucide-react';
+
+const ApprovalPanel = ScheduleApprovalPanel;
 
 const MONTHS_FULL = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
 const TPS_RATE = 0.05;
 const TVQ_RATE = 0.09975;
+const GARDE_RATE = 86.23;
 
 function calcHours(start, end, pause = 0) {
   if (!start || !end) return 0;
   const [sh, sm] = start.split(':').map(Number);
   const [eh, em] = end.split(':').map(Number);
+  if ([sh, sm, eh, em].some(v => Number.isNaN(v))) return 0;
   let startMin = sh * 60 + sm;
   let endMin = eh * 60 + em;
   if (endMin <= startMin) endMin += 24 * 60;
@@ -31,8 +36,19 @@ function pauseMinutesToHours(value) { return Math.round((Number(value || 0) / 60
 function normalizeEditableShift(s) {
   return {
     ...s,
+    date: s.date ? String(s.date).substring(0, 10) : '',
     start: normalizeTimeForInput(s.start),
     end: normalizeTimeForInput(s.end),
+    hours: Number(s.hours || 0),
+    pause: Number(s.pause || 0),
+    billable_rate: Number(s.billable_rate || 0),
+    km: Number(s.km || 0),
+    deplacement: Number(s.deplacement || 0),
+    garde_hours: Number(s.garde_hours || 0),
+    rappel_hours: Number(s.rappel_hours || 0),
+    notes: s.notes || '',
+    location: s.location || '',
+    client_id: s.client_id || null,
     other_dep: s.autre_dep ?? s.other_dep ?? 0,
     pause_minutes: pauseHoursToMinutes(s.pause),
     is_new: false,
@@ -99,11 +115,12 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const getEmployeeClientIds = (employee, periodShifts) => { const ids = [...new Set(periodShifts.map(s => s.client_id).filter(Boolean))]; if (ids.length) return ids; if (employee?.client_id) return [employee.client_id]; return []; };
   const getClientWeekShifts = (employeeId, clientId, fallbackClientId = null) => schedules.filter(s => s.employee_id === employeeId && viewISOs.includes(s.date) && (s.client_id === clientId || (!s.client_id && fallbackClientId && fallbackClientId === clientId)));
   const getClientWeekHours = (employeeId, clientId, fallbackClientId = null) => getClientWeekShifts(employeeId, clientId, fallbackClientId).reduce((sum, s) => sum + (Number(s.hours) || 0), 0);
+  const getEmployeeRate = (employeeId) => Number(employees.find(emp => String(emp.id) === String(employeeId))?.rate || 0);
 
-  const openAdd = (employeeId = '', date = fmtISO(viewDates[0] || new Date())) => setModal({ type: 'add', data: { employeeId, date, start: '07:00', end: '15:00', pause: 0.5, pauseMinutes: 30, hours: 7.5, location: '', clientId: '', km: 0, deplacement: 0, autreDep: 0, notes: '' } });
-  const openEdit = (shift) => setModal({ type: 'edit', data: { id: shift.id, employeeId: shift.employee_id, date: shift.date, start: normalizeTimeForInput(shift.start), end: normalizeTimeForInput(shift.end), pause: Number(shift.pause || 0), pauseMinutes: pauseHoursToMinutes(shift.pause || 0), hours: Number(shift.hours || 0), location: shift.location || '', clientId: shift.client_id || '', km: shift.km || 0, deplacement: shift.deplacement || 0, autreDep: shift.autre_dep || 0, notes: shift.notes || '' } });
-  const updateModalField = (field, value) => setModal(m => { const next = { ...m, data: { ...m.data, [field]: value } }; if (field === 'start' || field === 'end' || field === 'pauseMinutes') { next.data.pause = pauseMinutesToHours(next.data.pauseMinutes); next.data.hours = calcHours(next.data.start, next.data.end, Number(next.data.pause || 0)); } return next; });
-  const saveShift = async () => { try { const d = modal.data; const payload = { employee_id: Number(d.employeeId), date: d.date, start: normalizeTimeForInput(d.start), end: normalizeTimeForInput(d.end), pause: Number(d.pause || 0), hours: Number(d.hours || 0), location: d.location || '', client_id: d.clientId ? Number(d.clientId) : null, km: Number(d.km || 0), deplacement: Number(d.deplacement || 0), autre_dep: Number(d.autreDep || 0), notes: d.notes || '', billable_rate: 0, status: 'published' }; if (modal.type === 'add') await api.createSchedule(payload); else await api.updateSchedule(d.id, payload); toast?.(modal.type === 'add' ? 'Quart ajouté' : 'Quart modifié'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
+  const openAdd = (employeeId = '', date = fmtISO(viewDates[0] || new Date())) => setModal({ type: 'add', data: { employeeId, date, start: '07:00', end: '15:00', pause: 0.5, pauseMinutes: 30, hours: 7.5, location: '', clientId: '', km: 0, deplacement: 0, autreDep: 0, notes: '', billableRate: getEmployeeRate(employeeId) } });
+  const openEdit = (shift) => setModal({ type: 'edit', data: { id: shift.id, employeeId: shift.employee_id, date: shift.date, start: normalizeTimeForInput(shift.start), end: normalizeTimeForInput(shift.end), pause: Number(shift.pause || 0), pauseMinutes: pauseHoursToMinutes(shift.pause || 0), hours: Number(shift.hours || 0), location: shift.location || '', clientId: shift.client_id || '', km: shift.km || 0, deplacement: shift.deplacement || 0, autreDep: shift.autre_dep || 0, notes: shift.notes || '', billableRate: Number(shift.billable_rate || 0) } });
+  const updateModalField = (field, value) => setModal(m => { const next = { ...m, data: { ...m.data, [field]: value } }; if (field === 'employeeId' && m.type === 'add') next.data.billableRate = getEmployeeRate(value); if (field === 'start' || field === 'end' || field === 'pauseMinutes') { next.data.pause = pauseMinutesToHours(next.data.pauseMinutes); next.data.hours = calcHours(next.data.start, next.data.end, Number(next.data.pause || 0)); } return next; });
+  const saveShift = async () => { try { const d = modal.data; const payload = { employee_id: Number(d.employeeId), date: d.date, start: normalizeTimeForInput(d.start), end: normalizeTimeForInput(d.end), pause: Number(d.pause || 0), hours: Number(d.hours || 0), location: d.location || '', client_id: d.clientId ? Number(d.clientId) : null, km: Number(d.km || 0), deplacement: Number(d.deplacement || 0), autre_dep: Number(d.autreDep || 0), notes: d.notes || '', billable_rate: Number(d.billableRate || getEmployeeRate(d.employeeId) || 0), status: 'published' }; if (modal.type === 'add') await api.createSchedule(payload); else await api.updateSchedule(d.id, payload); toast?.(modal.type === 'add' ? 'Quart ajouté' : 'Quart modifié'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
   const deleteShift = async () => { try { await api.deleteSchedule(modal.data.id); toast?.('Quart supprimé'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
   const toggleBillingPanel = async (empId, clientId, fallbackClientId = null) => { if (expandedEmp?.empId === empId && expandedEmp?.clientId === clientId) { setExpandedEmp(null); setCurrentReview(null); setCurrentInvoice(null); setReviewAttachments([]); return; } const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we || !empId || !clientId) return; setBillingLoading(true); setExpandedEmp({ empId, clientId, fallbackClientId }); setCurrentReview(null); setCurrentInvoice(null); setReviewAttachments([]); const plannedHours = Number(getClientWeekHours(empId, clientId, fallbackClientId).toFixed(2)); setReviewDraft({ approvedHours: plannedHours, notes: '' }); try { const [reviews, invoices] = await Promise.all([api.getScheduleReviews({ employee_id: empId, client_id: clientId, week_start: ws }), api.getInvoices({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we })]); const review = (reviews || [])[0] || null; const invoice = (invoices || [])[0] || null; setCurrentReview(review); setCurrentInvoice(invoice); if (review?.id) { setReviewDraft({ approvedHours: Number(review.approved_hours || plannedHours), notes: review.notes || '' }); const att = await api.getScheduleReviewAttachments(review.id).catch(() => []); setReviewAttachments(att || []); } } catch (err) { toast?.('Erreur: ' + err.message); } finally { setBillingLoading(false); } };
   const saveReview = async (empId, clientId, fallbackClientId = null, approve = false) => { const ws = getWeekStart(); if (!ws || !empId || !clientId) return; try { setBillingLoading(true); const approvedHours = Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0); const notes = reviewDraft?.notes || ''; let review = approve ? await api.approveReviewedWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }) : await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }); if (approve && (!review || review.status !== 'approved')) review = { ...(review || {}), employee_id: empId, client_id: clientId, week_start: ws, status: 'approved' }; setCurrentReview(review || null); setApprovals(prev => { const rest = prev.filter(a => !(a.employee_id === empId && a.client_id === clientId && a.week_start === ws)); return review ? [review, ...rest] : rest; }); if (approve) await reload(); toast?.(approve ? 'Heures approuvées' : 'Révision enregistrée'); } catch (err) { toast?.('Erreur: ' + err.message); } finally { setBillingLoading(false); } };
@@ -302,7 +319,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
 
 </>; }
 
-function ApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewDraft, setReviewDraft, currentReview, currentInvoice, reviewAttachments, onSave, onApprove, onRevoke, onGenerateInvoice, onUpload, onDeleteAttachment, onOpenAttachment, onGoInvoices, onRefreshParent, toast }) {
+function LegacyApprovalPanel({ employee, client, shifts, allEmployeeSchedules, reviewDraft, setReviewDraft, currentReview, currentInvoice, reviewAttachments, onSave, onApprove, onRevoke, onGenerateInvoice, onUpload, onDeleteAttachment, onOpenAttachment, onGoInvoices, onRefreshParent, toast }) {
   const [editableShifts, setEditableShifts] = useState([]);
   const [savingShiftId, setSavingShiftId] = useState(null);
   const [savingAll, setSavingAll] = useState(false);

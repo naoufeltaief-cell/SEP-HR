@@ -61,11 +61,17 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
     dates = _expand_dates(data)
     group_id = new_id() if len(dates) > 1 else None
     created = []
+    effective_rate = data.billable_rate
+    if not effective_rate and data.employee_id:
+        emp_result = await db.execute(select(Employee).where(Employee.id == data.employee_id))
+        employee = emp_result.scalar_one_or_none()
+        if employee and getattr(employee, "rate", 0):
+            effective_rate = employee.rate
     for d in dates:
         sched = Schedule(
             id=new_id(), employee_id=data.employee_id, date=d,
             start=data.start, end=data.end, hours=data.hours, pause=data.pause,
-            location=data.location, billable_rate=data.billable_rate,
+            location=data.location, billable_rate=effective_rate,
             status=data.status, notes=data.notes, client_id=data.client_id,
             km=data.km, deplacement=data.deplacement, autre_dep=data.autre_dep,
             garde_hours=data.garde_hours, rappel_hours=data.rappel_hours,
@@ -521,7 +527,10 @@ async def update_schedule(sid: str, data: ScheduleUpdate, db: AsyncSession = Dep
     sched = result.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=404, detail="Quart introuvable")
-    for k, v in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    if "billable_rate" in updates and not updates["billable_rate"] and getattr(sched, "billable_rate", 0):
+        updates.pop("billable_rate")
+    for k, v in updates.items():
         setattr(sched, k, v)
     await db.commit()
     await db.refresh(sched)

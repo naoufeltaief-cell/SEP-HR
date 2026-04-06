@@ -115,6 +115,7 @@ class ScheduleCreate(BaseModel):
     recurrence_days: Optional[List[int]] = None  # 0=Sun..6=Sat
 
 class ScheduleUpdate(BaseModel):
+    date: Optional[date] = None
     start: Optional[str] = None
     end: Optional[str] = None
     hours: Optional[float] = None
@@ -123,6 +124,7 @@ class ScheduleUpdate(BaseModel):
     billable_rate: Optional[float] = None
     status: Optional[str] = None
     notes: Optional[str] = None
+    client_id: Optional[int] = None
     km: Optional[float] = None
     deplacement: Optional[float] = None
     autre_dep: Optional[float] = None

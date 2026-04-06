@@ -1959,15 +1959,27 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
     if (!newClient.name.trim()) { setError && setError('Le nom du client est requis'); return; }
     setCreatingClient(true);
     try {
-      await apiFetch('/clients/', { method: 'POST', body: JSON.stringify(newClient) });
+      const payload = {
+        name: (newClient.name || '').trim(),
+        address: (newClient.address || '').trim(),
+        email: (newClient.email || '').trim(),
+        phone: (newClient.phone || '').trim(),
+        tax_exempt: false,
+      };
+      await apiFetch('/clients/', { method: 'POST', body: JSON.stringify(payload) });
       setSuccess && setSuccess(`Client "${newClient.name}" créé`);
       setShowNewClient(false);
       setNewClient({ name: '', address: '', email: '', phone: '' });
-      if (loadClients) loadClients();
+      if (loadClients) await loadClients();
     } catch (e) {
-      setError && setError(e.message);
+      const detail = e?.message === 'Failed to fetch'
+        ? "Impossible de joindre l'API pendant la creation du client. Verifiez le redeploiement du backend."
+        : e.message;
+      setError && setError(detail);
+      console.error('createNewClient failed', e);
+    } finally {
+      setCreatingClient(false);
     }
-    setCreatingClient(false);
   };
 
   const downloadCSV = () => {

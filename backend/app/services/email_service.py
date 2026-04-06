@@ -8,8 +8,12 @@ from email.mime.application import MIMEApplication
 
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "paie@soins-expert-plus.com")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_USER = (
+    os.getenv("SMTP_USER")
+    or os.getenv("SMTP_USER_PAIE")
+    or "paie@soins-expert-plus.com"
+)
+SMTP_PASS = os.getenv("SMTP_PASS") or os.getenv("SMTP_PASS_PAIE") or ""
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", os.getenv("GMAIL_SENDER_EMAIL", SMTP_USER))
 BILLING_EMAIL_TRANSPORT = os.getenv("BILLING_EMAIL_TRANSPORT", "auto").lower()

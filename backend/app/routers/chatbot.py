@@ -8,7 +8,7 @@ import httpx
 import imaplib
 import email as email_lib
 from email.header import decode_header
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, desc
@@ -17,6 +17,7 @@ from ..models.models import Employee, Schedule, Client, Accommodation, new_id
 from ..models.models_invoice import Invoice
 from ..models.schemas import ChatMessage
 from ..services.auth_service import require_admin
+from ..services.billing_gmail_oauth import list_recent_billing_gmail_messages
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
 from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS
 
@@ -66,6 +67,7 @@ RAW_TOOLS = [
     {"name": "get_employee_schedule", "description": "Obtenir l'horaire d'un employé pour une période donnée.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}, "required": []}},
     {"name": "generate_invoice_for_employee", "description": "Générer une facture brouillon à partir des horaires d'un employé pour une période donnée. Utiliser quand on te demande explicitement de générer une facture.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}}, "required": ["period_start", "period_end"]}},
     {"name": "read_recent_emails", "description": "Lire les courriels récents de la boîte de réception.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "folder": {"type": "string", "default": "INBOX"}}}},
+    {"name": "generate_current_invoice_for_employee", "description": "Generer une facture brouillon pour la periode actuelle de facturation d'un employe.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "client_name": {"type": "string"}, "client_id": {"type": "integer"}}, "required": []}},
     {"name": "send_email", "description": "Envoyer un courriel.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}}, "required": ["to", "subject", "body_html"]}},
     {"name": "create_schedule_shift", "description": "Creer un quart dans l'horaire. Les heures doivent etre en format 24 h HH:MM.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": ["date", "start", "end"]}},
     {"name": "update_schedule_shift", "description": "Modifier un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": []}},
@@ -125,6 +127,14 @@ def _parse_date_value(value, field_name="date"):
         return date.fromisoformat(raw[:10])
     except ValueError as exc:
         raise ValueError(f"{field_name} invalide. Utilise YYYY-MM-DD.") from exc
+
+
+def _current_billing_period(reference_date=None):
+    current = reference_date or date.today()
+    days_since_sunday = (current.weekday() + 1) % 7
+    period_start = current - timedelta(days=days_since_sunday)
+    period_end = period_start + timedelta(days=6)
+    return period_start, period_end
 
 
 def _normalize_time_value(value, field_name="heure"):
@@ -403,16 +413,52 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
             emp = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
             if not emp:
                 return "Employé introuvable pour génération de facture"
+            period_start = input_data.get('period_start')
+            period_end = input_data.get('period_end')
+            if not period_start or not period_end:
+                current_start, current_end = _current_billing_period()
+                period_start = current_start.isoformat()
+                period_end = current_end.isoformat()
             result = await _build_invoice_from_schedules(
                 db,
                 emp,
-                input_data['period_start'],
-                input_data['period_end'],
+                period_start,
+                period_end,
                 input_data.get('client_id'),
                 input_data.get('client_name'),
             )
             return json.dumps(result, ensure_ascii=False)
+        if name == 'generate_current_invoice_for_employee':
+            emp = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
+            if not emp:
+                return "Employe introuvable pour generation de facture"
+            period_start, period_end = _current_billing_period()
+            result = await _build_invoice_from_schedules(
+                db,
+                emp,
+                period_start.isoformat(),
+                period_end.isoformat(),
+                input_data.get('client_id'),
+                input_data.get('client_name'),
+            )
+            if isinstance(result, dict) and 'period_start' not in result:
+                result['period_start'] = period_start.isoformat()
+                result['period_end'] = period_end.isoformat()
+            return json.dumps(result, ensure_ascii=False)
         if name == 'read_recent_emails':
+            try:
+                gmail_result = await list_recent_billing_gmail_messages(
+                    db,
+                    max_results=input_data.get('max_results', 10),
+                    search=input_data.get('search', ''),
+                    folder=input_data.get('folder', 'INBOX'),
+                    unread_only=bool(input_data.get('unread_only')),
+                )
+                if gmail_result:
+                    return json.dumps(gmail_result, ensure_ascii=False)
+            except Exception as gmail_error:
+                if not IMAP_USER or not IMAP_PASS:
+                    return f"Lecture du courriel paie impossible: {str(gmail_error)}"
             if not IMAP_USER or not IMAP_PASS:
                 return "Configuration IMAP manquante."
             try:
@@ -700,9 +746,9 @@ AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. T
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les employés actifs, lire les courriels, proposer des candidats et créer des quarts de travail. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as accès aux outils de facturation, recrutement, courriels et rapports. Utilise les outils dès qu'une action ou une donnée système est demandée. Réponds en français.\n\n" + BUSINESS_KNOWLEDGE
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
-GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 
 def _detect_prompt(message: str):
     m = message.lower()

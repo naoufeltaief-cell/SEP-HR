@@ -19,6 +19,7 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+GMAIL_MESSAGES_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 
 BILLING_GMAIL_CLIENT_ID = (
     os.getenv("BILLING_GMAIL_CLIENT_ID")
@@ -35,6 +36,7 @@ BILLING_GMAIL_CLIENT_SECRET = (
 BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", "paie@soins-expert-plus.com").strip().lower()
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
     "openid",
     "email",
 ]
@@ -253,6 +255,118 @@ def _build_raw_message(
         )
         msg.attach(part)
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+
+def _header_value(headers, name: str) -> str:
+    target = (name or "").strip().lower()
+    for header in headers or []:
+        if (header.get("name") or "").strip().lower() == target:
+            return header.get("value") or ""
+    return ""
+
+
+def _payload_has_pdf(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    filename = (payload.get("filename") or "").strip().lower()
+    if filename.endswith(".pdf"):
+        return True
+    for part in payload.get("parts") or []:
+        if _payload_has_pdf(part):
+            return True
+    return False
+
+
+async def list_recent_billing_gmail_messages(
+    db: AsyncSession,
+    max_results: int = 10,
+    search: str = "",
+    folder: str = "INBOX",
+    unread_only: bool = False,
+) -> Optional[dict]:
+    conn = await get_billing_gmail_connection(db)
+    if not conn or not conn.is_active or not conn.refresh_token:
+        return None
+
+    access_token = await get_valid_billing_access_token(db, conn)
+    query_parts = []
+    normalized_folder = (folder or "INBOX").strip().upper()
+    if normalized_folder == "INBOX":
+        query_parts.append("in:inbox")
+    elif normalized_folder and normalized_folder != "ALL":
+        query_parts.append(f"label:{normalized_folder}")
+    if unread_only:
+        query_parts.append("is:unread")
+    if search:
+        query_parts.append(str(search).strip())
+
+    params = {"maxResults": max(1, min(int(max_results or 10), 20))}
+    if query_parts:
+        params["q"] = " ".join(part for part in query_parts if part)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            GMAIL_MESSAGES_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
+        )
+
+        if response.status_code == 401:
+            access_token = await _refresh_access_token(db, conn)
+            response = await client.get(
+                GMAIL_MESSAGES_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+            )
+
+        if response.status_code == 403 and "insufficient" in response.text.lower():
+            raise RuntimeError(
+                "La connexion Gmail actuelle n'a pas encore la permission de lire les courriels. Clique 'Reconnecter Gmail' pour autoriser l'acces a la boite paie."
+            )
+        if response.status_code != 200:
+            conn.last_error = response.text
+            conn.updated_at = datetime.utcnow()
+            await db.commit()
+            raise RuntimeError(f"Lecture Gmail echouee: {response.text}")
+
+        listing = response.json()
+        messages = listing.get("messages") or []
+        items = []
+        for message in messages:
+            msg_id = message.get("id")
+            if not msg_id:
+                continue
+            detail = await client.get(
+                f"{GMAIL_MESSAGES_URL}/{msg_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"format": "full"},
+            )
+            if detail.status_code != 200:
+                continue
+            payload = detail.json()
+            headers = ((payload.get("payload") or {}).get("headers") or [])
+            body_preview = (payload.get("snippet") or "").strip()
+            items.append(
+                {
+                    "id": msg_id,
+                    "thread_id": payload.get("threadId", ""),
+                    "from": _header_value(headers, "From"),
+                    "subject": _header_value(headers, "Subject"),
+                    "date": _header_value(headers, "Date")[:25],
+                    "body_preview": body_preview[:200],
+                    "has_pdf_attachment": _payload_has_pdf(payload.get("payload") or {}),
+                }
+            )
+
+    conn.last_error = ""
+    conn.updated_at = datetime.utcnow()
+    await db.commit()
+    return {
+        "mailbox": conn.email or BILLING_SENDER_EMAIL,
+        "folder": normalized_folder,
+        "transport": "gmail_oauth",
+        "items": items,
+    }
 
 
 async def send_via_connected_billing_gmail(

@@ -1,6 +1,7 @@
 """Schedule routes — CRUD with recurrence, publish, bulk operations, week approval, import/export"""
 from datetime import timedelta, date as date_type, datetime
 import io, csv, re, logging
+import unicodedata
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -124,6 +125,50 @@ def _safe_float(val, default=0.0):
         return default
 
 
+def _clean_text(value) -> str:
+    raw = str(value or "").strip()
+    return "" if raw.lower() == "nan" else raw
+
+
+def _normalize_lookup(value: str) -> str:
+    raw = unicodedata.normalize("NFKD", _clean_text(value).lower())
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = re.sub(r"[^a-z0-9]+", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _normalize_email(value: str) -> str:
+    return _clean_text(value).strip().lower()
+
+
+def _employee_name_keys(name: str) -> set[str]:
+    norm = _normalize_lookup(name)
+    if not norm:
+        return set()
+    parts = norm.split()
+    keys = {norm}
+    if len(parts) >= 2:
+        keys.add(f"{parts[0]} {parts[-1]}")
+        keys.add(f"{parts[-1]} {parts[0]}")
+        keys.add(" ".join(reversed(parts)))
+    return {key for key in keys if key}
+
+
+def _row_employee_keys(prenom: str, nom: str) -> list[str]:
+    first = _normalize_lookup(prenom)
+    last = _normalize_lookup(nom)
+    keys = []
+    for candidate in (
+        f"{first} {last}".strip(),
+        f"{last} {first}".strip(),
+        f"{first.split()[0] if first else ''} {last.split()[-1] if last else ''}".strip(),
+        f"{last.split()[-1] if last else ''} {first.split()[0] if first else ''}".strip(),
+    ):
+        if candidate and candidate not in keys:
+            keys.append(candidate)
+    return keys
+
+
 @router.post("/import-csv")
 async def import_csv(
     file: UploadFile = File(...),
@@ -201,22 +246,111 @@ async def import_csv(
     emp_result = await db.execute(select(Employee))
     employees = emp_result.scalars().all()
     emp_by_name = {}
+    emp_by_email = {}
+
+    def _index_employee(emp: Employee):
+        for key in _employee_name_keys(emp.name):
+            emp_by_name[key] = emp
+        email_key = _normalize_email(getattr(emp, "email", "") or "")
+        if email_key:
+            emp_by_email[email_key] = emp
+
     for e in employees:
-        emp_by_name[e.name.strip().lower()] = e
-        # Also index by parts
-        parts = e.name.strip().lower().split()
-        if len(parts) >= 2:
-            emp_by_name[f"{parts[0]} {parts[-1]}"] = e
-            emp_by_name[f"{parts[-1]} {parts[0]}"] = e
+        _index_employee(e)
 
     client_result = await db.execute(select(Client))
     clients_db = client_result.scalars().all()
     client_by_name = {c.name.strip().lower(): c for c in clients_db}
 
+    existing_sched_result = await db.execute(select(Schedule))
+    existing_schedule_index = {
+        (
+            s.employee_id,
+            s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date),
+            _normalise_time(s.start),
+            _normalise_time(s.end),
+        ): s
+        for s in existing_sched_result.scalars().all()
+    }
+
+    created_employees = 0
+    replaced_schedule_keys = set()
+    for _, row in df.iterrows():
+        raw_prenom = _clean_text(row.get('prenom', ''))
+        raw_nom = _clean_text(row.get('nom', ''))
+        row_email = _normalize_email(row.get('courriel', ''))
+        display_name = " ".join(part for part in [raw_prenom, raw_nom] if part).strip()
+        position = _clean_text(row.get('position', ''))
+
+        seeded_emp = emp_by_email.get(row_email) if row_email else None
+        if not seeded_emp:
+            for key in _row_employee_keys(raw_prenom, raw_nom):
+                seeded_emp = emp_by_name.get(key)
+                if seeded_emp:
+                    break
+        if not seeded_emp:
+            lookup_tokens = set(" ".join(_row_employee_keys(raw_prenom, raw_nom)).split())
+            if lookup_tokens:
+                best_match = None
+                best_score = 0
+                for existing_emp in employees:
+                    existing_tokens = set(_normalize_lookup(existing_emp.name).split())
+                    score = len(lookup_tokens & existing_tokens)
+                    if score > best_score and score >= min(2, len(lookup_tokens)):
+                        best_match = existing_emp
+                        best_score = score
+                seeded_emp = best_match
+        if not seeded_emp and display_name:
+            rate_hint = _safe_float(row.get('taux_horaire'), 0)
+            seeded_emp = Employee(
+                name=display_name,
+                position=position,
+                phone="",
+                email=row_email,
+                rate=rate_hint or 0,
+                is_active=True,
+            )
+            db.add(seeded_emp)
+            await db.flush()
+            employees.append(seeded_emp)
+            _index_employee(seeded_emp)
+            created_employees += 1
+        if seeded_emp:
+            full_name_key = f"{raw_prenom} {raw_nom}".strip().lower()
+            reverse_name_key = f"{raw_nom} {raw_prenom}".strip().lower()
+            if full_name_key:
+                emp_by_name[full_name_key] = seeded_emp
+            if reverse_name_key:
+                emp_by_name[reverse_name_key] = seeded_emp
+            date_str = _clean_text(row.get('date_du_quart', ''))
+            if date_str:
+                parsed_date = None
+                try:
+                    parsed_date = date_type.fromisoformat(date_str)
+                except ValueError:
+                    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y/%m/%d'):
+                        try:
+                            parsed_date = datetime.strptime(date_str, fmt).date()
+                            break
+                        except ValueError:
+                            continue
+                if parsed_date:
+                    start_time = _normalise_time(row.get('heure_debut', ''))
+                    end_time = _normalise_time(row.get('heure_fin', ''))
+                    schedule_key = (seeded_emp.id, parsed_date.isoformat(), start_time, end_time)
+                    existing_sched = existing_schedule_index.get(schedule_key)
+                    if existing_sched and schedule_key not in replaced_schedule_keys:
+                        await db.delete(existing_sched)
+                        existing_schedule_index.pop(schedule_key, None)
+                        replaced_schedule_keys.add(schedule_key)
+
     # ── Process rows ──
     success_count = 0
+    created_count = 0
+    updated_count = 0
     error_details = []
     created_ids = []
+    changed = False
 
     for idx, row in df.iterrows():
         row_num = idx + 2  # +2 for header + 0-indexed
@@ -325,21 +459,29 @@ async def import_csv(
                 rappel_hours=0,
             )
             db.add(sched)
+            existing_schedule_index[(emp.id, shift_date.isoformat(), start_time, end_time)] = sched
             created_ids.append(sched.id)
             success_count += 1
 
         except Exception as exc:
             error_details.append({"row": row_num, "error": str(exc)})
 
-    if created_ids:
+    updated_count = len(replaced_schedule_keys)
+    created_count = max(success_count - updated_count, 0)
+
+    if created_ids or replaced_schedule_keys or created_employees:
         await db.commit()
 
     return {
         "success": success_count,
         "errors": len(error_details),
         "total_rows": len(df),
+        "created": created_count,
+        "updated": updated_count,
+        "created_employees": created_employees,
         "error_details": error_details[:100],  # Cap at 100 errors
-        "message": f"{success_count} quarts importés avec succès"
+        "message": f"{success_count} quarts importés ou mis à jour avec succès"
+                   + (f" ({created_count} créés, {updated_count} mis à jour" + (f", {created_employees} employés créés" if created_employees else "") + ")" if success_count else "")
                    + (f", {len(error_details)} erreurs" if error_details else ""),
     }
 

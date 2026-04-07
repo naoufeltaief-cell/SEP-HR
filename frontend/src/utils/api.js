@@ -122,7 +122,7 @@ class ApiClient {
   generateFromSchedules(data) { return this.post('/invoices-approved/generate-from-approved-schedules', data); }
   generateAllApprovedInvoices(data) { return this.post('/invoices-approved/generate-all-approved-schedules', data); }
 
-  getTimesheets() { return this.get('/timesheets/'); }
+  getTimesheets(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/timesheets/${qs ? '?' + qs : ''}`); }
   submitTimesheet(data) { return this.post('/timesheets/', data); }
   approveTimesheet(id) { return this.put(`/timesheets/${id}/approve`, {}); }
   rejectTimesheet(id) { return this.put(`/timesheets/${id}/reject`, {}); }

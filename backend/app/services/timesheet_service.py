@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import base64
 from collections import defaultdict
+from email.utils import parseaddr, parsedate_to_datetime
+from io import BytesIO
+import json
+import os
 import re
 import unicodedata
 from datetime import date, datetime, timedelta
-from email.utils import parseaddr
 from typing import Iterable, Optional
 
+import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from PyPDF2 import PdfReader
 
 from ..models.models import (
     Accommodation,
@@ -57,8 +63,35 @@ _MONTH_LABELS = {
     11: "Novembre",
     12: "Décembre",
 }
-_ATTACHMENT_EXTENSIONS = {"pdf", "jpg", "jpeg", "png", "gif"}
+_ATTACHMENT_EXTENSIONS = {"pdf", "jpg", "jpeg", "png", "gif", "heic", "heif"}
 _ORIENTATION_KEYWORDS = ("orientation", "formation")
+_TIMESHEET_KEYWORDS = (
+    "fdt",
+    "feuille de temps",
+    "feuille temps",
+    "timesheet",
+    "time sheet",
+    "feuille de route",
+    "feuille route",
+)
+_TIMESHEET_NEGATIVE_FILENAME_KEYWORDS = (
+    "logo",
+    "signature",
+    "outlook",
+    "header",
+    "footer",
+    "banner",
+    "facebook",
+    "instagram",
+)
+_GENERIC_CAMERA_NAME_RE = re.compile(r"^(?:img|image|photo|scan)[\-_ ]?\d+", flags=re.IGNORECASE)
+OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+TIMESHEET_ATTACHMENT_MODEL = (
+    os.getenv("TIMESHEET_ATTACHMENT_MODEL")
+    or os.getenv("OPENAI_MODEL")
+    or "gpt-5.4-mini"
+).strip()
+_VISION_ATTACHMENT_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 
 
 def _norm(value: str) -> str:
@@ -82,7 +115,208 @@ def _attachment_extension(filename: str = "", content_type: str = "") -> str:
         return "png"
     if content == "image/gif":
         return "gif"
+    if content in {"image/heic", "image/heif"}:
+        return "heic"
     return "bin"
+
+
+def _safe_parse_message_date(value: str) -> Optional[date]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return parsedate_to_datetime(raw).date()
+    except Exception:
+        return None
+
+
+def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    month_index = (year * 12 + (month - 1)) + delta
+    shifted_year, shifted_month_index = divmod(month_index, 12)
+    return shifted_year, shifted_month_index + 1
+
+
+def _infer_week_period_from_day_range(
+    start_day: int,
+    end_day: int,
+    reference_date: Optional[date] = None,
+) -> Optional[tuple[date, date]]:
+    if end_day < start_day or (end_day - start_day) != 6:
+        return None
+    ref = reference_date or date.today()
+    candidates = []
+    for month_delta in range(-3, 2):
+        year_value, month_value = _shift_month(ref.year, ref.month, month_delta)
+        try:
+            start_date = date(year_value, month_value, start_day)
+            end_date = date(year_value, month_value, end_day)
+        except ValueError:
+            continue
+        if end_date < start_date:
+            continue
+        distance = abs((ref - end_date).days)
+        future_penalty = 0 if end_date <= ref else 21
+        candidates.append((future_penalty + distance, abs((ref - start_date).days), start_date, end_date))
+    if not candidates:
+        return None
+    _, _, start_date, end_date = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
+    return start_date, end_date
+
+
+def _extract_openai_text(data: dict) -> str:
+    if data.get("output_text"):
+        return str(data.get("output_text") or "").strip()
+    texts = []
+    for item in data.get("output", []) or []:
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []) or []:
+            if content.get("type") in {"output_text", "text"} and content.get("text"):
+                texts.append(str(content.get("text") or ""))
+    return "\n".join(part for part in texts if part).strip()
+
+
+def _parse_json_object(raw: str) -> dict:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _extract_pdf_text_preview(file_data: bytes, max_chars: int = 2400) -> str:
+    if not file_data:
+        return ""
+    try:
+        reader = PdfReader(BytesIO(file_data))
+    except Exception:
+        return ""
+    chunks = []
+    for page in reader.pages[:2]:
+        try:
+            text = (page.extract_text() or "").strip()
+        except Exception:
+            text = ""
+        if text:
+            chunks.append(text)
+        if sum(len(chunk) for chunk in chunks) >= max_chars:
+            break
+    return "\n".join(chunks)[:max_chars].strip()
+
+
+def extract_document_text_preview(filename: str = "", mime_type: str = "", file_data: bytes = b"") -> str:
+    ext = _attachment_extension(filename, mime_type)
+    if ext == "pdf":
+        return _extract_pdf_text_preview(file_data)
+    return ""
+
+
+def analyze_timesheet_document(
+    document: dict,
+    employee: Optional[Employee] = None,
+    extracted_text: str = "",
+) -> dict:
+    filename = str(document.get("filename") or "").strip()
+    subject = str(document.get("subject") or "").strip()
+    body_preview = str(document.get("body_preview") or "").strip()
+    mime_type = str(document.get("mime_type") or "").strip().lower()
+    file_size = int(document.get("file_size") or 0)
+    normalized_filename = _norm(filename)
+    normalized_subject = _norm(subject)
+    normalized_body = _norm(body_preview)
+    normalized_text = _norm(extracted_text)
+    combined = " ".join(
+        value for value in [normalized_filename, normalized_subject, normalized_body, normalized_text] if value
+    )
+    ext = _attachment_extension(filename, mime_type)
+
+    score = 0.0
+    reasons = []
+
+    if any(keyword in normalized_filename for keyword in _TIMESHEET_KEYWORDS):
+        score += 0.55
+        reasons.append("nom de fichier FDT")
+    if any(keyword in normalized_subject for keyword in _TIMESHEET_KEYWORDS):
+        score += 0.24
+        reasons.append("objet du courriel FDT")
+    if any(keyword in normalized_body for keyword in _TIMESHEET_KEYWORDS):
+        score += 0.18
+        reasons.append("contenu du courriel FDT")
+    if any(keyword in normalized_text for keyword in _TIMESHEET_KEYWORDS):
+        score += 0.24
+        reasons.append("texte du document FDT")
+
+    if employee:
+        employee_name = _norm(getattr(employee, "name", "") or "")
+        employee_tokens = [token for token in employee_name.split() if token]
+        if employee_name and employee_name in combined:
+            score += 0.18
+            reasons.append("nom employe detecte")
+        elif employee_tokens:
+            overlap = sum(1 for token in employee_tokens if token in combined)
+            if overlap >= 2:
+                score += 0.14
+                reasons.append("prenom/nom employe detectes")
+            elif overlap == 1:
+                score += 0.06
+
+    if ext == "pdf":
+        score += 0.10
+    elif ext in {"jpg", "jpeg", "heic"} and file_size >= 120_000:
+        score += 0.08
+    elif ext == "png" and file_size >= 180_000:
+        score += 0.04
+
+    has_period = extract_period_from_text(
+        " ".join(part for part in [subject, body_preview, filename, extracted_text] if part),
+        reference_date=_safe_parse_message_date(document.get("date", "")),
+    )
+    if has_period:
+        score += 0.10
+        reasons.append("periode detectee")
+
+    lowered_filename = filename.strip().lower()
+    if any(keyword in lowered_filename for keyword in _TIMESHEET_NEGATIVE_FILENAME_KEYWORDS):
+        score -= 0.40
+        reasons.append("piece jointe decor ou signature")
+    if ext in {"png", "gif"} and file_size < 120_000 and not any(
+        keyword in normalized_filename for keyword in _TIMESHEET_KEYWORDS
+    ):
+        score -= 0.20
+    if file_size and file_size < 20_000:
+        score -= 0.18
+    base_name = lowered_filename.rsplit(".", 1)[0]
+    if _GENERIC_CAMERA_NAME_RE.match(base_name) and not any(
+        keyword in combined for keyword in _TIMESHEET_KEYWORDS
+    ):
+        score -= 0.14
+
+    score = round(max(0.0, min(score, 1.0)), 2)
+    likely = score >= 0.42
+    strong = score >= 0.65
+
+    return {
+        "score": score,
+        "likely": likely,
+        "strong": strong,
+        "reasons": reasons,
+        "period_detected": bool(has_period),
+        "document_text_preview": extracted_text[:500].strip(),
+    }
 
 
 def completed_billing_period(reference_date: Optional[date] = None) -> tuple[date, date]:
@@ -136,7 +370,195 @@ def extract_period_from_text(text: str, reference_date: Optional[date] = None) -
         if end_date >= start_date:
             return start_date, end_date
 
+    cross_month_pattern = re.compile(
+        rf"(?:du\s+)?(\d{{1,2}})\s+({month_pattern})(?:\s+(20\d{{2}}))?\s*(?:au|\-|a)\s*(\d{{1,2}})\s+({month_pattern})(?:\s+(20\d{{2}}))?",
+        flags=re.IGNORECASE,
+    )
+    for start_day, start_month_name, start_year_value, end_day, end_month_name, end_year_value in cross_month_pattern.findall(lowered):
+        start_month_number = _FRENCH_MONTHS.get(start_month_name.lower())
+        end_month_number = _FRENCH_MONTHS.get(end_month_name.lower())
+        if not start_month_number or not end_month_number:
+            continue
+        base_year = int(start_year_value or end_year_value or (reference_date or date.today()).year)
+        end_year = int(end_year_value or base_year)
+        start_year = int(start_year_value or (end_year - 1 if end_month_number < start_month_number and not start_year_value else end_year))
+        try:
+            start_date = date(start_year, start_month_number, int(start_day))
+            end_date = date(end_year, end_month_number, int(end_day))
+        except ValueError:
+            continue
+        if end_date >= start_date:
+            return start_date, end_date
+
+    compact_range_pattern = re.compile(r"(?<![:/\d])(\d{1,2})\s*[-_]\s*(\d{1,2})(?![:/\d])")
+    for start_day, end_day in compact_range_pattern.findall(lowered):
+        inferred = _infer_week_period_from_day_range(
+            int(start_day),
+            int(end_day),
+            reference_date=reference_date,
+        )
+        if inferred:
+            return inferred
+
     return None
+
+
+def _mime_type_for_ai_review(filename: str = "", content_type: str = "") -> str:
+    ext = _attachment_extension(filename, content_type)
+    if ext in {"jpg", "jpeg"}:
+        return "image/jpeg"
+    if ext == "png":
+        return "image/png"
+    if ext == "gif":
+        return "image/gif"
+    return (content_type or "").strip() or "application/octet-stream"
+
+
+def _should_use_ai_attachment_review(
+    document: dict,
+    analysis: dict,
+    employee: Optional[Employee],
+) -> bool:
+    if not OPENAI_API_KEY:
+        return False
+    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
+    if ext not in _VISION_ATTACHMENT_EXTENSIONS:
+        return False
+    file_size = int(document.get("file_size") or len(document.get("file_data", b"") or b"") or 0)
+    if file_size <= 0 or file_size > 6_000_000:
+        return False
+    normalized_filename = _norm(document.get("filename", ""))
+    has_explicit_timesheet_keyword = any(keyword in normalized_filename for keyword in _TIMESHEET_KEYWORDS)
+    camera_named = bool(_GENERIC_CAMERA_NAME_RE.match((str(document.get("filename") or "").rsplit(".", 1)[0]).strip()))
+    score = float(analysis.get("score") or 0)
+    if analysis.get("strong") and has_explicit_timesheet_keyword and employee:
+        return False
+    if not employee:
+        return score >= 0.12
+    if camera_named:
+        return score >= 0.12
+    return 0.18 <= score <= 0.82
+
+
+async def inspect_attachment_with_openai(document: dict, employee_hint: str = "") -> dict:
+    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
+    if ext not in _VISION_ATTACHMENT_EXTENSIONS or not OPENAI_API_KEY:
+        return {}
+
+    file_data = document.get("file_data", b"") or b""
+    if not file_data:
+        return {}
+
+    mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
+    data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
+    context_text = (
+        "Courriel de facturation a examiner.\n"
+        f"Expediteur: {document.get('from', '')}\n"
+        f"Objet: {document.get('subject', '')}\n"
+        f"Apercu du message: {document.get('body_preview', '')}\n"
+        f"Nom du fichier: {document.get('filename', '')}\n"
+        f"Employe attendu si connu: {employee_hint or 'inconnu'}\n\n"
+        "Determine si cette piece jointe est une vraie feuille de temps employee/FDT. "
+        "Ignore les logos, signatures isolees, captures d'ecran, photos sans rapport et documents administratifs non FDT. "
+        "Reponds en JSON compact uniquement avec les cles: "
+        "is_timesheet, confidence, employee_name_seen, period_text_seen, is_signed, notes."
+    )
+    payload = {
+        "model": TIMESHEET_ATTACHMENT_MODEL,
+        "instructions": "Tu aides un commis de facturation a trier les pieces jointes recues par courriel. Sois prudent et n'identifie comme FDT que les vrais documents de feuille de temps.",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": context_text},
+                    {"type": "input_image", "image_url": data_url},
+                ],
+            }
+        ],
+        "max_output_tokens": 220,
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            parsed = _parse_json_object(_extract_openai_text(response.json()))
+    except Exception:
+        return {}
+
+    confidence_raw = parsed.get("confidence", 0)
+    try:
+        confidence = max(0.0, min(float(confidence_raw), 1.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    is_signed = parsed.get("is_signed")
+    if isinstance(is_signed, str):
+        lowered = is_signed.strip().lower()
+        if lowered in {"true", "oui", "yes"}:
+            is_signed = True
+        elif lowered in {"false", "non", "no"}:
+            is_signed = False
+        else:
+            is_signed = None
+    elif not isinstance(is_signed, bool):
+        is_signed = None
+
+    is_timesheet = parsed.get("is_timesheet")
+    if isinstance(is_timesheet, str):
+        is_timesheet = is_timesheet.strip().lower() in {"true", "oui", "yes"}
+    elif not isinstance(is_timesheet, bool):
+        is_timesheet = None
+
+    return {
+        "used": True,
+        "is_timesheet": is_timesheet,
+        "confidence": round(confidence, 2),
+        "employee_name_seen": str(parsed.get("employee_name_seen") or "").strip(),
+        "period_text_seen": str(parsed.get("period_text_seen") or "").strip(),
+        "is_signed": is_signed,
+        "notes": str(parsed.get("notes") or "").strip(),
+    }
+
+
+def merge_ai_attachment_analysis(analysis: dict, ai_review: dict) -> dict:
+    if not ai_review:
+        return analysis
+
+    score = float(analysis.get("score") or 0)
+    reasons = list(analysis.get("reasons") or [])
+    confidence = float(ai_review.get("confidence") or 0)
+    if ai_review.get("is_timesheet") is True:
+        score += 0.18 + min(0.14, confidence * 0.14)
+        reasons.append("lecture visuelle confirme une FDT")
+    elif ai_review.get("is_timesheet") is False:
+        score -= 0.24 + min(0.22, confidence * 0.22)
+        reasons.append("lecture visuelle ecarte cette piece jointe")
+    if ai_review.get("employee_name_seen"):
+        reasons.append("nom lu sur document")
+        score += 0.05
+    if ai_review.get("period_text_seen"):
+        reasons.append("periode lue sur document")
+        score += 0.05
+    if ai_review.get("is_signed") is True:
+        reasons.append("signature visible")
+
+    score = round(max(0.0, min(score, 1.0)), 2)
+    return {
+        **analysis,
+        "score": score,
+        "likely": score >= 0.42,
+        "strong": score >= 0.65,
+        "reasons": reasons,
+        "ai_review": ai_review,
+    }
 
 
 def serialize_timesheet_attachment(att: TimesheetAttachment) -> dict:
@@ -435,6 +857,272 @@ async def match_employee_from_email(
     return None, ""
 
 
+async def sync_timesheet_attachments_to_invoice(
+    db: AsyncSession,
+    timesheet: Optional[Timesheet],
+    invoice: Optional[Invoice],
+) -> int:
+    if not timesheet or not invoice:
+        return 0
+
+    attachments_result = await db.execute(
+        select(TimesheetAttachment).where(TimesheetAttachment.timesheet_id == timesheet.id)
+    )
+    timesheet_attachments = attachments_result.scalars().all()
+    if not timesheet_attachments:
+        return 0
+
+    existing_result = await db.execute(
+        select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id)
+    )
+    existing_items = existing_result.scalars().all()
+    existing_keys = {
+        (
+            (item.original_filename or "").strip().lower(),
+            int(item.file_size or 0),
+            (item.category or "").strip().lower(),
+        )
+        for item in existing_items
+    }
+
+    created = 0
+    for attachment in timesheet_attachments:
+        key = (
+            (attachment.original_filename or "").strip().lower(),
+            int(attachment.file_size or 0),
+            "fdt",
+        )
+        if key in existing_keys:
+            continue
+        db.add(
+            InvoiceAttachment(
+                invoice_id=invoice.id,
+                filename=attachment.filename,
+                original_filename=attachment.original_filename,
+                file_type=attachment.file_type,
+                file_size=attachment.file_size,
+                file_data=attachment.file_data,
+                category="fdt",
+                description=attachment.description or "Feuille de temps recue par courriel",
+                uploaded_by=attachment.uploaded_by or "system",
+            )
+        )
+        created += 1
+    await db.flush()
+    return created
+
+
+async def index_recent_timesheet_email_documents(
+    db: AsyncSession,
+    documents: list[dict],
+    uploaded_by: str = "system",
+) -> dict:
+    grouped_documents: dict[str, list[dict]] = defaultdict(list)
+    for document in documents or []:
+        grouped_documents[str(document.get("message_id") or new_id())].append(document)
+
+    indexed_items = []
+    ignored_items = []
+    unmatched_items = []
+    created_timesheets = 0
+    created_attachments = 0
+    mirrored_review_attachments = 0
+
+    for message_id, docs in grouped_documents.items():
+        analyzed_docs = []
+        for document in docs:
+            extracted_text = extract_document_text_preview(
+                document.get("filename", ""),
+                document.get("mime_type", ""),
+                document.get("file_data", b"") or b"",
+            )
+            employee, match_reason = await match_employee_from_email(
+                db,
+                document.get("from", ""),
+                subject=document.get("subject", ""),
+                body_preview=" ".join(
+                    part for part in [document.get("body_preview", ""), extracted_text] if part
+                ),
+                attachment_names=[document.get("filename", ""), extracted_text],
+            )
+            analysis = analyze_timesheet_document(document, employee=employee, extracted_text=extracted_text)
+            ai_review = {}
+            if _should_use_ai_attachment_review(document, analysis, employee):
+                ai_review = await inspect_attachment_with_openai(
+                    document,
+                    employee_hint=getattr(employee, "name", "") if employee else "",
+                )
+                if ai_review:
+                    augmented_text_parts = [
+                        extracted_text,
+                        ai_review.get("employee_name_seen", ""),
+                        ai_review.get("period_text_seen", ""),
+                        ai_review.get("notes", ""),
+                    ]
+                    if not employee:
+                        employee, match_reason = await match_employee_from_email(
+                            db,
+                            document.get("from", ""),
+                            subject=document.get("subject", ""),
+                            body_preview=" ".join(
+                                part
+                                for part in [
+                                    document.get("body_preview", ""),
+                                    ai_review.get("employee_name_seen", ""),
+                                    ai_review.get("period_text_seen", ""),
+                                    ai_review.get("notes", ""),
+                                ]
+                                if part
+                            ),
+                            attachment_names=[
+                                document.get("filename", ""),
+                                *[part for part in augmented_text_parts if part],
+                            ],
+                        )
+                    analysis = analyze_timesheet_document(
+                        document,
+                        employee=employee,
+                        extracted_text=" ".join(part for part in augmented_text_parts if part),
+                    )
+                    analysis = merge_ai_attachment_analysis(analysis, ai_review)
+            analyzed_docs.append(
+                {
+                    "document": document,
+                    "employee": employee,
+                    "match_reason": match_reason or "",
+                    "analysis": analysis,
+                    "extracted_text": extracted_text,
+                    "ai_review": ai_review,
+                }
+            )
+
+        strong_docs = [item for item in analyzed_docs if item["analysis"]["strong"]]
+        selected_docs = strong_docs or [item for item in analyzed_docs if item["analysis"]["likely"]]
+
+        if not selected_docs:
+            for item in analyzed_docs:
+                document = item["document"]
+                ignored_items.append(
+                    {
+                        "message_id": message_id,
+                        "filename": document.get("filename", ""),
+                        "from": document.get("from", ""),
+                        "subject": document.get("subject", ""),
+                        "score": item["analysis"]["score"],
+                        "ai_review": item.get("ai_review") or {},
+                        "reason": ", ".join(item["analysis"]["reasons"]) or "Piece jointe non retenue comme FDT",
+                    }
+                )
+            continue
+
+        selected_ids = {id(item) for item in selected_docs}
+        for item in analyzed_docs:
+            if id(item) in selected_ids:
+                continue
+            document = item["document"]
+            ignored_items.append(
+                {
+                    "message_id": message_id,
+                    "filename": document.get("filename", ""),
+                    "from": document.get("from", ""),
+                    "subject": document.get("subject", ""),
+                    "score": item["analysis"]["score"],
+                    "ai_review": item.get("ai_review") or {},
+                    "reason": ", ".join(item["analysis"]["reasons"]) or "Piece jointe secondaire ignoree",
+                }
+            )
+
+        for item in selected_docs:
+            document = item["document"]
+            employee = item["employee"]
+            if not employee:
+                unmatched_items.append(
+                    {
+                        "message_id": message_id,
+                        "filename": document.get("filename", ""),
+                        "from": document.get("from", ""),
+                        "subject": document.get("subject", ""),
+                        "score": item["analysis"]["score"],
+                        "ai_review": item.get("ai_review") or {},
+                        "reason": "Employe introuvable",
+                    }
+                )
+                continue
+
+            reference_date = _safe_parse_message_date(document.get("date", ""))
+            extracted_period = extract_period_from_text(
+                " ".join(
+                    part
+                    for part in [
+                        document.get("subject", ""),
+                        document.get("body_preview", ""),
+                        document.get("filename", ""),
+                        item["extracted_text"],
+                    ]
+                    if part
+                ),
+                reference_date=reference_date,
+            )
+            if extracted_period:
+                period_start, period_end = extracted_period
+            else:
+                period_start, period_end = completed_billing_period(reference_date)
+
+            notes = f"FDT indexee depuis courriel: {document.get('subject', '')}".strip()
+            timesheet, was_created = await ensure_timesheet_for_period(
+                db,
+                employee.id,
+                period_start,
+                period_end,
+                status="received",
+                notes=notes,
+            )
+            attachment, was_attached = await add_timesheet_attachment(
+                db,
+                timesheet_id=timesheet.id,
+                filename=document.get("filename", "") or "document.pdf",
+                file_data=document.get("file_data", b"") or b"",
+                content_type=document.get("mime_type", "") or "",
+                category="fdt",
+                description=document.get("subject", "") or "FDT recue par courriel",
+                uploaded_by=uploaded_by,
+                source="email",
+                source_message_id=document.get("message_id", "") or "",
+            )
+            mirrored = await sync_timesheet_attachments_to_reviews(db, timesheet)
+            created_timesheets += 1 if was_created else 0
+            created_attachments += 1 if was_attached else 0
+            mirrored_review_attachments += mirrored
+            indexed_items.append(
+                {
+                    "message_id": message_id,
+                    "employee_id": employee.id,
+                    "employee_name": employee.name,
+                    "match_reason": item["match_reason"] or "nom",
+                    "timesheet_id": timesheet.id,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "attachment_id": attachment.id,
+                    "attachment_added": was_attached,
+                    "review_attachments_added": mirrored,
+                    "filename": attachment.original_filename,
+                    "score": item["analysis"]["score"],
+                    "analysis_reasons": item["analysis"]["reasons"],
+                    "ai_review": item.get("ai_review") or {},
+                }
+            )
+
+    return {
+        "indexed_count": len(indexed_items),
+        "created_timesheets": created_timesheets,
+        "created_attachments": created_attachments,
+        "mirrored_review_attachments": mirrored_review_attachments,
+        "items": indexed_items,
+        "ignored": ignored_items,
+        "unmatched": unmatched_items,
+    }
+
+
 def _line_date(line: dict) -> str:
     return str(line.get("date") or "").strip()[:10]
 
@@ -487,6 +1175,7 @@ async def build_timesheet_reconciliation(
     invoices = invoice_result.scalars().all()
 
     if not invoices:
+        attachment_only = bool(timesheet_attachments) and not timesheet_shifts
         return {
             "timesheet_id": timesheet.id,
             "employee_id": employee.id,
@@ -496,10 +1185,10 @@ async def build_timesheet_reconciliation(
             "attachment_count": len(timesheet_attachments),
             "shift_count": len(timesheet_shifts),
             "timesheet_hours": round(sum(float(item.hours_worked or 0) for item in timesheet_shifts), 2),
-            "confidence_score": 0.3 if timesheet_shifts else 0.2,
+            "confidence_score": 0.42 if attachment_only else 0.3 if timesheet_shifts else 0.2,
             "confidence_level": "faible",
             "analysis_quality": "moyen" if timesheet_attachments else "faible",
-            "reasons": ["Aucune facture trouvée pour cette période."],
+            "reasons": ["Document FDT reçu, mais quarts non extraits." if attachment_only else "Aucune facture trouvée pour cette période."],
             "recommendation": "Générer la facture puis relancer la conciliation.",
         }
 
@@ -534,10 +1223,11 @@ async def build_timesheet_reconciliation(
                 matched_line_count += 1
                 break
 
+        attachment_only = bool(timesheet_attachments) and not timesheet_shifts
         invoice_hours = round(sum(_line_hours(line) for line in lines), 2)
         unmatched_timesheet = max(len(timesheet_shifts) - matched_line_count, 0)
         unmatched_invoice = max(len(lines) - matched_line_count, 0)
-        hours_gap = round(invoice_hours - timesheet_hours, 2)
+        hours_gap = None if attachment_only else round(invoice_hours - timesheet_hours, 2)
         missing_schedule_links = sum(1 for line in lines if not line.get("schedule_id"))
 
         score = 1.0
@@ -545,10 +1235,12 @@ async def build_timesheet_reconciliation(
             score -= min(0.2, 0.08 * (len(invoices) - 1))
         if len(timesheet_attachments) == 0:
             score -= 0.1
-        if abs(hours_gap) > 0.01:
+        if hours_gap is not None and abs(hours_gap) > 0.01:
             score -= min(0.45, abs(hours_gap) / max(timesheet_hours or 1, 1) * 0.9)
         if len(timesheet_shifts):
             score -= min(0.2, unmatched_timesheet / len(timesheet_shifts) * 0.2)
+        elif attachment_only:
+            score -= 0.12
         if len(lines):
             score -= min(0.2, unmatched_invoice / len(lines) * 0.2)
         if missing_schedule_links:
@@ -582,6 +1274,8 @@ async def build_timesheet_reconciliation(
         analysis_quality = "moyen"
     if not timesheet_shifts or not invoices:
         analysis_quality = "faible"
+    if timesheet_attachments and not timesheet_shifts:
+        analysis_quality = "moyen"
 
     reasons = []
     if len(timesheet_attachments) > 0:
@@ -590,7 +1284,9 @@ async def build_timesheet_reconciliation(
         reasons.append("Aucun document FDT n'est rattaché à cette période.")
     if len(invoices) > 1:
         reasons.append(f"{len(invoices)} factures existent pour cette période; la meilleure correspondance a été retenue.")
-    if abs(best["hours_gap"]) <= 0.05:
+    if best["hours_gap"] is None:
+        reasons.append("La FDT est rattachée en document, mais ses quarts ne sont pas encore extraits.")
+    elif abs(best["hours_gap"]) <= 0.05:
         reasons.append("Les heures FDT et facture concordent.")
     else:
         reasons.append(f"Écart de {best['hours_gap']:+.2f} h entre la FDT et la facture.")
@@ -602,7 +1298,9 @@ async def build_timesheet_reconciliation(
         reasons.append(f"{best['missing_schedule_links']} ligne(s) facture n'ont pas de schedule_id, donc l'analyse est moins précise.")
 
     recommendation = "Conciliation prête."
-    if confidence_level == "moyen":
+    if best["hours_gap"] is None:
+        recommendation = "Verifier visuellement la FDT jointe, puis confirmer ou ajuster la facture."
+    elif confidence_level == "moyen":
         recommendation = "Vérifier les écarts signalés avant l'envoi final."
     if confidence_level == "faible":
         recommendation = "Valider manuellement la FDT, les quarts et la facture avant de poursuivre."
@@ -895,10 +1593,15 @@ async def build_weekly_validation_queue(
             shift for shift in timesheet_shifts
             if str(shift.schedule_id or "") in schedule_shift_ids
         ]
-        timesheet_hours = round(sum(float(shift.hours_worked or 0) for shift in relevant_timesheet_shifts), 2)
         timesheet_shift_count = len(relevant_timesheet_shifts)
-        hours_gap_schedule_vs_timesheet = round(timesheet_hours - scheduled_hours, 2) if timesheet else round(-scheduled_hours, 2)
         timesheet_attachment_count = int(timesheet_attachment_counts.get(timesheet.id, 0)) if timesheet else 0
+        has_timesheet_document_only = bool(timesheet) and timesheet_attachment_count > 0 and timesheet_shift_count == 0
+        timesheet_hours = None if has_timesheet_document_only else round(sum(float(shift.hours_worked or 0) for shift in relevant_timesheet_shifts), 2)
+        hours_gap_schedule_vs_timesheet = (
+            None
+            if not timesheet or has_timesheet_document_only
+            else round(float(timesheet_hours or 0) - scheduled_hours, 2)
+        )
 
         approval = approvals.get((employee_id, resolved_client_id)) if resolved_client_id else None
         review_attachment_count = int(review_attachment_counts.get(approval.id, 0)) if approval else 0
@@ -906,7 +1609,7 @@ async def build_weekly_validation_queue(
         invoice = (invoices_by_key.get((employee_id, resolved_client_id)) or [None])[0]
         invoice_lines = list(getattr(invoice, "lines", None) or []) if invoice else []
         invoice_hours = round(sum(_line_hours(line) for line in invoice_lines), 2) if invoice else 0.0
-        invoice_hours_gap = round(invoice_hours - timesheet_hours, 2) if invoice and timesheet else None
+        invoice_hours_gap = round(invoice_hours - timesheet_hours, 2) if invoice and timesheet and timesheet_hours is not None else None
         invoice_attachment_count = int(invoice_attachment_counts.get(invoice.id, 0)) if invoice else 0
         invoice_categories = invoice_attachment_categories.get(str(invoice.id), set()) if invoice else set()
 
@@ -947,9 +1650,11 @@ async def build_weekly_validation_queue(
             flags.append("fdt_manquante")
         elif timesheet_attachment_count <= 0:
             flags.append("fdt_sans_piece_jointe")
+        elif has_timesheet_document_only:
+            flags.append("lecture_fdt_a_verifier")
         else:
             flags.append("signature_a_verifier")
-        if timesheet and abs(hours_gap_schedule_vs_timesheet) > 0.05:
+        if timesheet and hours_gap_schedule_vs_timesheet is not None and abs(hours_gap_schedule_vs_timesheet) > 0.05:
             flags.append("ecart_horaire_fdt")
         if orientation_shift_count > 0:
             flags.append("orientation_a_verifier")
@@ -979,7 +1684,9 @@ async def build_weekly_validation_queue(
             confidence_score += 0.08
         else:
             confidence_score -= 0.12
-        if timesheet and abs(hours_gap_schedule_vs_timesheet) <= 0.05:
+        if has_timesheet_document_only:
+            confidence_score -= 0.10
+        elif timesheet and abs(hours_gap_schedule_vs_timesheet) <= 0.05:
             confidence_score += 0.14
         elif timesheet:
             confidence_score -= min(0.22, abs(hours_gap_schedule_vs_timesheet) / max(scheduled_hours or 1, 1) * 0.45)
@@ -1004,13 +1711,15 @@ async def build_weekly_validation_queue(
 
         confidence_score = _clamp_score(confidence_score)
         confidence_level = _score_to_level(confidence_score)
-        analysis_quality = "eleve" if invoice and timesheet and timesheet_attachment_count > 0 else "moyen" if timesheet else "faible"
+        analysis_quality = "eleve" if invoice and timesheet and timesheet_attachment_count > 0 and timesheet_shift_count > 0 else "moyen" if timesheet else "faible"
 
         recommendations = []
         if "fdt_manquante" in flags:
             recommendations.append("Attendre ou indexer la FDT avant de facturer.")
         if "signature_a_verifier" in flags:
             recommendations.append("Verifier manuellement que la FDT est bien signee.")
+        if "lecture_fdt_a_verifier" in flags:
+            recommendations.append("FDT recue en piece jointe; valider visuellement son contenu avant envoi final.")
         if "ecart_horaire_fdt" in flags:
             recommendations.append("Comparer les quarts FDT avec l'horaire et ajuster avant facture.")
         if "orientation_a_verifier" in flags:
@@ -1037,9 +1746,9 @@ async def build_weekly_validation_queue(
             "timesheet_id": timesheet.id if timesheet else None,
             "timesheet_status": timesheet.status if timesheet else "missing",
             "timesheet_shift_count": timesheet_shift_count,
-            "timesheet_hours": timesheet_hours,
+            "timesheet_hours": round(float(timesheet_hours or 0), 2) if timesheet_hours is not None else None,
             "timesheet_attachment_count": timesheet_attachment_count,
-            "signature_status": "a_verifier" if timesheet_attachment_count > 0 else "document_manquant",
+            "signature_status": "document_recu" if has_timesheet_document_only else "a_verifier" if timesheet_attachment_count > 0 else "document_manquant",
             "hours_gap_schedule_vs_timesheet": hours_gap_schedule_vs_timesheet if timesheet else None,
             "review_id": approval.id if approval else None,
             "review_status": approval.status if approval else "missing",

@@ -12,6 +12,7 @@ const FLAG_LABELS = {
   client_a_confirmer: 'Client a confirmer',
   fdt_manquante: 'FDT manquante',
   fdt_sans_piece_jointe: 'FDT sans piece jointe',
+  lecture_fdt_a_verifier: 'Lecture FDT a verifier',
   signature_a_verifier: 'Signature a verifier',
   ecart_horaire_fdt: 'Ecart horaire vs FDT',
   orientation_a_verifier: 'Orientation a verifier',
@@ -123,7 +124,7 @@ export default function WeeklyValidationQueue({
                         </div>
                         <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
                           <div style={{ color: 'var(--text3)' }}>FDT</div>
-                          <strong>{item.timesheet_id ? `${Number(item.timesheet_hours || 0).toFixed(2)} h` : 'Manquante'}</strong>
+                          <strong>{item.timesheet_id ? (item.timesheet_hours == null ? 'Document recu' : `${Number(item.timesheet_hours || 0).toFixed(2)} h`) : 'Manquante'}</strong>
                         </div>
                         <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
                           <div style={{ color: 'var(--text3)' }}>Facture</div>

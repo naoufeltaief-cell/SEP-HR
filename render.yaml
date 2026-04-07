@@ -55,6 +55,18 @@ services:
         value: paie@soins-expert-plus.com
       - key: TIMESHEET_REMINDER_BCC
         value: ines_achour@hotmail.ca,vaniecote1960@hotmail.fr,sindygaetan@gmail.com,olivierkabongo547@gmail.com,sunly016@hotmail.com,alhachsoul@gmail.com,romain.gavet11@gmail.com,jo_anne821@hotmail.com,melanie.choquette868@gmail.com,lovely.estinvil@hotmail.com,mukala.chance@hotmail.com,hemerciennedagaud23@gmail.com,cozzi.tan007@gmail.com,gemimalacombe11@yahoo.com,line.gosselin@icloud.com,mirlandemmoise@gmail.com,stpedro@hotmail.ca,williamhamel@hotmail.fr,malika0106@hotmail.com,marjorietremblay@live.ca
+      - key: TIMESHEET_INBOX_MONITOR_ENABLED
+        value: "true"
+      - key: TIMESHEET_INBOX_MAX_RESULTS
+        value: "30"
+      - key: TIMESHEET_INBOX_SEARCH
+        value: newer_than:14d
+      - key: TIMESHEET_AUTO_DRAFT_ENABLED
+        value: "true"
+      - key: TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE
+        value: "0.68"
+      - key: TIMESHEET_ATTACHMENT_MODEL
+        value: gpt-5.4-mini
     healthCheckPath: /api/health
 
   # Frontend (static site)

@@ -83,6 +83,8 @@ export default function ScheduleApprovalPanel({
   reviewDraft,
   setReviewDraft,
   currentReview,
+  currentTimesheet,
+  timesheetAttachments,
   currentInvoice,
   reviewAttachments,
   onApprove,
@@ -465,6 +467,19 @@ export default function ScheduleApprovalPanel({
   const totalKm = editableShifts.reduce((sum, shift) => sum + (Number(shift.km) || 0), 0);
   const totalFrais = totals.km + totals.dep + totals.autres;
   const canGenerateInvoice = currentReview?.status === 'approved';
+  const openTimesheetDocument = async (attId) => {
+    if (!currentTimesheet?.id || !attId) return;
+    try {
+      const attachment = (timesheetAttachments || []).find((item) => item.id === attId);
+      await api.openTimesheetAttachment(
+        currentTimesheet.id,
+        attId,
+        attachment?.original_filename || attachment?.filename || 'fdt'
+      );
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    }
+  };
 
   const sectionCard = { background: '#fff', borderRadius: 12, padding: 16, border: '1px solid #dfe7ea', boxShadow: '0 2px 12px rgba(16, 24, 40, 0.04)' };
   const editorCard = { background: '#f8fbfc', borderRadius: 12, padding: 16, border: '1px solid #e2ecef' };
@@ -527,7 +542,9 @@ export default function ScheduleApprovalPanel({
               <div style={{ color: 'var(--text3)' }}>Horaire vs FDT</div>
               <strong>
                 {validationSummary.timesheet_id
-                  ? `${Number(validationSummary.scheduled_hours || 0).toFixed(2)} h / ${Number(validationSummary.timesheet_hours || 0).toFixed(2)} h`
+                  ? (validationSummary.timesheet_hours == null
+                    ? `${Number(validationSummary.scheduled_hours || 0).toFixed(2)} h / document recu`
+                    : `${Number(validationSummary.scheduled_hours || 0).toFixed(2)} h / ${Number(validationSummary.timesheet_hours || 0).toFixed(2)} h`)
                   : 'FDT manquante'}
               </strong>
             </div>
@@ -717,6 +734,22 @@ export default function ScheduleApprovalPanel({
 
           {!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de générer la facture approuvée.</div>}
           {currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}
+
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>FDT indexee ({timesheetAttachments.length})</div>
+          {timesheetAttachments.length === 0 ? (
+            <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>
+              {currentTimesheet?.id ? 'Aucune piece jointe FDT sur cette periode.' : 'Aucune FDT indexee pour cette periode.'}
+            </div>
+          ) : (
+            <div style={{ marginBottom: 14 }}>
+              {timesheetAttachments.map(att => (
+                <div key={`timesheet-${att.id}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                  <span>{att.original_filename || att.filename}</span>
+                  <button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => openTimesheetDocument(att.id)}><Eye size={12} /></button>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Justificatifs ({reviewAttachments.length})</div>
           {reviewAttachments.length === 0 ? (

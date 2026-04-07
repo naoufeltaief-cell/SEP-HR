@@ -245,6 +245,8 @@ async def get_timesheet_attachment(
         "jpeg": "image/jpeg",
         "png": "image/png",
         "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
     }.get(str(attachment.file_type).lower(), "application/octet-stream")
     return Response(
         content=attachment.file_data,

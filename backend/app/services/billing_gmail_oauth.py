@@ -419,6 +419,7 @@ async def list_recent_billing_gmail_messages(
             payload = detail.json()
             headers = ((payload.get("payload") or {}).get("headers") or [])
             body_preview = (payload.get("snippet") or "").strip()
+            attachment_parts = _payload_attachment_parts(payload.get("payload") or {})
             items.append(
                 {
                     "id": msg_id,
@@ -430,6 +431,10 @@ async def list_recent_billing_gmail_messages(
                     "internet_message_id": _header_value(headers, "Message-ID"),
                     "references": _header_value(headers, "References"),
                     "body_preview": body_preview[:200],
+                    "attachment_count": len(attachment_parts),
+                    "attachment_names": [part.get("filename", "") for part in attachment_parts if part.get("filename")],
+                    "attachment_types": [part.get("mime_type", "") for part in attachment_parts if part.get("mime_type")],
+                    "has_attachments": bool(attachment_parts),
                     "has_pdf_attachment": _payload_has_pdf(payload.get("payload") or {}),
                 }
             )

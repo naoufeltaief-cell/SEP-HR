@@ -4,6 +4,8 @@ OpenAI Responses API + business tools.
 """
 import os
 import json
+import re
+import unicodedata
 import httpx
 import imaplib
 import email as email_lib
@@ -83,7 +85,10 @@ TOOLS = [{"type": "function", "name": t["name"], "description": t["description"]
 
 
 def _norm(s: str) -> str:
-    return (s or "").strip().lower()
+    raw = unicodedata.normalize("NFKD", (s or "").strip().lower())
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = re.sub(r"[^a-z0-9]+", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
 
 async def _find_employee(db: AsyncSession, employee_id=None, employee_name=None):
     if employee_id:
@@ -91,14 +96,21 @@ async def _find_employee(db: AsyncSession, employee_id=None, employee_name=None)
         return r.scalar_one_or_none()
     if employee_name:
         q = _norm(employee_name)
-        r = await db.execute(select(Employee).where(Employee.is_active == True))
+        r = await db.execute(select(Employee))
         emps = r.scalars().all()
         exact = [e for e in emps if _norm(e.name) == q]
         if exact:
-            return exact[0]
+            active_exact = [e for e in exact if getattr(e, "is_active", False)]
+            return active_exact[0] if active_exact else exact[0]
         partial = [e for e in emps if q in _norm(e.name)]
         if len(partial) == 1:
             return partial[0]
+        if partial:
+            active_partial = [e for e in partial if getattr(e, "is_active", False)]
+            if len(active_partial) == 1:
+                return active_partial[0]
+            if active_partial:
+                return active_partial[0]
     return None
 
 

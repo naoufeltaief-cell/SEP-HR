@@ -148,11 +148,12 @@ export default function SchedulesPage({ toast, onNavigate }) {
       const formData = new FormData();
       formData.append('file', importFile);
       const base = import.meta.env.VITE_API_URL || '/api';
-      const token = localStorage.getItem('token');
+      const token = api.token || localStorage.getItem('sep_token');
       const resp = await fetch(`${base}/schedules/import-csv`, {
         method: 'POST', body: formData,
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
       });
+      if (resp.status === 401) throw new Error('Non authentifié — veuillez vous reconnecter');
       if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Erreur ${resp.status}`); }
       const data = await resp.json();
       setImportResult(data);
@@ -165,7 +166,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
     setExporting(true);
     try {
       const base = import.meta.env.VITE_API_URL || '/api';
-      const token = localStorage.getItem('token');
+      const token = api.token || localStorage.getItem('sep_token');
       const params = new URLSearchParams();
       if (exportOpts.date_start) params.set('date_start', exportOpts.date_start);
       if (exportOpts.date_end) params.set('date_end', exportOpts.date_end);
@@ -175,6 +176,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
       const resp = await fetch(`${base}/schedules/export-csv?${params}`, {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {},
       });
+      if (resp.status === 401) throw new Error('Non authentifié — veuillez vous reconnecter');
       if (!resp.ok) throw new Error(`Erreur ${resp.status}`);
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);

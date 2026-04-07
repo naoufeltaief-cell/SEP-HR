@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func, text
+from sqlalchemy.exc import IntegrityError
 from ..database import get_db
 from ..models.models import Schedule, ScheduleApproval, Employee, Client, new_id
 from ..models.schemas import ScheduleCreate, ScheduleUpdate, ScheduleOut
@@ -177,7 +178,11 @@ async def _sync_employees_sequence(db: AsyncSession) -> None:
             false
         )
     """))
-    await db.commit()
+
+
+def _is_employees_pk_conflict(exc: Exception) -> bool:
+    message = str(exc)
+    return "employees_pkey" in message and "duplicate key value" in message
 
 
 @router.post("/import-csv")
@@ -276,15 +281,15 @@ async def import_csv(
     client_by_name = {c.name.strip().lower(): c for c in clients_db}
 
     existing_sched_result = await db.execute(select(Schedule))
-    existing_schedule_index = {
-        (
+    existing_schedule_index = {}
+    for s in existing_sched_result.scalars().all():
+        schedule_key = (
             s.employee_id,
             s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date),
             _normalise_time(s.start),
             _normalise_time(s.end),
-        ): s
-        for s in existing_sched_result.scalars().all()
-    }
+        )
+        existing_schedule_index.setdefault(schedule_key, []).append(s)
 
     created_employees = 0
     replaced_schedule_keys = set()
@@ -315,19 +320,39 @@ async def import_csv(
                 seeded_emp = best_match
         if not seeded_emp and display_name:
             rate_hint = _safe_float(row.get('taux_horaire'), 0)
-            seeded_emp = Employee(
-                name=display_name,
-                position=position,
-                phone="",
-                email=row_email,
-                rate=rate_hint or 0,
-                is_active=True,
-            )
-            db.add(seeded_emp)
             try:
-                await db.flush()
+                async with db.begin_nested():
+                    seeded_emp = Employee(
+                        name=display_name,
+                        position=position,
+                        phone="",
+                        email=row_email,
+                        rate=rate_hint or 0,
+                        is_active=True,
+                    )
+                    db.add(seeded_emp)
+                    await db.flush()
+            except IntegrityError as exc:
+                if not _is_employees_pk_conflict(exc):
+                    log.exception("Schedule CSV import failed while auto-creating employee")
+                    raise HTTPException(500, f"Echec import horaires lors de la creation automatique d'un employe: {type(exc).__name__}: {exc}")
+                await _sync_employees_sequence(db)
+                try:
+                    async with db.begin_nested():
+                        seeded_emp = Employee(
+                            name=display_name,
+                            position=position,
+                            phone="",
+                            email=row_email,
+                            rate=rate_hint or 0,
+                            is_active=True,
+                        )
+                        db.add(seeded_emp)
+                        await db.flush()
+                except Exception as retry_exc:
+                    log.exception("Schedule CSV import retry failed while auto-creating employee")
+                    raise HTTPException(500, f"Echec import horaires lors de la creation automatique d'un employe: {type(retry_exc).__name__}: {retry_exc}")
             except Exception as exc:
-                await db.rollback()
                 log.exception("Schedule CSV import failed while auto-creating employee")
                 raise HTTPException(500, f"Echec import horaires lors de la creation automatique d'un employe: {type(exc).__name__}: {exc}")
             employees.append(seeded_emp)
@@ -356,9 +381,10 @@ async def import_csv(
                     start_time = _normalise_time(row.get('heure_debut', ''))
                     end_time = _normalise_time(row.get('heure_fin', ''))
                     schedule_key = (seeded_emp.id, parsed_date.isoformat(), start_time, end_time)
-                    existing_sched = existing_schedule_index.get(schedule_key)
-                    if existing_sched and schedule_key not in replaced_schedule_keys:
-                        await db.delete(existing_sched)
+                    existing_scheds = existing_schedule_index.get(schedule_key, [])
+                    if existing_scheds and schedule_key not in replaced_schedule_keys:
+                        for existing_sched in existing_scheds:
+                            await db.delete(existing_sched)
                         existing_schedule_index.pop(schedule_key, None)
                         replaced_schedule_keys.add(schedule_key)
 
@@ -477,7 +503,7 @@ async def import_csv(
                 rappel_hours=0,
             )
             db.add(sched)
-            existing_schedule_index[(emp.id, shift_date.isoformat(), start_time, end_time)] = sched
+            existing_schedule_index[(emp.id, shift_date.isoformat(), start_time, end_time)] = [sched]
             created_ids.append(sched.id)
             success_count += 1
 

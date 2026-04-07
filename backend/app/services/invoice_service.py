@@ -34,7 +34,15 @@ TVQ_RATE = 0.09975
 TPS_NUMBER = "714564891RT0001"
 TVQ_NUMBER = "1225765936TQ0001"
 TAX_EXEMPT_CLIENTS = ["Centre de Santé Inuulitsivik", "Conseil Cri de la Santé", "Conseil Cri de la santé"]
-COMPANY_INFO = {"name": "Soins Expert Plus", "legal": "9437-7827 Québec Inc.", "address": "Québec, Canada", "phone": "", "email": "rh@soins-expert-plus.com", "tps_number": TPS_NUMBER, "tvq_number": TVQ_NUMBER}
+COMPANY_INFO = {
+    "name": "Soins Expert Plus",
+    "legal": "9437-7827 Québec Inc.",
+    "address": "10745 Avenue Lausanne\nMontréal QC H1H 5B4",
+    "phone": "(438) 230-0061",
+    "email": "paie@soins-expert-plus.com",
+    "tps_number": TPS_NUMBER,
+    "tvq_number": TVQ_NUMBER,
+}
 
 async def generate_invoice_number(db: AsyncSession) -> str:
     """Generate next invoice number using MAX sequence to avoid duplicates after deletions.

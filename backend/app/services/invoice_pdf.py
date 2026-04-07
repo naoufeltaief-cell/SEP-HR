@@ -529,8 +529,10 @@ def _legacy_generate_invoice_pdf(invoice) -> BytesIO:
     else:
         company_block.append(Paragraph("SOINS EXPERT PLUS", styles["CompanyName"]))
 
-    company_block.append(Paragraph(COMPANY_INFO["address"], styles["CompanyDetail"]))
-    company_block.append(Paragraph(COMPANY_INFO["email"], styles["CompanyDetail"]))
+    company_block.append(_build_paragraph(COMPANY_INFO["address"], styles["CompanyDetail"]))
+    if COMPANY_INFO.get("phone"):
+        company_block.append(_build_paragraph(COMPANY_INFO["phone"], styles["CompanyDetail"]))
+    company_block.append(_build_paragraph(COMPANY_INFO["email"], styles["CompanyDetail"]))
 
     # Right side: Invoice label & meta
     inv_date = invoice.date.strftime("%d/%m/%Y") if hasattr(invoice.date, "strftime") else str(invoice.date)
@@ -858,8 +860,14 @@ def _legacy_generate_invoice_pdf(invoice) -> BytesIO:
     elements.append(Spacer(1, 30))
     elements.append(HRFlowable(width=page_width, thickness=0.5, color=BORDER))
     elements.append(Spacer(1, 6))
+    legacy_footer_parts = [
+        "Soins Expert Plus",
+        COMPANY_INFO["address"].replace("\n", "  •  "),
+        COMPANY_INFO.get("email", ""),
+        COMPANY_INFO.get("phone", ""),
+    ]
     elements.append(Paragraph(
-        f"Soins Expert Plus  •  {COMPANY_INFO['address']}  •  {COMPANY_INFO['email']}",
+        "  •  ".join([part for part in legacy_footer_parts if part]),
         styles["Footer"]
     ))
     elements.append(Paragraph(
@@ -1214,7 +1222,11 @@ def generate_invoice_pdf(invoice) -> BytesIO:
     if company_legal:
         footer_identity = f"{company_name} | {company_legal}"
 
-    footer_contact_parts = [part for part in [company_address, company_email, company_phone] if part]
+    footer_contact_parts = [
+        part
+        for part in [company_address.replace("\n", " | ") if company_address else "", company_email, company_phone]
+        if part
+    ]
     footer_contact = " | ".join(footer_contact_parts)
 
     elements.append(Paragraph(footer_identity, styles["Footer"]))
@@ -1314,8 +1326,14 @@ def generate_credit_note_pdf(credit_note) -> BytesIO:
     elements.append(Spacer(1, 40))
     elements.append(HRFlowable(width=page_width, thickness=0.5, color=BORDER))
     elements.append(Spacer(1, 6))
+    legacy_footer_parts = [
+        "Soins Expert Plus",
+        COMPANY_INFO["address"].replace("\n", "  •  "),
+        COMPANY_INFO.get("email", ""),
+        COMPANY_INFO.get("phone", ""),
+    ]
     elements.append(Paragraph(
-        f"Soins Expert Plus  •  {COMPANY_INFO['address']}  •  {COMPANY_INFO['email']}",
+        "  •  ".join([part for part in legacy_footer_parts if part]),
         styles["Footer"]
     ))
 

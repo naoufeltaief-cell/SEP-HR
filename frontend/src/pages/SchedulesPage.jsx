@@ -157,6 +157,75 @@ export default function SchedulesPage({ toast, onNavigate }) {
     return plain?.[1] || fallbackName;
   };
 
+  const downloadBlob = (blob, fileName) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const toCsvCell = (value) => {
+    const text = value == null ? '' : String(value);
+    if (!/[",\n\r]/.test(text)) return text;
+    return `"${text.replace(/"/g, '""')}"`;
+  };
+
+  const buildScheduleExportRows = () => {
+    const employeeMap = new Map(employees.map(emp => [String(emp.id), emp]));
+    const clientMap = new Map(clients.map(client => [String(client.id), client]));
+    const filtered = [...schedules]
+      .filter((shift) => {
+        if (exportOpts.date_start && String(shift.date || '') < exportOpts.date_start) return false;
+        if (exportOpts.date_end && String(shift.date || '') > exportOpts.date_end) return false;
+        if (exportOpts.employee_id && String(shift.employee_id) !== String(exportOpts.employee_id)) return false;
+        if (exportOpts.client_id && String(shift.client_id || '') !== String(exportOpts.client_id)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const dateCmp = String(a.date || '').localeCompare(String(b.date || ''));
+        if (dateCmp !== 0) return dateCmp;
+        const startCmp = String(a.start || '').localeCompare(String(b.start || ''));
+        if (startCmp !== 0) return startCmp;
+        return String(a.id || '').localeCompare(String(b.id || ''));
+      });
+
+    return filtered.map((shift) => {
+      const employee = employeeMap.get(String(shift.employee_id));
+      const client = shift.client_id ? clientMap.get(String(shift.client_id)) : null;
+      const employeeName = String(employee?.name || '').trim();
+      const nameParts = employeeName.split(/\s+/);
+      const prenom = nameParts.shift() || '';
+      const nom = nameParts.join(' ');
+
+      return {
+        'Prénom': prenom,
+        'Nom': nom,
+        'Employé_ID': shift.employee_id ?? '',
+        'Courriel': employee?.email || '',
+        'Date': shift.date || '',
+        'Début': shift.start || '',
+        'Fin': shift.end || '',
+        'Heures': Number(shift.hours || 0),
+        'Pause': Number(shift.pause || 0),
+        'Taux horaire': Number(shift.billable_rate || 0),
+        'Lieu': shift.location || '',
+        'Client': client?.name || '',
+        'Client_ID': shift.client_id || '',
+        'KM': Number(shift.km || 0),
+        'Déplacement': Number(shift.deplacement || 0),
+        'Autre dépense': Number(shift.autre_dep || 0),
+        'Heures garde': Number(shift.garde_hours || 0),
+        'Heures rappel': Number(shift.rappel_hours || 0),
+        'Statut': shift.status || '',
+        'Notes': shift.notes || '',
+      };
+    });
+  };
+
   const handleImport = async () => {
     if (!importFile) { toast?.('Sélectionnez un fichier'); return; }
     setImporting(true); setImportResult(null);
@@ -180,6 +249,26 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const handleExport = async () => {
     setExporting(true);
     try {
+      if (exportOpts.format === 'csv') {
+        const rows = buildScheduleExportRows();
+        const headers = rows.length ? Object.keys(rows[0]) : [
+          'Prénom', 'Nom', 'Employé_ID', 'Courriel', 'Date', 'Début', 'Fin', 'Heures', 'Pause',
+          'Taux horaire', 'Lieu', 'Client', 'Client_ID', 'KM', 'Déplacement',
+          'Autre dépense', 'Heures garde', 'Heures rappel', 'Statut', 'Notes',
+        ];
+        const csvContent = [
+          headers.map(toCsvCell).join(','),
+          ...rows.map((row) => headers.map((header) => toCsvCell(row[header])).join(',')),
+        ].join('\r\n');
+        downloadBlob(
+          new Blob(['\uFEFF', csvContent], { type: 'text/csv;charset=utf-8;' }),
+          'horaires_export.csv',
+        );
+        setExportModal(false);
+        toast?.(`Export CSV téléchargé (${rows.length} quart(s))`);
+        return;
+      }
+
       const params = new URLSearchParams();
       if (exportOpts.date_start) params.set('date_start', exportOpts.date_start);
       if (exportOpts.date_end) params.set('date_end', exportOpts.date_end);
@@ -188,15 +277,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
       params.set('format', exportOpts.format);
       const resp = await api.download(`/schedules/export-csv?${params.toString()}`);
       const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
       const fallbackName = `horaires_export.${exportOpts.format === 'xlsx' ? 'xlsx' : 'csv'}`;
-      a.href = url;
-      a.download = fileNameFromDisposition(resp.headers.get('Content-Disposition'), fallbackName);
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadBlob(blob, fileNameFromDisposition(resp.headers.get('Content-Disposition'), fallbackName));
       setExportModal(false); toast?.('Export téléchargé');
     } catch (err) {
       toast?.('Erreur export: ' + formatNetworkError(err, "Impossible de joindre le serveur d'export. Vérifiez le déploiement du frontend et du backend."));

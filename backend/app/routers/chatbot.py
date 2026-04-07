@@ -32,6 +32,7 @@ router = APIRouter()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 OPENAI_REASONING_EFFORT = (os.getenv("OPENAI_REASONING_EFFORT", "medium") or "medium").strip().lower()
+CURRENT_YEAR = date.today().year
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 IMAP_USER = (
     os.getenv("IMAP_USER_PAIE")
@@ -98,10 +99,94 @@ def _norm(s: str) -> str:
 
 
 _MATCH_STOPWORDS = {"de", "du", "des", "la", "le", "les", "l", "d", "et"}
+_FRENCH_MONTHS = {
+    "janvier": 1,
+    "fevrier": 2,
+    "février": 2,
+    "mars": 3,
+    "avril": 4,
+    "mai": 5,
+    "juin": 6,
+    "juillet": 7,
+    "aout": 8,
+    "août": 8,
+    "septembre": 9,
+    "octobre": 10,
+    "novembre": 11,
+    "decembre": 12,
+    "décembre": 12,
+}
 
 
 def _match_tokens(value: str):
     return [token for token in _norm(value).split() if token and token not in _MATCH_STOPWORDS]
+
+
+def _extract_explicit_dates_from_message(message: str):
+    text = str(message or "").strip()
+    if not text:
+        return []
+
+    found = []
+
+    for year, month, day in re.findall(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", text):
+        try:
+            found.append(date(int(year), int(month), int(day)))
+        except ValueError:
+            continue
+
+    for day_value, month_value, year_value in re.findall(r"\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](20\d{2}))?\b", text):
+        try:
+            found.append(date(int(year_value or CURRENT_YEAR), int(month_value), int(day_value)))
+        except ValueError:
+            continue
+
+    month_pattern = "|".join(sorted((re.escape(name) for name in _FRENCH_MONTHS.keys()), key=len, reverse=True))
+    for day_value, month_name, year_value in re.findall(
+        rf"\b(\d{{1,2}})\s+({month_pattern})(?:\s+(20\d{{2}}))?\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        month_key = (month_name or "").strip().lower()
+        month_number = _FRENCH_MONTHS.get(month_key)
+        if not month_number:
+            continue
+        try:
+            found.append(date(int(year_value or CURRENT_YEAR), month_number, int(day_value)))
+        except ValueError:
+            continue
+
+    unique_dates = []
+    seen = set()
+    for item in found:
+        if item.isoformat() in seen:
+            continue
+        seen.add(item.isoformat())
+        unique_dates.append(item)
+    return unique_dates
+
+
+def _apply_schedule_date_guard(name: str, input_data: dict, user_message: str):
+    if name not in {"create_schedule_shift", "update_schedule_shift", "delete_schedule_shift"}:
+        return input_data
+
+    explicit_dates = _extract_explicit_dates_from_message(user_message)
+    if len(explicit_dates) != 1:
+        return input_data
+
+    guarded = dict(input_data or {})
+    explicit_iso = explicit_dates[0].isoformat()
+
+    if name == "create_schedule_shift":
+        guarded["date"] = explicit_iso
+        return guarded
+
+    if name in {"update_schedule_shift", "delete_schedule_shift"}:
+        if "current_date" in guarded or "date" not in guarded:
+            guarded["current_date"] = explicit_iso
+        if name == "update_schedule_shift" and "date" in guarded and guarded.get("date"):
+            guarded["date"] = explicit_iso
+    return guarded
 
 async def _find_employee(db: AsyncSession, employee_id=None, employee_name=None):
     if employee_id:
@@ -423,8 +508,9 @@ async def _build_invoice_from_schedules(
     await db.refresh(inv)
     return {"id": inv.id, "number": inv.number, "status": inv.status, "total": inv.total, "client_name": inv.client_name, "employee_name": inv.employee_name, "period_start": period_start, "period_end": period_end}
 
-async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
+async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "") -> str:
     try:
+        input_data = _apply_schedule_date_guard(name, input_data, user_message)
         if name == 'search_employees':
             q = _norm(input_data.get('query', ''))
             result = await db.execute(select(Employee).where(Employee.is_active == True))
@@ -822,9 +908,9 @@ AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. T
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les employés actifs, lire les courriels, proposer des candidats et créer des quarts de travail. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as accès aux outils de facturation, recrutement, courriels et rapports. Utilise les outils dès qu'une action ou une donnée système est demandée. Réponds en français.\n\n" + BUSINESS_KNOWLEDGE
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
-GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 
 def _detect_prompt(message: str):
     m = message.lower()
@@ -906,7 +992,7 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                         args = json.loads(call.get('arguments') or '{}')
                     except Exception:
                         args = {}
-                    result = await execute_tool(call.get('name', ''), args, db)
+                    result = await execute_tool(call.get('name', ''), args, db, msg.message)
                     inputs.append({'type': 'function_call_output', 'call_id': call.get('call_id'), 'output': result})
             return {
                 'reply': _extract_text(data or {}) or "Je n'ai pas pu générer de réponse.",

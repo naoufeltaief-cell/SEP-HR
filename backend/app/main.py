@@ -2,19 +2,25 @@
 Soins Expert Plus — FastAPI Backend
 Full REST API for healthcare staffing platform
 """
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 
 from .database import engine, Base
+from .services.automation_service import automation_loop, cancel_automation_task
 from .routers import auth, employees, schedules, schedule_reviews, timesheets, invoices, accommodations, clients, chatbot, invoices_approved, invoices_bulk, billing_email
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    yield
+    task = asyncio.create_task(automation_loop())
+    try:
+        yield
+    finally:
+        await cancel_automation_task(task)
 
 app = FastAPI(
     title="Soins Expert Plus API",
@@ -66,7 +72,7 @@ app.include_router(chatbot.router, prefix="/api/chatbot", tags=["Chatbot"])
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "Soins Expert Plus API", "version": "2.3.1"}
+    return {"status": "ok", "service": "Soins Expert Plus API", "version": "2.4.0"}
 
 
 @app.get("/api/debug/invoices")

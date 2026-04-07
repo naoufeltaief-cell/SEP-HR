@@ -4,9 +4,10 @@ from fastapi.responses import Response
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
-from ..models.models import Schedule, ScheduleApproval
+from ..models.models import Schedule, ScheduleApproval, Timesheet
 from ..models.models_schedule_review import ScheduleApprovalMeta, ScheduleApprovalAttachment
 from ..services.auth_service import require_admin, get_current_user
+from ..services.timesheet_service import sync_timesheet_attachments_to_reviews
 router = APIRouter()
 ALLOWED_MIME = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -83,6 +84,16 @@ async def review_week(data: dict, db: AsyncSession = Depends(get_db), user=Depen
         approval.notes = notes
         approval.status = "pending" if approval.status != "approved" else approval.status
     await _upsert_meta(db, approval.id, approved_hours, shift_count, raw_total_hours)
+    timesheet_result = await db.execute(
+        select(Timesheet).where(
+            Timesheet.employee_id == employee_id,
+            Timesheet.period_start == ws,
+            Timesheet.period_end == we,
+        )
+    )
+    timesheet = timesheet_result.scalar_one_or_none()
+    if timesheet:
+        await sync_timesheet_attachments_to_reviews(db, timesheet, approval=approval)
     await db.commit()
     await db.refresh(approval)
     return await _serialize_approval(db, approval)
@@ -112,6 +123,16 @@ async def approve_week(data: dict, db: AsyncSession = Depends(get_db), user=Depe
         approval.week_end = we
         approval.notes = notes
     await _upsert_meta(db, approval.id, approved_hours, shift_count, raw_total_hours)
+    timesheet_result = await db.execute(
+        select(Timesheet).where(
+            Timesheet.employee_id == employee_id,
+            Timesheet.period_start == ws,
+            Timesheet.period_end == we,
+        )
+    )
+    timesheet = timesheet_result.scalar_one_or_none()
+    if timesheet:
+        await sync_timesheet_attachments_to_reviews(db, timesheet, approval=approval)
     await db.commit()
     await db.refresh(approval)
     serialized = await _serialize_approval(db, approval)

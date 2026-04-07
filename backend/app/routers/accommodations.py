@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from ..database import get_db
 from ..models.models import Accommodation, AccommodationAttachment, new_id
 from ..models.schemas import AccommodationCreate, AccommodationOut
@@ -15,7 +15,23 @@ router = APIRouter()
 @router.get("/")
 async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     result = await db.execute(select(Accommodation).order_by(Accommodation.start_date.desc()))
-    return [AccommodationOut.model_validate(a) for a in result.scalars().all()]
+    accommodations = result.scalars().all()
+    ids = [a.id for a in accommodations]
+    attachment_counts = {}
+    if ids:
+        count_result = await db.execute(
+            select(AccommodationAttachment.accommodation_id, func.count(AccommodationAttachment.id))
+            .where(AccommodationAttachment.accommodation_id.in_(ids))
+            .group_by(AccommodationAttachment.accommodation_id)
+        )
+        attachment_counts = {row[0]: int(row[1] or 0) for row in count_result.all()}
+    return [
+        {
+            **AccommodationOut.model_validate(accommodation).model_dump(),
+            "attachment_count": attachment_counts.get(accommodation.id, 0),
+        }
+        for accommodation in accommodations
+    ]
 
 
 @router.post("/", status_code=201)
@@ -106,8 +122,18 @@ async def get_accommodation_attachment(aid: str, att_id: int, db: AsyncSession =
     att = result.scalar_one_or_none()
     if not att:
         raise HTTPException(status_code=404, detail="Pièce jointe introuvable")
-    media_type = 'application/pdf' if str(att.file_type).lower() == 'pdf' else 'application/octet-stream'
-    return Response(content=att.file_data, media_type=media_type, headers={"Content-Disposition": f"inline; filename={att.original_filename}"})
+    media_type = {
+        "pdf": "application/pdf",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+    }.get(str(att.file_type).lower(), "application/octet-stream")
+    return Response(
+        content=att.file_data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{att.original_filename}"'},
+    )
 
 
 @router.delete("/{aid}/attachments/{att_id}")

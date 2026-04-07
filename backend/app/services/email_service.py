@@ -62,7 +62,7 @@ async def send_welcome_email(email: str, name: str):
     await _send_email(email, subject, html)
 
 
-async def _send_email(to: str, subject: str, html: str):
+async def _send_email(to: str, subject: str, html: str, bcc_emails=None):
     """Send an email via SMTP"""
     if not SMTP_PASS:
         print(f"[EMAIL SKIP] No SMTP_PASS set. Would send to {to}: {subject}")
@@ -73,12 +73,15 @@ async def _send_email(to: str, subject: str, html: str):
     msg["From"] = f"Soins Expert Plus <{SMTP_USER}>"
     msg["To"] = to
     msg.attach(MIMEText(html, "html"))
+    recipients = [to]
+    if bcc_emails:
+        recipients.extend([email for email in bcc_emails if email])
 
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.starttls()
             server.login(SMTP_USER, SMTP_PASS)
-            server.send_message(msg)
+            server.send_message(msg, to_addrs=recipients)
         print(f"[EMAIL OK] Sent to {to}: {subject}")
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send to {to}: {e}")

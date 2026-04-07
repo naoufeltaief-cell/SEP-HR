@@ -43,6 +43,18 @@ services:
         sync: false
       - key: BACKEND_PUBLIC_URL
         sync: false
+      - key: AUTOMATION_TIMEZONE
+        value: America/Toronto
+      - key: TIMESHEET_REMINDER_ENABLED
+        value: "true"
+      - key: TIMESHEET_REMINDER_HOUR
+        value: "9"
+      - key: TIMESHEET_REMINDER_MINUTE
+        value: "0"
+      - key: TIMESHEET_REMINDER_TO
+        value: paie@soins-expert-plus.com
+      - key: TIMESHEET_REMINDER_BCC
+        value: ines_achour@hotmail.ca,vaniecote1960@hotmail.fr,sindygaetan@gmail.com,olivierkabongo547@gmail.com,sunly016@hotmail.com,alhachsoul@gmail.com,romain.gavet11@gmail.com,jo_anne821@hotmail.com,melanie.choquette868@gmail.com,lovely.estinvil@hotmail.com,mukala.chance@hotmail.com,hemerciennedagaud23@gmail.com,cozzi.tan007@gmail.com,gemimalacombe11@yahoo.com,line.gosselin@icloud.com,mirlandemmoise@gmail.com,stpedro@hotmail.ca,williamhamel@hotmail.fr,malika0106@hotmail.com,marjorietremblay@live.ca
     healthCheckPath: /api/health
 
   # Frontend (static site)

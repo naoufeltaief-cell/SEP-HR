@@ -51,6 +51,17 @@ class BillingEmailConnection(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AutomationRun(Base):
+    __tablename__ = "automation_runs"
+    id = Column(String, primary_key=True, default=new_id)
+    job_key = Column(String, nullable=False, index=True)
+    period_key = Column(String, nullable=False, index=True)
+    status = Column(String, default="sent")
+    details = Column(Text, default="")
+    triggered_by = Column(String, default="system")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Employee(Base):
     __tablename__ = "employees"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -123,6 +134,8 @@ class Timesheet(Base):
     notes = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     shifts = relationship("TimesheetShift", back_populates="timesheet", cascade="all, delete-orphan")
+    attachments = relationship("TimesheetAttachment", back_populates="timesheet", cascade="all, delete-orphan",
+                               order_by="desc(TimesheetAttachment.created_at)")
 
 
 class TimesheetShift(Base):
@@ -138,6 +151,24 @@ class TimesheetShift(Base):
     start_actual = Column(String, nullable=True)
     end_actual = Column(String, nullable=True)
     timesheet = relationship("Timesheet", back_populates="shifts")
+
+
+class TimesheetAttachment(Base):
+    __tablename__ = "timesheet_attachments"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timesheet_id = Column(String, ForeignKey("timesheets.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    file_type = Column(String(50), nullable=False)
+    file_size = Column(Integer, default=0)
+    file_data = Column(LargeBinary, nullable=False)
+    category = Column(String(50), default="fdt")
+    description = Column(Text, default="")
+    uploaded_by = Column(String(255), default="admin")
+    source = Column(String(50), default="manual")
+    source_message_id = Column(String(255), default="", index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    timesheet = relationship("Timesheet", back_populates="attachments")
 
 
 class Accommodation(Base):

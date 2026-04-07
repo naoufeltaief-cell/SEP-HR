@@ -61,6 +61,7 @@ export function getMonthDates(refDate) {
 
 export const statusColors = {
   draft: { bg: '#EDF2F2', text: '#5F6877', label: 'Brouillon' },
+  received: { bg: '#E0E7FF', text: '#3730A3', label: 'Reçue' },
   published: { bg: '#E0F2F4', text: '#2A7B88', label: 'Publié' },
   submitted: { bg: '#FEF3C7', text: '#92400E', label: 'Soumis' },
   approved: { bg: '#DCFCE7', text: '#166534', label: 'Approuvé' },

@@ -104,6 +104,17 @@ class ApiClient {
   approveTimesheet(id) { return this.put(`/timesheets/${id}/approve`, {}); }
   rejectTimesheet(id) { return this.put(`/timesheets/${id}/reject`, {}); }
   deleteTimesheet(id) { return this.del(`/timesheets/${id}`); }
+  async uploadTimesheetAttachment(timesheetId, file, category = 'fdt', description = '') {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    formData.append('description', description);
+    formData.append('uploaded_by', 'admin');
+    return this.postForm(`/timesheets/${timesheetId}/attachments`, formData);
+  }
+  getTimesheetAttachments(timesheetId) { return this.get(`/timesheets/${timesheetId}/attachments`); }
+  deleteTimesheetAttachment(timesheetId, attId) { return this.del(`/timesheets/${timesheetId}/attachments/${attId}`); }
+  getTimesheetAttachmentUrl(timesheetId, attId) { return `${API_BASE}/timesheets/${timesheetId}/attachments/${attId}`; }
 
   getInvoices(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/${qs ? '?' + qs : ''}`); }
   getInvoice(id) { return this.get(`/invoices/${id}`); }
@@ -141,6 +152,7 @@ class ApiClient {
   }
   getAccommodationAttachments(accommodationId) { return this.get(`/accommodations/${accommodationId}/attachments`); }
   deleteAccommodationAttachment(accommodationId, attId) { return this.del(`/accommodations/${accommodationId}/attachments/${attId}`); }
+  getAccommodationAttachmentUrl(accommodationId, attId) { return `${API_BASE}/accommodations/${accommodationId}/attachments/${attId}`; }
 
   getClients() { return this.get('/clients/'); }
   createClient(data) { return this.post('/clients/', data); }

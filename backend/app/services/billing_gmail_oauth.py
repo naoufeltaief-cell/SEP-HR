@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import getaddresses
 from html import unescape
 from typing import Optional
 from urllib.parse import urlencode
@@ -260,11 +261,17 @@ def _build_raw_message(
     attachment_name: str = "",
     in_reply_to: str = "",
     references: str = "",
+    cc_emails: Optional[list[str]] = None,
+    bcc_emails: Optional[list[str]] = None,
 ) -> str:
     msg = MIMEMultipart("mixed")
     msg["From"] = f"Soins Expert Plus <{BILLING_SENDER_EMAIL}>"
     msg["To"] = to_email
     msg["Subject"] = subject
+    if cc_emails:
+        msg["Cc"] = ", ".join(_normalize_recipient_list(cc_emails))
+    if bcc_emails:
+        msg["Bcc"] = ", ".join(_normalize_recipient_list(bcc_emails))
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
     if references:
@@ -310,6 +317,37 @@ def _payload_has_pdf(payload: dict) -> bool:
         if _payload_has_pdf(part):
             return True
     return False
+
+
+def _normalize_recipient_list(items) -> list[str]:
+    recipients = []
+    for _, email in getaddresses(items or []):
+        normalized = (email or "").strip()
+        if normalized and normalized not in recipients:
+            recipients.append(normalized)
+    return recipients
+
+
+def _payload_attachment_parts(payload: dict) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    found = []
+    filename = (payload.get("filename") or "").strip()
+    mime_type = (payload.get("mimeType") or "").strip().lower()
+    body = payload.get("body") or {}
+    attachment_id = (body.get("attachmentId") or "").strip()
+    if filename and attachment_id:
+        found.append(
+            {
+                "filename": filename,
+                "mime_type": mime_type,
+                "attachment_id": attachment_id,
+                "size": int(body.get("size") or 0),
+            }
+        )
+    for part in payload.get("parts") or []:
+        found.extend(_payload_attachment_parts(part))
+    return found
 
 
 async def list_recent_billing_gmail_messages(
@@ -386,6 +424,7 @@ async def list_recent_billing_gmail_messages(
                     "id": msg_id,
                     "thread_id": payload.get("threadId", ""),
                     "from": _header_value(headers, "From"),
+                    "from_email": getaddresses([_header_value(headers, "From")])[0][1] if _header_value(headers, "From") else "",
                     "subject": _header_value(headers, "Subject"),
                     "date": _header_value(headers, "Date")[:25],
                     "internet_message_id": _header_value(headers, "Message-ID"),
@@ -406,6 +445,101 @@ async def list_recent_billing_gmail_messages(
     }
 
 
+async def list_recent_billing_gmail_documents(
+    db: AsyncSession,
+    max_results: int = 10,
+    search: str = "",
+    unread_only: bool = False,
+) -> Optional[list[dict]]:
+    conn = await get_billing_gmail_connection(db)
+    if not conn or not conn.is_active or not conn.refresh_token:
+        return None
+
+    access_token = await get_valid_billing_access_token(db, conn)
+    query_parts = ["has:attachment"]
+    if unread_only:
+        query_parts.append("is:unread")
+    if search:
+        query_parts.append(str(search).strip())
+
+    params = {"maxResults": max(1, min(int(max_results or 10), 20)), "q": " ".join(query_parts)}
+    documents = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            GMAIL_MESSAGES_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
+        )
+        if response.status_code == 401:
+            access_token = await _refresh_access_token(db, conn)
+            response = await client.get(
+                GMAIL_MESSAGES_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+            )
+        if response.status_code != 200:
+            conn.last_error = response.text
+            conn.updated_at = datetime.utcnow()
+            await db.commit()
+            raise RuntimeError(f"Lecture Gmail echouee: {response.text}")
+
+        listing = response.json()
+        messages = listing.get("messages") or []
+        for message in messages:
+            msg_id = message.get("id")
+            if not msg_id:
+                continue
+            detail = await client.get(
+                f"{GMAIL_MESSAGES_URL}/{msg_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"format": "full"},
+            )
+            if detail.status_code != 200:
+                continue
+            payload = detail.json()
+            headers = ((payload.get("payload") or {}).get("headers") or [])
+            attachment_parts = _payload_attachment_parts(payload.get("payload") or {})
+            if not attachment_parts:
+                continue
+            for part in attachment_parts:
+                attachment_response = await client.get(
+                    f"{GMAIL_MESSAGES_URL}/{msg_id}/attachments/{part['attachment_id']}",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if attachment_response.status_code != 200:
+                    continue
+                attachment_data = attachment_response.json()
+                encoded = attachment_data.get("data") or ""
+                if not encoded:
+                    continue
+                try:
+                    file_bytes = base64.urlsafe_b64decode(encoded.encode("ascii"))
+                except Exception:
+                    continue
+                documents.append(
+                    {
+                        "message_id": msg_id,
+                        "thread_id": payload.get("threadId", ""),
+                        "from": _header_value(headers, "From"),
+                        "from_email": getaddresses([_header_value(headers, "From")])[0][1] if _header_value(headers, "From") else "",
+                        "subject": _header_value(headers, "Subject"),
+                        "date": _header_value(headers, "Date"),
+                        "body_preview": (payload.get("snippet") or "").strip()[:500],
+                        "filename": part["filename"],
+                        "mime_type": part["mime_type"],
+                        "file_size": len(file_bytes),
+                        "file_data": file_bytes,
+                        "internet_message_id": _header_value(headers, "Message-ID"),
+                        "references": _header_value(headers, "References"),
+                    }
+                )
+
+    conn.last_error = ""
+    conn.updated_at = datetime.utcnow()
+    await db.commit()
+    return documents
+
+
 async def send_via_connected_billing_gmail(
     db: AsyncSession,
     to_email: str,
@@ -417,6 +551,8 @@ async def send_via_connected_billing_gmail(
     thread_id: str = "",
     in_reply_to: str = "",
     references: str = "",
+    cc_emails: Optional[list[str]] = None,
+    bcc_emails: Optional[list[str]] = None,
 ) -> Optional[dict]:
     conn = await get_billing_gmail_connection(db)
     if not conn or not conn.is_active or not conn.refresh_token:
@@ -432,6 +568,8 @@ async def send_via_connected_billing_gmail(
         attachment_name=attachment_name,
         in_reply_to=in_reply_to,
         references=references,
+        cc_emails=cc_emails,
+        bcc_emails=bcc_emails,
     )
     payload = {"raw": raw}
     if thread_id:

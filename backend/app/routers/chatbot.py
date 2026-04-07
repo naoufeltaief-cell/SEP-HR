@@ -30,7 +30,8 @@ from ..services.invoice_service import generate_invoice_number, recalculate_invo
 router = APIRouter()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+OPENAI_REASONING_EFFORT = (os.getenv("OPENAI_REASONING_EFFORT", "medium") or "medium").strip().lower()
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 IMAP_USER = (
     os.getenv("IMAP_USER_PAIE")
@@ -855,6 +856,29 @@ def _extract_text(data):
                     texts.append(c['text'])
     return '\n'.join(texts).strip()
 
+
+def _normalized_reasoning_effort() -> str:
+    effort = (OPENAI_REASONING_EFFORT or "medium").strip().lower()
+    return effort if effort in {"none", "low", "medium", "high", "xhigh"} else "medium"
+
+
+def _supports_reasoning(model_name: str) -> bool:
+    model = (model_name or "").strip().lower()
+    return model.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _build_openai_request_payload(system_prompt, inputs):
+    payload = {
+        'model': OPENAI_MODEL,
+        'instructions': system_prompt,
+        'input': inputs,
+        'tools': TOOLS,
+        'parallel_tool_calls': False,
+    }
+    if _supports_reasoning(OPENAI_MODEL):
+        payload['reasoning'] = {'effort': _normalized_reasoning_effort()}
+    return payload
+
 @router.post('/chat')
 async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     if not OPENAI_API_KEY:
@@ -866,7 +890,11 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
         try:
             data = None
             for _ in range(8):
-                resp = await client.post('https://api.openai.com/v1/responses', headers=headers, json={'model': OPENAI_MODEL, 'instructions': system_prompt, 'input': inputs, 'tools': TOOLS, 'parallel_tool_calls': False})
+                resp = await client.post(
+                    'https://api.openai.com/v1/responses',
+                    headers=headers,
+                    json=_build_openai_request_payload(system_prompt, inputs),
+                )
                 resp.raise_for_status()
                 data = resp.json()
                 tool_calls = [item for item in data.get('output', []) if item.get('type') == 'function_call']
@@ -880,7 +908,13 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                         args = {}
                     result = await execute_tool(call.get('name', ''), args, db)
                     inputs.append({'type': 'function_call_output', 'call_id': call.get('call_id'), 'output': result})
-            return {'reply': _extract_text(data or {}) or "Je n'ai pas pu générer de réponse.", 'usage': (data or {}).get('usage', {}), 'agent': agent_name, 'model': OPENAI_MODEL}
+            return {
+                'reply': _extract_text(data or {}) or "Je n'ai pas pu générer de réponse.",
+                'usage': (data or {}).get('usage', {}),
+                'agent': agent_name,
+                'model': OPENAI_MODEL,
+                'reasoning_effort': _normalized_reasoning_effort() if _supports_reasoning(OPENAI_MODEL) else None,
+            }
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=502, detail=f'Erreur API OpenAI: {e.response.text}')
         except Exception as e:

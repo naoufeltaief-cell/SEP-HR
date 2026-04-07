@@ -19,6 +19,12 @@ services:
         value: https://soins-expert-plus.com
       - key: ANTHROPIC_API_KEY
         sync: false  # Set manually in Render dashboard
+      - key: OPENAI_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: OPENAI_MODEL
+        value: gpt-5.4-mini
+      - key: OPENAI_REASONING_EFFORT
+        value: medium
       - key: SMTP_HOST
         value: smtp.gmail.com
       - key: SMTP_PORT

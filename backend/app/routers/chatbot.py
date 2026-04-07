@@ -188,6 +188,46 @@ def _apply_schedule_date_guard(name: str, input_data: dict, user_message: str):
             guarded["date"] = explicit_iso
     return guarded
 
+
+def _extract_explicit_times_from_message(message: str):
+    text = str(message or "").strip()
+    if not text:
+        return []
+
+    found = []
+    pattern = re.compile(r"\b([01]?\d|2[0-3])\s*(?:[:hH])\s*([0-5]\d)?\b")
+    for hours_value, minutes_value in pattern.findall(text):
+        hours = int(hours_value)
+        minutes = int(minutes_value or "00")
+        if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+            continue
+        found.append(f"{hours:02d}:{minutes:02d}")
+
+    unique_times = []
+    seen = set()
+    for item in found:
+        if item in seen:
+            continue
+        seen.add(item)
+        unique_times.append(item)
+    return unique_times
+
+
+def _apply_schedule_time_guard(name: str, input_data: dict, user_message: str):
+    if name not in {"delete_schedule_shift", "update_schedule_shift"}:
+        return input_data
+
+    explicit_times = _extract_explicit_times_from_message(user_message)
+    if not explicit_times:
+        return input_data
+
+    guarded = dict(input_data or {})
+    if not guarded.get("current_start"):
+        guarded["current_start"] = explicit_times[0]
+    if len(explicit_times) > 1 and not guarded.get("current_end"):
+        guarded["current_end"] = explicit_times[1]
+    return guarded
+
 async def _find_employee(db: AsyncSession, employee_id=None, employee_name=None):
     if employee_id:
         r = await db.execute(select(Employee).where(Employee.id == employee_id))
@@ -375,16 +415,18 @@ async def _find_schedule(
     employee = await _find_employee(db, employee_id, employee_name)
     if not employee:
         return None, "Employe introuvable"
-    if not current_date or not current_start:
-        return None, "Fournis schedule_id ou employe + current_date + current_start."
+    if not current_date:
+        return None, "Fournis schedule_id ou au minimum employe + date du quart."
 
     target_date = _parse_date_value(current_date, "current_date")
-    target_start = _normalize_time_value(current_start, "current_start")
     query = select(Schedule).where(
         Schedule.employee_id == employee.id,
         Schedule.date == target_date,
-        Schedule.start == target_start,
     )
+
+    if current_start:
+        target_start = _normalize_time_value(current_start, "current_start")
+        query = query.where(Schedule.start == target_start)
 
     if current_end:
         query = query.where(Schedule.end == _normalize_time_value(current_end, "current_end"))
@@ -402,6 +444,8 @@ async def _find_schedule(
         return matches[0], None
     if not matches:
         return None, "Quart introuvable"
+    if not current_start:
+        return None, "Plusieurs quarts correspondent pour cette date. Fournis l'heure de debut ou schedule_id pour etre plus precis."
     return None, "Plusieurs quarts correspondent. Fournis schedule_id pour etre plus precis."
 
 
@@ -511,6 +555,7 @@ async def _build_invoice_from_schedules(
 async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "") -> str:
     try:
         input_data = _apply_schedule_date_guard(name, input_data, user_message)
+        input_data = _apply_schedule_time_guard(name, input_data, user_message)
         if name == 'search_employees':
             q = _norm(input_data.get('query', ''))
             result = await db.execute(select(Employee).where(Employee.is_active == True))
@@ -908,9 +953,9 @@ AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. T
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les employés actifs, lire les courriels, proposer des candidats et créer des quarts de travail. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as accès aux outils de facturation, recrutement, courriels et rapports. Utilise les outils dès qu'une action ou une donnée système est demandée. Réponds en français.\n\n" + BUSINESS_KNOWLEDGE
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
-GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 
 def _detect_prompt(message: str):
     m = message.lower()

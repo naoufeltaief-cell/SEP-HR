@@ -3,7 +3,7 @@ from datetime import timedelta, date as date_type, datetime
 import io, csv, re, logging
 import unicodedata
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
 from ..database import get_db
@@ -558,20 +558,25 @@ async def export_csv(
     if format == "xlsx":
         buf = io.BytesIO()
         df.to_excel(buf, index=False, engine="openpyxl")
-        buf.seek(0)
-        return StreamingResponse(
-            buf,
+        return Response(
+            content=buf.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": "attachment; filename=horaires_export.xlsx"},
+            headers={
+                "Content-Disposition": "attachment; filename=horaires_export.xlsx",
+                "Cache-Control": "no-store",
+            },
         )
     else:
         buf = io.StringIO()
         df.to_csv(buf, index=False)
         content = buf.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
-        return StreamingResponse(
-            io.BytesIO(content),
+        return Response(
+            content=content,
             media_type="text/csv; charset=utf-8",
-            headers={"Content-Disposition": "attachment; filename=horaires_export.csv"},
+            headers={
+                "Content-Disposition": "attachment; filename=horaires_export.csv",
+                "Cache-Control": "no-store",
+            },
         )
 
 

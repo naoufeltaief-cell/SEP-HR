@@ -90,6 +90,13 @@ def _norm(s: str) -> str:
     raw = re.sub(r"[^a-z0-9]+", " ", raw)
     return re.sub(r"\s+", " ", raw).strip()
 
+
+_MATCH_STOPWORDS = {"de", "du", "des", "la", "le", "les", "l", "d", "et"}
+
+
+def _match_tokens(value: str):
+    return [token for token in _norm(value).split() if token and token not in _MATCH_STOPWORDS]
+
 async def _find_employee(db: AsyncSession, employee_id=None, employee_name=None):
     if employee_id:
         r = await db.execute(select(Employee).where(Employee.id == employee_id))
@@ -128,6 +135,29 @@ async def _find_client(db: AsyncSession, client_id=None, client_name=None):
         partial = [c for c in clients if q in _norm(c.name)]
         if len(partial) == 1:
             return partial[0]
+        if partial:
+            q_tokens = _match_tokens(client_name)
+            scored = []
+            for client in partial:
+                client_tokens = set(_match_tokens(client.name))
+                score = sum(1 for token in q_tokens if token in client_tokens)
+                scored.append((score, len(client_tokens), client))
+            scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+            if len(scored) == 1 or (scored[0][0] > 0 and scored[0][0] > scored[1][0]):
+                return scored[0][2]
+        q_tokens = _match_tokens(client_name)
+        if q_tokens:
+            token_matches = []
+            for client in clients:
+                client_tokens = set(_match_tokens(client.name))
+                if all(token in client_tokens for token in q_tokens):
+                    token_matches.append((len(client_tokens), client))
+            if len(token_matches) == 1:
+                return token_matches[0][1]
+            if token_matches:
+                token_matches.sort(key=lambda item: item[0])
+                if len(token_matches) == 1 or token_matches[0][0] < token_matches[1][0]:
+                    return token_matches[0][1]
     return None
 
 
@@ -318,11 +348,15 @@ async def _build_invoice_from_schedules(
     effective_client = None
     if selected_client:
         effective_client = selected_client
-        scheds = [
-            s for s in scheds
-            if getattr(s, 'client_id', None) == selected_client.id
-            or (not getattr(s, 'client_id', None) and getattr(employee, 'client_id', None) == selected_client.id)
-        ]
+        explicit_client_scheds = [s for s in scheds if getattr(s, 'client_id', None)]
+        if explicit_client_scheds:
+            scheds = [
+                s for s in scheds
+                if getattr(s, 'client_id', None) == selected_client.id
+                or (not getattr(s, 'client_id', None) and getattr(employee, 'client_id', None) == selected_client.id)
+            ]
+        elif getattr(employee, 'client_id', None) and employee.client_id != selected_client.id:
+            scheds = []
         if not scheds:
             return {"error": "Aucun quart trouve pour ce client dans cette periode"}
     elif len(client_ids) == 1:
@@ -396,6 +430,13 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
             result = await db.execute(select(Client))
             clients = result.scalars().all()
             matches = [c for c in clients if q in _norm(c.name)]
+            if not matches:
+                query_tokens = _match_tokens(input_data.get('query', ''))
+                if query_tokens:
+                    matches = [
+                        c for c in clients
+                        if all(token in set(_match_tokens(c.name)) for token in query_tokens)
+                    ]
             return json.dumps([{"id": c.id, "name": c.name, "email": getattr(c, 'email', ''), "address": getattr(c, 'address', ''), "tax_exempt": getattr(c, 'tax_exempt', False)} for c in matches[:20]], ensure_ascii=False)
         if name == 'get_employee_schedule':
             emp = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import re
 import unicodedata
 from datetime import date, datetime, timedelta
@@ -15,6 +16,7 @@ from ..models.models import (
     Client,
     Employee,
     InvoiceAttachment,
+    Schedule,
     ScheduleApproval,
     Timesheet,
     TimesheetAttachment,
@@ -56,6 +58,7 @@ _MONTH_LABELS = {
     12: "Décembre",
 }
 _ATTACHMENT_EXTENSIONS = {"pdf", "jpg", "jpeg", "png", "gif"}
+_ORIENTATION_KEYWORDS = ("orientation", "formation")
 
 
 def _norm(value: str) -> str:
@@ -716,3 +719,360 @@ async def build_accommodation_documents_summary(
     for item in values:
         item["total_cost"] = round(item["total_cost"], 2)
     return values
+
+
+def _contains_orientation_hint(*values: str) -> bool:
+    combined = " ".join(_norm(value) for value in values if value)
+    return any(keyword in combined for keyword in _ORIENTATION_KEYWORDS)
+
+
+def _clamp_score(score: float) -> float:
+    return round(max(0.05, min(float(score), 0.99)), 2)
+
+
+def _score_to_level(score: float) -> str:
+    if score >= 0.8:
+        return "eleve"
+    if score >= 0.55:
+        return "moyen"
+    return "faible"
+
+
+def _estimate_weekly_accommodation_amount(accommodation: Accommodation, client_shifts: list[Schedule]) -> float:
+    overlap_dates = {
+        str(shift.date)
+        for shift in client_shifts
+        if accommodation.start_date <= shift.date <= accommodation.end_date
+    }
+    if not overlap_dates:
+        return 0.0
+    cost_per_day = float(accommodation.cost_per_day or 0)
+    if cost_per_day <= 0:
+        denominator = int(accommodation.days_worked or 0) or len(overlap_dates) or 1
+        cost_per_day = float(accommodation.total_cost or 0) / denominator
+    return round(cost_per_day * len(overlap_dates), 2)
+
+
+async def build_weekly_validation_queue(
+    db: AsyncSession,
+    week_start: date,
+    week_end: Optional[date] = None,
+) -> dict:
+    ws = week_start
+    we = week_end or (ws + timedelta(days=6))
+
+    schedules_result = await db.execute(
+        select(Schedule).where(
+            Schedule.date >= ws,
+            Schedule.date <= we,
+            Schedule.status != "cancelled",
+        )
+    )
+    week_schedules = schedules_result.scalars().all()
+    if not week_schedules:
+        return {"week_start": ws.isoformat(), "week_end": we.isoformat(), "counts": {"eleve": 0, "moyen": 0, "faible": 0}, "items": []}
+
+    employee_ids = sorted({int(schedule.employee_id) for schedule in week_schedules if schedule.employee_id is not None})
+    explicit_client_ids = sorted({int(schedule.client_id) for schedule in week_schedules if schedule.client_id is not None})
+
+    employee_result = await db.execute(select(Employee).where(Employee.id.in_(employee_ids)))
+    employees = {employee.id: employee for employee in employee_result.scalars().all()}
+
+    fallback_client_ids = {
+        int(employee.client_id)
+        for employee in employees.values()
+        if getattr(employee, "client_id", None) is not None
+    }
+    client_ids = sorted(set(explicit_client_ids) | fallback_client_ids)
+    client_result = await db.execute(select(Client).where(Client.id.in_(client_ids))) if client_ids else None
+    clients = {client.id: client for client in (client_result.scalars().all() if client_result is not None else [])}
+
+    grouped_schedules = defaultdict(list)
+    for schedule in week_schedules:
+        employee = employees.get(schedule.employee_id)
+        resolved_client_id = schedule.client_id or getattr(employee, "client_id", None)
+        grouped_schedules[(schedule.employee_id, resolved_client_id)].append(schedule)
+
+    approval_result = await db.execute(
+        select(ScheduleApproval).where(
+            ScheduleApproval.week_start == ws,
+            ScheduleApproval.employee_id.in_(employee_ids),
+        )
+    )
+    approvals = {
+        (approval.employee_id, approval.client_id): approval
+        for approval in approval_result.scalars().all()
+    }
+
+    timesheet_result = await db.execute(
+        select(Timesheet).where(
+            Timesheet.employee_id.in_(employee_ids),
+            Timesheet.period_start == ws,
+            Timesheet.period_end == we,
+        )
+    )
+    timesheets = {timesheet.employee_id: timesheet for timesheet in timesheet_result.scalars().all()}
+    timesheet_ids = [timesheet.id for timesheet in timesheets.values()]
+    timesheet_attachment_counts = await get_attachment_count_map(db, TimesheetAttachment, TimesheetAttachment.timesheet_id, timesheet_ids)
+
+    timesheet_shift_map: dict[str, list[TimesheetShift]] = defaultdict(list)
+    if timesheet_ids:
+        timesheet_shift_result = await db.execute(
+            select(TimesheetShift).where(TimesheetShift.timesheet_id.in_(timesheet_ids))
+        )
+        for shift in timesheet_shift_result.scalars().all():
+            timesheet_shift_map[shift.timesheet_id].append(shift)
+
+    review_attachment_counts = {}
+    if approvals:
+        approval_ids = [approval.id for approval in approvals.values()]
+        review_attachment_counts = await get_attachment_count_map(
+            db,
+            ScheduleApprovalAttachment,
+            ScheduleApprovalAttachment.approval_id,
+            approval_ids,
+        )
+
+    invoice_result = await db.execute(
+        select(Invoice).where(
+            Invoice.employee_id.in_(employee_ids),
+            Invoice.period_start == ws,
+            Invoice.period_end == we,
+            Invoice.status != InvoiceStatus.CANCELLED.value,
+        )
+    )
+    invoices_by_key: dict[tuple[int, int | None], list[Invoice]] = defaultdict(list)
+    for invoice in invoice_result.scalars().all():
+        invoices_by_key[(invoice.employee_id, invoice.client_id)].append(invoice)
+    for invoice_list in invoices_by_key.values():
+        invoice_list.sort(key=lambda invoice: invoice.created_at or datetime.min, reverse=True)
+
+    invoice_ids = [invoice.id for invoice_list in invoices_by_key.values() for invoice in invoice_list]
+    invoice_attachment_counts = await get_attachment_count_map(db, InvoiceAttachment, InvoiceAttachment.invoice_id, invoice_ids)
+    invoice_attachment_categories: dict[str, set[str]] = defaultdict(set)
+    if invoice_ids:
+        invoice_attachment_result = await db.execute(
+            select(InvoiceAttachment).where(InvoiceAttachment.invoice_id.in_(invoice_ids))
+        )
+        for attachment in invoice_attachment_result.scalars().all():
+            invoice_attachment_categories[str(attachment.invoice_id)].add(str(attachment.category or "").strip().lower())
+
+    accommodation_result = await db.execute(
+        select(Accommodation).where(
+            Accommodation.employee_id.in_(employee_ids),
+            Accommodation.start_date <= we,
+            Accommodation.end_date >= ws,
+        )
+    )
+    accommodations_by_employee: dict[int, list[Accommodation]] = defaultdict(list)
+    accommodations = accommodation_result.scalars().all()
+    for accommodation in accommodations:
+        accommodations_by_employee[accommodation.employee_id].append(accommodation)
+    accommodation_ids = [accommodation.id for accommodation in accommodations]
+    accommodation_attachment_counts = await get_attachment_count_map(
+        db,
+        AccommodationAttachment,
+        AccommodationAttachment.accommodation_id,
+        accommodation_ids,
+    )
+
+    items = []
+    for (employee_id, resolved_client_id), client_schedules in grouped_schedules.items():
+        employee = employees.get(employee_id)
+        client = clients.get(resolved_client_id) if resolved_client_id else None
+        client_name = client.name if client else "Client a confirmer"
+        schedule_shift_ids = {str(schedule.id) for schedule in client_schedules}
+
+        scheduled_hours = round(sum(float(schedule.hours or 0) for schedule in client_schedules), 2)
+        shift_count = len(client_schedules)
+        total_km = round(sum(float(schedule.km or 0) for schedule in client_schedules), 2)
+        total_deplacement = round(sum(float(schedule.deplacement or 0) for schedule in client_schedules), 2)
+        total_other_expenses = round(sum(float(schedule.autre_dep or 0) for schedule in client_schedules), 2)
+
+        timesheet = timesheets.get(employee_id)
+        timesheet_shifts = timesheet_shift_map.get(timesheet.id, []) if timesheet else []
+        relevant_timesheet_shifts = [
+            shift for shift in timesheet_shifts
+            if str(shift.schedule_id or "") in schedule_shift_ids
+        ]
+        timesheet_hours = round(sum(float(shift.hours_worked or 0) for shift in relevant_timesheet_shifts), 2)
+        timesheet_shift_count = len(relevant_timesheet_shifts)
+        hours_gap_schedule_vs_timesheet = round(timesheet_hours - scheduled_hours, 2) if timesheet else round(-scheduled_hours, 2)
+        timesheet_attachment_count = int(timesheet_attachment_counts.get(timesheet.id, 0)) if timesheet else 0
+
+        approval = approvals.get((employee_id, resolved_client_id)) if resolved_client_id else None
+        review_attachment_count = int(review_attachment_counts.get(approval.id, 0)) if approval else 0
+
+        invoice = (invoices_by_key.get((employee_id, resolved_client_id)) or [None])[0]
+        invoice_lines = list(getattr(invoice, "lines", None) or []) if invoice else []
+        invoice_hours = round(sum(_line_hours(line) for line in invoice_lines), 2) if invoice else 0.0
+        invoice_hours_gap = round(invoice_hours - timesheet_hours, 2) if invoice and timesheet else None
+        invoice_attachment_count = int(invoice_attachment_counts.get(invoice.id, 0)) if invoice else 0
+        invoice_categories = invoice_attachment_categories.get(str(invoice.id), set()) if invoice else set()
+
+        overlapping_accommodations = accommodations_by_employee.get(employee_id, [])
+        accommodation_amount = 0.0
+        accommodation_doc_count = 0
+        accommodation_count = 0
+        for accommodation in overlapping_accommodations:
+            amount = _estimate_weekly_accommodation_amount(accommodation, client_schedules)
+            if amount <= 0:
+                continue
+            accommodation_count += 1
+            accommodation_amount += amount
+            accommodation_doc_count += int(accommodation_attachment_counts.get(accommodation.id, 0))
+        accommodation_amount = round(accommodation_amount, 2)
+
+        orientation_shift_count = 0
+        if _contains_orientation_hint(getattr(employee, "position", "")):
+            orientation_shift_count = shift_count
+        else:
+            orientation_shift_count = sum(
+                1
+                for schedule in client_schedules
+                if _contains_orientation_hint(schedule.notes or "", schedule.location or "")
+            )
+        regular_shift_count = max(shift_count - orientation_shift_count, 0)
+        missing_expense_notes = sum(
+            1
+            for schedule in client_schedules
+            if (float(schedule.autre_dep or 0) > 0 or float(schedule.deplacement or 0) > 0)
+            and not (schedule.notes or "").strip()
+        )
+
+        flags = []
+        if not resolved_client_id:
+            flags.append("client_a_confirmer")
+        if not timesheet:
+            flags.append("fdt_manquante")
+        elif timesheet_attachment_count <= 0:
+            flags.append("fdt_sans_piece_jointe")
+        else:
+            flags.append("signature_a_verifier")
+        if timesheet and abs(hours_gap_schedule_vs_timesheet) > 0.05:
+            flags.append("ecart_horaire_fdt")
+        if orientation_shift_count > 0:
+            flags.append("orientation_a_verifier")
+        if missing_expense_notes > 0:
+            flags.append("frais_sans_note")
+        if accommodation_amount > 0 and accommodation_doc_count <= 0:
+            flags.append("hebergement_sans_facture")
+        if invoice and timesheet_attachment_count > 0 and "fdt" not in invoice_categories:
+            flags.append("fdt_non_jointe_a_facture")
+        if invoice and accommodation_amount > 0 and "hebergement" not in invoice_categories:
+            flags.append("hebergement_non_joint_a_facture")
+        if invoice and invoice_attachment_count <= 0:
+            flags.append("facture_sans_piece_jointe")
+        if invoice and timesheet and invoice_hours_gap is not None and abs(invoice_hours_gap) > 0.05:
+            flags.append("ecart_facture_fdt")
+
+        confidence_score = 0.58
+        if resolved_client_id:
+            confidence_score += 0.04
+        else:
+            confidence_score -= 0.18
+        if timesheet:
+            confidence_score += 0.12
+        else:
+            confidence_score -= 0.28
+        if timesheet_attachment_count > 0:
+            confidence_score += 0.08
+        else:
+            confidence_score -= 0.12
+        if timesheet and abs(hours_gap_schedule_vs_timesheet) <= 0.05:
+            confidence_score += 0.14
+        elif timesheet:
+            confidence_score -= min(0.22, abs(hours_gap_schedule_vs_timesheet) / max(scheduled_hours or 1, 1) * 0.45)
+        if approval and approval.status == "approved":
+            confidence_score += 0.06
+        elif approval:
+            confidence_score += 0.02
+        if invoice:
+            confidence_score += 0.05
+            if invoice_attachment_count > 0:
+                confidence_score += 0.03
+            if invoice_hours_gap is not None and abs(invoice_hours_gap) <= 0.05:
+                confidence_score += 0.08
+            elif invoice_hours_gap is not None:
+                confidence_score -= min(0.18, abs(invoice_hours_gap) / max(timesheet_hours or scheduled_hours or 1, 1) * 0.4)
+        if orientation_shift_count > 0:
+            confidence_score -= min(0.12, 0.04 * orientation_shift_count)
+        if missing_expense_notes > 0:
+            confidence_score -= min(0.1, 0.04 * missing_expense_notes)
+        if accommodation_amount > 0:
+            confidence_score += 0.02 if accommodation_doc_count > 0 else -0.08
+
+        confidence_score = _clamp_score(confidence_score)
+        confidence_level = _score_to_level(confidence_score)
+        analysis_quality = "eleve" if invoice and timesheet and timesheet_attachment_count > 0 else "moyen" if timesheet else "faible"
+
+        recommendations = []
+        if "fdt_manquante" in flags:
+            recommendations.append("Attendre ou indexer la FDT avant de facturer.")
+        if "signature_a_verifier" in flags:
+            recommendations.append("Verifier manuellement que la FDT est bien signee.")
+        if "ecart_horaire_fdt" in flags:
+            recommendations.append("Comparer les quarts FDT avec l'horaire et ajuster avant facture.")
+        if "orientation_a_verifier" in flags:
+            recommendations.append("Valider les quarts d'orientation avant la facturation finale.")
+        if "hebergement_sans_facture" in flags:
+            recommendations.append("Ajouter la facture d'hebergement avant l'envoi au client.")
+        if "fdt_non_jointe_a_facture" in flags or "hebergement_non_joint_a_facture" in flags:
+            recommendations.append("Joindre toutes les pieces justificatives a la facture avant l'envoi.")
+        if not recommendations:
+            recommendations.append("Dossier solide; faire la verification finale puis envoyer la facture.")
+
+        items.append({
+            "employee_id": employee_id,
+            "employee_name": employee.name if employee else f"#{employee_id}",
+            "employee_position": getattr(employee, "position", "") or "",
+            "client_id": resolved_client_id,
+            "client_name": client_name,
+            "week_start": ws.isoformat(),
+            "week_end": we.isoformat(),
+            "shift_count": shift_count,
+            "regular_shift_count": regular_shift_count,
+            "orientation_shift_count": orientation_shift_count,
+            "scheduled_hours": scheduled_hours,
+            "timesheet_id": timesheet.id if timesheet else None,
+            "timesheet_status": timesheet.status if timesheet else "missing",
+            "timesheet_shift_count": timesheet_shift_count,
+            "timesheet_hours": timesheet_hours,
+            "timesheet_attachment_count": timesheet_attachment_count,
+            "signature_status": "a_verifier" if timesheet_attachment_count > 0 else "document_manquant",
+            "hours_gap_schedule_vs_timesheet": hours_gap_schedule_vs_timesheet if timesheet else None,
+            "review_id": approval.id if approval else None,
+            "review_status": approval.status if approval else "missing",
+            "review_attachment_count": review_attachment_count,
+            "invoice_id": invoice.id if invoice else None,
+            "invoice_number": invoice.number if invoice else "",
+            "invoice_status": invoice.status if invoice else "missing",
+            "invoice_total": round(float(invoice.total or 0), 2) if invoice else 0.0,
+            "invoice_hours": invoice_hours if invoice else None,
+            "hours_gap_invoice_vs_timesheet": invoice_hours_gap,
+            "invoice_attachment_count": invoice_attachment_count,
+            "invoice_attachment_categories": sorted(invoice_categories),
+            "total_km": total_km,
+            "total_deplacement_hours": total_deplacement,
+            "total_other_expenses": total_other_expenses,
+            "accommodation_count": accommodation_count,
+            "accommodation_amount": accommodation_amount,
+            "accommodation_attachment_count": accommodation_doc_count,
+            "confidence_score": confidence_score,
+            "confidence_level": confidence_level,
+            "analysis_quality": analysis_quality,
+            "flags": flags,
+            "recommendations": recommendations,
+        })
+
+    items.sort(key=lambda item: ({"faible": 0, "moyen": 1, "eleve": 2}.get(item["confidence_level"], 3), item["employee_name"], item["client_name"]))
+    counts = {"eleve": 0, "moyen": 0, "faible": 0}
+    for item in items:
+        counts[item["confidence_level"]] = counts.get(item["confidence_level"], 0) + 1
+
+    return {
+        "week_start": ws.isoformat(),
+        "week_end": we.isoformat(),
+        "counts": counts,
+        "items": items,
+    }

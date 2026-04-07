@@ -79,6 +79,7 @@ export default function ScheduleApprovalPanel({
   client,
   shifts,
   allEmployeeSchedules,
+  validationSummary,
   reviewDraft,
   setReviewDraft,
   currentReview,
@@ -488,6 +489,59 @@ export default function ScheduleApprovalPanel({
           {currentReview?.status ? `Statut: ${currentReview.status}` : 'Aucune approbation enregistrée'}
         </div>
       </div>
+
+      {validationSummary && (
+        <div style={{ ...sectionCard, marginBottom: 12, background: '#fcfefe' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700 }}>Conciliation automatique</div>
+              <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+                Confiance <strong>{validationSummary.confidence_level || 'moyen'}</strong> ({Math.round(Number(validationSummary.confidence_score || 0) * 100)}%)
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <span className="badge" style={{ background: '#eef7ff', color: '#1d4f91' }}>
+                FDT: {validationSummary.timesheet_id ? `${validationSummary.timesheet_attachment_count || 0} doc` : 'manquante'}
+              </span>
+              <span className="badge" style={{ background: '#f5f5ff', color: '#5546b3' }}>
+                Facture: {validationSummary.invoice_id ? (validationSummary.invoice_number || 'generee') : 'non generee'}
+              </span>
+              <span className="badge" style={{ background: '#effaf2', color: '#1f7a3f' }}>
+                Hebergement: {fmtMoney(validationSummary.accommodation_amount || 0)}
+              </span>
+            </div>
+          </div>
+
+          {!!validationSummary.flags?.length && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              {validationSummary.flags.map((flag) => (
+                <span key={flag} className="badge" style={{ background: '#f4f7f8', color: '#35515a' }}>
+                  {String(flag).replaceAll('_', ' ')}
+                </span>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, fontSize: 11 }}>
+            <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
+              <div style={{ color: 'var(--text3)' }}>Horaire vs FDT</div>
+              <strong>
+                {validationSummary.timesheet_id
+                  ? `${Number(validationSummary.scheduled_hours || 0).toFixed(2)} h / ${Number(validationSummary.timesheet_hours || 0).toFixed(2)} h`
+                  : 'FDT manquante'}
+              </strong>
+            </div>
+            <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
+              <div style={{ color: 'var(--text3)' }}>Orientation</div>
+              <strong>{validationSummary.orientation_shift_count || 0} quart(s) a verifier</strong>
+            </div>
+            <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
+              <div style={{ color: 'var(--text3)' }}>Prochaine action</div>
+              <strong>{validationSummary.recommendations?.[0] || 'Verification finale'}</strong>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
         <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Quarts</div><div style={{ fontSize: 16, fontWeight: 700, color: 'var(--brand)' }}>{editableShifts.length}</div></div>

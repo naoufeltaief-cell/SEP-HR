@@ -102,6 +102,7 @@ class ApiClient {
   revokeWeek(data) { return this.post('/schedules/revoke-week', data); }
   getApprovals(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/schedules/approvals${qs ? '?' + qs : ''}`); }
   getScheduleReviews(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/schedule-reviews/${qs ? '?' + qs : ''}`); }
+  getWeeklyValidationQueue(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/schedule-reviews/reconciliation-queue${qs ? '?' + qs : ''}`); }
   reviewWeek(data) { return this.post('/schedule-reviews/review-week', data); }
   approveReviewedWeek(data) { return this.post('/schedule-reviews/approve-week', data); }
   revokeReviewedWeek(data) { return this.post('/schedule-reviews/revoke-week', data); }

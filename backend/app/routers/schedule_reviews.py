@@ -7,7 +7,7 @@ from ..database import get_db
 from ..models.models import Schedule, ScheduleApproval, Timesheet
 from ..models.models_schedule_review import ScheduleApprovalMeta, ScheduleApprovalAttachment
 from ..services.auth_service import require_admin, get_current_user
-from ..services.timesheet_service import sync_timesheet_attachments_to_reviews
+from ..services.timesheet_service import build_weekly_validation_queue, sync_timesheet_attachments_to_reviews
 router = APIRouter()
 ALLOWED_MIME = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -61,6 +61,12 @@ async def list_reviews(employee_id: int = None, client_id: int = None, week_star
     result = await db.execute(q.order_by(ScheduleApproval.week_start.desc()))
     approvals = result.scalars().all()
     return [await _serialize_approval(db, approval) for approval in approvals]
+
+
+@router.get("/reconciliation-queue")
+async def reconciliation_queue(week_start: str, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
+    ws = _normalize_week_start(week_start)
+    return await build_weekly_validation_queue(db, ws)
 
 @router.post("/review-week")
 async def review_week(data: dict, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):

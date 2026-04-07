@@ -5,7 +5,7 @@ import unicodedata
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, text
 from ..database import get_db
 from ..models.models import Schedule, ScheduleApproval, Employee, Client, new_id
 from ..models.schemas import ScheduleCreate, ScheduleUpdate, ScheduleOut
@@ -169,6 +169,17 @@ def _row_employee_keys(prenom: str, nom: str) -> list[str]:
     return keys
 
 
+async def _sync_employees_sequence(db: AsyncSession) -> None:
+    await db.execute(text("""
+        SELECT setval(
+            pg_get_serial_sequence('employees', 'id'),
+            COALESCE((SELECT MAX(id) FROM employees), 0) + 1,
+            false
+        )
+    """))
+    await db.commit()
+
+
 @router.post("/import-csv")
 async def import_csv(
     file: UploadFile = File(...),
@@ -242,6 +253,8 @@ async def import_csv(
     if remap:
         df.rename(columns=remap, inplace=True)
 
+    await _sync_employees_sequence(db)
+
     # ── Load employees and clients from DB ──
     emp_result = await db.execute(select(Employee))
     employees = emp_result.scalars().all()
@@ -311,7 +324,12 @@ async def import_csv(
                 is_active=True,
             )
             db.add(seeded_emp)
-            await db.flush()
+            try:
+                await db.flush()
+            except Exception as exc:
+                await db.rollback()
+                log.exception("Schedule CSV import failed while auto-creating employee")
+                raise HTTPException(500, f"Echec import horaires lors de la creation automatique d'un employe: {type(exc).__name__}: {exc}")
             employees.append(seeded_emp)
             _index_employee(seeded_emp)
             created_employees += 1

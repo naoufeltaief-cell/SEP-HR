@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func, text
 from sqlalchemy.exc import IntegrityError
 from ..database import get_db
-from ..models.models import Schedule, ScheduleApproval, Employee, Client, new_id
+from ..models.models import Schedule, ScheduleApproval, Employee, Client, TimesheetShift, new_id
 from ..models.schemas import ScheduleCreate, ScheduleUpdate, ScheduleOut
 from ..services.auth_service import require_admin, get_current_user
 
@@ -291,8 +291,10 @@ async def import_csv(
         )
         existing_schedule_index.setdefault(schedule_key, []).append(s)
 
+    timesheet_shift_result = await db.execute(select(TimesheetShift.schedule_id))
+    timesheet_linked_schedule_ids = {row[0] for row in timesheet_shift_result.all() if row[0]}
+
     created_employees = 0
-    replaced_schedule_keys = set()
     for _, row in df.iterrows():
         raw_prenom = _clean_text(row.get('prenom', ''))
         raw_nom = _clean_text(row.get('nom', ''))
@@ -365,36 +367,14 @@ async def import_csv(
                 emp_by_name[full_name_key] = seeded_emp
             if reverse_name_key:
                 emp_by_name[reverse_name_key] = seeded_emp
-            date_str = _clean_text(row.get('date_du_quart', ''))
-            if date_str:
-                parsed_date = None
-                try:
-                    parsed_date = date_type.fromisoformat(date_str)
-                except ValueError:
-                    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y/%m/%d'):
-                        try:
-                            parsed_date = datetime.strptime(date_str, fmt).date()
-                            break
-                        except ValueError:
-                            continue
-                if parsed_date:
-                    start_time = _normalise_time(row.get('heure_debut', ''))
-                    end_time = _normalise_time(row.get('heure_fin', ''))
-                    schedule_key = (seeded_emp.id, parsed_date.isoformat(), start_time, end_time)
-                    existing_scheds = existing_schedule_index.get(schedule_key, [])
-                    if existing_scheds and schedule_key not in replaced_schedule_keys:
-                        for existing_sched in existing_scheds:
-                            await db.delete(existing_sched)
-                        existing_schedule_index.pop(schedule_key, None)
-                        replaced_schedule_keys.add(schedule_key)
 
     # ── Process rows ──
     success_count = 0
-    created_count = 0
-    updated_count = 0
     error_details = []
     created_ids = []
-    changed = False
+    updated_schedule_keys = set()
+    cleaned_duplicate_count = 0
+    unresolved_duplicate_keys = set()
 
     for idx, row in df.iterrows():
         row_num = idx + 2  # +2 for header + 0-indexed
@@ -482,7 +462,58 @@ async def import_csv(
             else:
                 status = 'draft'
 
-            # ── Create schedule record ──
+            schedule_key = (emp.id, shift_date.isoformat(), start_time, end_time)
+            existing_scheds = list(existing_schedule_index.get(schedule_key, []))
+            if existing_scheds:
+                referenced_scheds = [s for s in existing_scheds if s.id in timesheet_linked_schedule_ids]
+                if referenced_scheds:
+                    keep_sched = min(
+                        referenced_scheds,
+                        key=lambda sched: (sched.created_at or datetime.min, sched.id),
+                    )
+                    removable_scheds = [
+                        s for s in existing_scheds
+                        if s.id != keep_sched.id and s.id not in timesheet_linked_schedule_ids
+                    ]
+                    blocked_scheds = [
+                        s for s in existing_scheds
+                        if s.id != keep_sched.id and s.id in timesheet_linked_schedule_ids
+                    ]
+                else:
+                    keep_sched = min(
+                        existing_scheds,
+                        key=lambda sched: (sched.created_at or datetime.min, sched.id),
+                    )
+                    removable_scheds = [s for s in existing_scheds if s.id != keep_sched.id]
+                    blocked_scheds = []
+
+                keep_sched.hours = hours
+                keep_sched.pause = 0
+                keep_sched.location = lieu
+                keep_sched.billable_rate = rate
+                keep_sched.status = status
+                keep_sched.notes = notes
+                keep_sched.client_id = client_id
+                keep_sched.km = 0
+                keep_sched.deplacement = 0
+                keep_sched.autre_dep = 0
+                keep_sched.garde_hours = 0
+                keep_sched.rappel_hours = 0
+
+                for removable_sched in removable_scheds:
+                    await db.delete(removable_sched)
+                    cleaned_duplicate_count += 1
+
+                if blocked_scheds:
+                    unresolved_duplicate_keys.add(schedule_key)
+                    existing_schedule_index[schedule_key] = [keep_sched, *blocked_scheds]
+                else:
+                    existing_schedule_index[schedule_key] = [keep_sched]
+
+                updated_schedule_keys.add(schedule_key)
+                success_count += 1
+                continue
+
             sched = Schedule(
                 id=new_id(),
                 employee_id=emp.id,
@@ -503,17 +534,23 @@ async def import_csv(
                 rappel_hours=0,
             )
             db.add(sched)
-            existing_schedule_index[(emp.id, shift_date.isoformat(), start_time, end_time)] = [sched]
+            existing_schedule_index[schedule_key] = [sched]
             created_ids.append(sched.id)
             success_count += 1
 
         except Exception as exc:
             error_details.append({"row": row_num, "error": str(exc)})
 
-    updated_count = len(replaced_schedule_keys)
-    created_count = max(success_count - updated_count, 0)
+    if unresolved_duplicate_keys:
+        error_details.append({
+            "row": 0,
+            "error": f"{len(unresolved_duplicate_keys)} doublon(s) lie(s) a des feuilles de temps n'ont pas pu etre supprimes automatiquement.",
+        })
 
-    if created_ids or replaced_schedule_keys or created_employees:
+    updated_count = len(updated_schedule_keys)
+    created_count = len(created_ids)
+
+    if created_ids or updated_schedule_keys or created_employees or cleaned_duplicate_count:
         await db.commit()
 
     return {
@@ -522,10 +559,14 @@ async def import_csv(
         "total_rows": len(df),
         "created": created_count,
         "updated": updated_count,
+        "cleaned_duplicates": cleaned_duplicate_count,
         "created_employees": created_employees,
         "error_details": error_details[:100],  # Cap at 100 errors
         "message": f"{success_count} quarts importés ou mis à jour avec succès"
-                   + (f" ({created_count} créés, {updated_count} mis à jour" + (f", {created_employees} employés créés" if created_employees else "") + ")" if success_count else "")
+                   + (f" ({created_count} créés, {updated_count} mis à jour"
+                      + (f", {cleaned_duplicate_count} doublons nettoyés" if cleaned_duplicate_count else "")
+                      + (f", {created_employees} employés créés" if created_employees else "")
+                      + ")" if success_count else "")
                    + (f", {len(error_details)} erreurs" if error_details else ""),
     }
 

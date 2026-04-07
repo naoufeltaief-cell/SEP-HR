@@ -319,6 +319,9 @@ def _fmt_pause(value):
         return "0 min"
     try:
         pause = float(value)
+        # Older invoices stored schedule pause hours directly in pause_min.
+        if 0 < pause < 4 and not pause.is_integer():
+            pause *= 60
         if pause.is_integer():
             return f"{int(pause)} min"
         return f"{pause:.0f} min"

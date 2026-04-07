@@ -25,7 +25,7 @@ from ..services.billing_gmail_oauth import (
     list_recent_billing_gmail_messages,
 )
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
-from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS
+from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
 
 router = APIRouter()
 
@@ -517,7 +517,7 @@ async def _build_invoice_from_schedules(
         garde_h = getattr(s, 'garde_hours', 0) or 0
         rappel_h = getattr(s, 'rappel_hours', 0) or 0
         garde_billable = garde_h / 8.0 if garde_h else 0
-        lines.append({"date": s.date.isoformat() if hasattr(s.date, 'isoformat') else str(s.date), "employee": employee.name or '', "location": effective_client.name, "start": getattr(s, 'start', '') or '', "end": getattr(s, 'end', '') or '', "pause_min": getattr(s, 'pause', 0) or 0, "hours": hours, "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
+        lines.append({"schedule_id": s.id, "date": s.date.isoformat() if hasattr(s.date, 'isoformat') else str(s.date), "employee": employee.name or '', "location": effective_client.name, "start": getattr(s, 'start', '') or '', "end": getattr(s, 'end', '') or '', "pause_min": schedule_pause_to_invoice_minutes(getattr(s, 'pause', 0) or 0), "hours": hours, "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
         km_val = getattr(s, 'km', 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)
@@ -529,6 +529,21 @@ async def _build_invoice_from_schedules(
         autre_val = getattr(s, 'autre_dep', 0) or 0
         if autre_val:
             expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
+    expense_lines = []
+    for s in scheds:
+        shift_notes = getattr(s, 'notes', '') or ''
+        km_val = getattr(s, 'km', 0) or 0
+        if km_val:
+            capped = min(float(km_val), MAX_KM)
+            expense_lines.append({"schedule_id": s.id, "type": "km", "description": build_shift_expense_description("km", s.date, shift_notes), "quantity": capped, "rate": KM_RATE, "amount": round(capped * KM_RATE, 2)})
+        depl_val = getattr(s, 'deplacement', 0) or 0
+        if depl_val:
+            capped = min(float(depl_val), MAX_DEPLACEMENT_HOURS)
+            expense_lines.append({"schedule_id": s.id, "type": "deplacement", "description": build_shift_expense_description("deplacement", s.date, shift_notes), "quantity": capped, "rate": rate, "amount": round(capped * rate, 2)})
+        autre_val = getattr(s, 'autre_dep', 0) or 0
+        if autre_val:
+            expense_lines.append({"schedule_id": s.id, "type": "autre", "description": build_shift_expense_description("autre", s.date, shift_notes), "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
+
     accom_r = await db.execute(select(Accommodation).where(Accommodation.employee_id == employee.id, Accommodation.start_date <= pe, Accommodation.end_date >= ps))
     accom_records = accom_r.scalars().all()
     all_scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == employee.id, Schedule.status != 'cancelled'))

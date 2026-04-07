@@ -109,6 +109,39 @@ def get_rate_for_title(title: str) -> float:
         if key.lower() in (title or "").lower(): return rate
     return RATES["Infirmier(ère)"]
 
+def schedule_pause_to_invoice_minutes(pause_value: Any) -> float:
+    try:
+        pause = float(pause_value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if pause <= 0:
+        return 0.0
+    if pause <= 4:
+        return round(pause * 60, 2)
+    return round(pause, 2)
+
+def invoice_pause_to_schedule_hours(pause_value: Any) -> float:
+    try:
+        pause = float(pause_value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if pause <= 0:
+        return 0.0
+    if pause < 4 and not pause.is_integer():
+        return round(pause, 2)
+    return round(pause / 60.0, 2)
+
+def build_shift_expense_description(expense_type: str, shift_date: Any = None, schedule_notes: str = "") -> str:
+    base = {
+        "km": "Kilométrage",
+        "deplacement": "Déplacement",
+        "autre": "Autres frais",
+    }.get((expense_type or "").strip().lower(), "Frais")
+    note = " ".join(str(schedule_notes or "").strip().split())
+    date_text = shift_date.isoformat() if hasattr(shift_date, "isoformat") else str(shift_date or "").strip()
+    description = f"{base} - {note}" if note else base
+    return f"{description} ({date_text})" if date_text else description
+
 def recalculate_invoice(invoice: Invoice) -> Invoice:
     lines = invoice.lines or []; accom = invoice.accommodation_lines or []; expenses = invoice.expense_lines or []; extras = invoice.extra_lines or []
     invoice.subtotal_services = round(sum(l.get("service_amount", 0) for l in lines), 2)
@@ -171,7 +204,7 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
             for s in sorted(scheds, key=lambda x: x.date):
                 hours = getattr(s, "hours", 0) or 0; pause = getattr(s, "pause", 0) or 0; garde_h = getattr(s, "garde_hours", 0) or 0; rappel_h = getattr(s, "rappel_hours", 0) or 0
                 garde_billable = garde_h / 8.0 if garde_h else 0
-                service_lines.append({"schedule_id": s.id, "date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date), "employee": employee.name or f"Emp #{emp_id}", "location": client_name, "start": getattr(s, "start", "") or "", "end": getattr(s, "end", "") or "", "pause_min": pause, "hours": round(hours, 2), "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
+                service_lines.append({"schedule_id": s.id, "date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date), "employee": employee.name or f"Emp #{emp_id}", "location": client_name, "start": getattr(s, "start", "") or "", "end": getattr(s, "end", "") or "", "pause_min": schedule_pause_to_invoice_minutes(pause), "hours": round(hours, 2), "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
             all_scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == emp_id, Schedule.status != 'cancelled'))
             all_scheds = all_scheds_r.scalars().all()
             all_worked = sorted({s.date for s in all_scheds})
@@ -198,6 +231,21 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
                 autre_val = getattr(s, 'autre_dep', 0) or 0
                 if autre_val:
                     expense_lines.append({"schedule_id": s.id, "type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
+            expense_lines = []
+            for s in scheds:
+                shift_notes = getattr(s, "notes", "") or ""
+                km_val = getattr(s, "km", 0) or 0
+                if km_val:
+                    capped_km = min(float(km_val), MAX_KM)
+                    expense_lines.append({"schedule_id": s.id, "type": "km", "description": build_shift_expense_description("km", s.date, shift_notes), "quantity": capped_km, "rate": KM_RATE, "amount": round(capped_km * KM_RATE, 2)})
+                depl_val = getattr(s, "deplacement", 0) or 0
+                if depl_val:
+                    capped_depl = min(float(depl_val), MAX_DEPLACEMENT_HOURS)
+                    expense_lines.append({"schedule_id": s.id, "type": "deplacement", "description": build_shift_expense_description("deplacement", s.date, shift_notes), "quantity": capped_depl, "rate": rate, "amount": round(capped_depl * rate, 2)})
+                autre_val = getattr(s, "autre_dep", 0) or 0
+                if autre_val:
+                    expense_lines.append({"schedule_id": s.id, "type": "autre", "description": build_shift_expense_description("autre", s.date, shift_notes), "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
+
             inv_number = await generate_invoice_number(db)
             invoice = Invoice(id=str(uuid.uuid4()), number=inv_number, date=date.today(), period_start=period_start, period_end=period_end, client_id=client.id if client else None, client_name=client_name, client_address=getattr(client, 'address', '') if client else '', client_email=getattr(client, 'email', '') if client else '', client_phone=getattr(client, 'phone', '') if client else '', employee_id=emp_id, employee_name=employee.name or '', employee_title=employee.position or '', include_tax=include_tax, status=InvoiceStatus.DRAFT.value, lines=service_lines, accommodation_lines=accom_lines, expense_lines=expense_lines, extra_lines=[])
             invoice = recalculate_invoice(invoice)

@@ -33,6 +33,8 @@ from ..services.invoice_service import (
     generate_invoices_from_timesheets, change_invoice_status,
     add_payment, delete_payment, detect_anomalies,
     duplicate_invoice, get_client_invoice_summary,
+    schedule_pause_to_invoice_minutes, invoice_pause_to_schedule_hours,
+    build_shift_expense_description,
     COMPANY_INFO
 )
 from ..services.invoice_delivery import email_invoice_and_mark_sent
@@ -566,7 +568,7 @@ async def _sync_invoice_to_schedules(db: AsyncSession, invoice: Invoice):
         if svc:
             new_start = svc.get("start", "")
             new_end = svc.get("end", "")
-            new_pause = float(svc.get("pause_min", 0))
+            new_pause = invoice_pause_to_schedule_hours(svc.get("pause_min", 0))
             new_hours = float(svc.get("hours", 0))
             new_garde = float(svc.get("garde_hours", 0))
             new_rappel = float(svc.get("rappel_hours", 0))
@@ -867,12 +869,13 @@ async def generate_invoice_from_schedules(
         garde_amount = round(garde_billable * GARDE_RATE, 2)
         rappel_amount = round(rappel_h * rate, 2)
         service_lines.append({
+            "schedule_id": s.id,
             "date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date),
             "employee": employee.name or "",
             "location": client_name,
             "start": getattr(s, "start", "") or "",
             "end": getattr(s, "end", "") or "",
-            "pause_min": getattr(s, "pause", 0) or 0,
+            "pause_min": schedule_pause_to_invoice_minutes(getattr(s, "pause", 0) or 0),
             "hours": round(hours, 2),
             "rate": rate,
             "service_amount": round(hours * rate, 2),
@@ -896,6 +899,21 @@ async def generate_invoice_from_schedules(
         autre_val = getattr(s, "autre_dep", 0) or 0
         if autre_val:
             expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
+
+    expense_lines = []
+    for s in scheds:
+        shift_notes = getattr(s, "notes", "") or ""
+        km_val = getattr(s, "km", 0) or 0
+        if km_val:
+            capped = min(float(km_val), MAX_KM)
+            expense_lines.append({"schedule_id": s.id, "type": "km", "description": build_shift_expense_description("km", s.date, shift_notes), "quantity": capped, "rate": KM_RATE, "amount": round(capped * KM_RATE, 2)})
+        depl_val = getattr(s, "deplacement", 0) or 0
+        if depl_val:
+            capped = min(float(depl_val), MAX_DEPLACEMENT_HOURS)
+            expense_lines.append({"schedule_id": s.id, "type": "deplacement", "description": build_shift_expense_description("deplacement", s.date, shift_notes), "quantity": capped, "rate": rate, "amount": round(capped * rate, 2)})
+        autre_val = getattr(s, "autre_dep", 0) or 0
+        if autre_val:
+            expense_lines.append({"schedule_id": s.id, "type": "autre", "description": build_shift_expense_description("autre", s.date, shift_notes), "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
 
     # Accommodation lines
     accom_r = await db.execute(
@@ -1280,6 +1298,47 @@ async def create_credit_note(
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
+async def _prepare_invoice_for_pdf(db: AsyncSession, invoice: Invoice) -> Invoice:
+    schedule_ids = set()
+    for line in (getattr(invoice, "lines", None) or []):
+        sid = line.get("schedule_id")
+        if sid:
+            schedule_ids.add(sid)
+    for line in (getattr(invoice, "expense_lines", None) or []):
+        sid = line.get("schedule_id")
+        if sid:
+            schedule_ids.add(sid)
+    if not schedule_ids:
+        return invoice
+
+    result = await db.execute(select(Schedule).where(Schedule.id.in_(list(schedule_ids))))
+    schedules = {s.id: s for s in result.scalars().all()}
+
+    prepared_lines = []
+    for line in (getattr(invoice, "lines", None) or []):
+        updated = dict(line)
+        sched = schedules.get(updated.get("schedule_id"))
+        if sched:
+            updated["pause_min"] = schedule_pause_to_invoice_minutes(getattr(sched, "pause", 0) or 0)
+        prepared_lines.append(updated)
+
+    prepared_expenses = []
+    for line in (getattr(invoice, "expense_lines", None) or []):
+        updated = dict(line)
+        sched = schedules.get(updated.get("schedule_id"))
+        if sched and (getattr(sched, "notes", "") or "").strip():
+            updated["description"] = build_shift_expense_description(
+                updated.get("type", ""),
+                getattr(sched, "date", None),
+                getattr(sched, "notes", "") or "",
+            )
+        prepared_expenses.append(updated)
+
+    invoice.lines = prepared_lines
+    invoice.expense_lines = prepared_expenses
+    return invoice
+
+
 @router.get("/{invoice_id}/pdf")
 async def get_invoice_pdf(
     invoice_id: str,
@@ -1291,6 +1350,7 @@ async def get_invoice_pdf(
     if not invoice:
         raise HTTPException(404, "Invoice not found")
 
+    invoice = await _prepare_invoice_for_pdf(db, invoice)
     pdf_buffer = generate_invoice_pdf(invoice)
 
     audit = InvoiceAuditLog(
@@ -1533,6 +1593,7 @@ async def pdf_with_attachments(
         raise HTTPException(404, "Facture non trouvée")
 
     # Generate base invoice PDF
+    inv = await _prepare_invoice_for_pdf(db, inv)
     pdf_bytes = generate_invoice_pdf(inv)
 
     if not include_attachments:

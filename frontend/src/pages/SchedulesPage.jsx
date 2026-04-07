@@ -141,51 +141,66 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = React.useRef(null);
 
+  const formatNetworkError = (err, fallback) => {
+    const msg = err?.message || '';
+    if (msg === 'Failed to fetch' || msg === 'Load failed' || msg === 'NetworkError when attempting to fetch resource.') {
+      return fallback;
+    }
+    return msg || fallback;
+  };
+
+  const fileNameFromDisposition = (headerValue, fallbackName) => {
+    const raw = String(headerValue || '');
+    const utf8 = raw.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8?.[1]) return decodeURIComponent(utf8[1]);
+    const plain = raw.match(/filename="?([^"]+)"?/i);
+    return plain?.[1] || fallbackName;
+  };
+
   const handleImport = async () => {
     if (!importFile) { toast?.('Sélectionnez un fichier'); return; }
     setImporting(true); setImportResult(null);
     try {
       const formData = new FormData();
       formData.append('file', importFile);
-      const base = import.meta.env.VITE_API_URL || '/api';
-      const token = api.token || localStorage.getItem('sep_token');
-      const resp = await fetch(`${base}/schedules/import-csv`, {
-        method: 'POST', body: formData,
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-      });
-      if (resp.status === 401) throw new Error('Non authentifié — veuillez vous reconnecter');
-      if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.detail || `Erreur ${resp.status}`); }
-      const data = await resp.json();
+      const data = await api.postForm('/schedules/import-csv', formData);
       setImportResult(data);
-      if (data.success > 0) { reload(); toast?.(`${data.success} quart(s) importé(s)`); }
-    } catch (err) { setImportResult({ success: 0, errors: 1, error_details: [{ row: 0, error: err.message }], message: err.message }); toast?.('Erreur import: ' + err.message); }
+      if (data.success > 0) {
+        await reload();
+        toast?.(`${data.success} quart(s) importé(s)`);
+      }
+    } catch (err) {
+      const detail = formatNetworkError(err, "Impossible de joindre le serveur d'import. Vérifiez le déploiement du frontend et du backend.");
+      setImportResult({ success: 0, errors: 1, error_details: [{ row: 0, error: detail }], message: detail });
+      toast?.('Erreur import: ' + detail);
+    }
     finally { setImporting(false); }
   };
 
   const handleExport = async () => {
     setExporting(true);
     try {
-      const base = import.meta.env.VITE_API_URL || '/api';
-      const token = api.token || localStorage.getItem('sep_token');
       const params = new URLSearchParams();
       if (exportOpts.date_start) params.set('date_start', exportOpts.date_start);
       if (exportOpts.date_end) params.set('date_end', exportOpts.date_end);
       if (exportOpts.employee_id) params.set('employee_id', exportOpts.employee_id);
       if (exportOpts.client_id) params.set('client_id', exportOpts.client_id);
       params.set('format', exportOpts.format);
-      const resp = await fetch(`${base}/schedules/export-csv?${params}`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
-      });
-      if (resp.status === 401) throw new Error('Non authentifié — veuillez vous reconnecter');
-      if (!resp.ok) throw new Error(`Erreur ${resp.status}`);
+      const resp = await api.download(`/schedules/export-csv?${params.toString()}`);
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
+      const fallbackName = `horaires_export.${exportOpts.format === 'xlsx' ? 'xlsx' : 'csv'}`;
       a.href = url;
-      a.download = `horaires_export.${exportOpts.format === 'xlsx' ? 'xlsx' : 'csv'}`;
-      a.click(); URL.revokeObjectURL(url);
+      a.download = fileNameFromDisposition(resp.headers.get('Content-Disposition'), fallbackName);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       setExportModal(false); toast?.('Export téléchargé');
-    } catch (err) { toast?.('Erreur export: ' + err.message); }
+    } catch (err) {
+      toast?.('Erreur export: ' + formatNetworkError(err, "Impossible de joindre le serveur d'export. Vérifiez le déploiement du frontend et du backend."));
+    }
     finally { setExporting(false); }
   };
 

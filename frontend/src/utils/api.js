@@ -23,9 +23,9 @@ class ApiClient {
   isAuthenticated() { return !!this.token; }
   isAdmin() { return this.user?.role === 'admin'; }
 
-  async request(path, options = {}) {
-    const headers = { 'Content-Type': 'application/json', ...options.headers };
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
+  async requestRaw(path, options = {}) {
+    const headers = { ...options.headers };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
     const resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
     if (resp.status === 401) {
       this.clearAuth();
@@ -33,9 +33,25 @@ class ApiClient {
       throw new Error('Session expirée');
     }
     if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ detail: 'Erreur serveur' }));
-      throw new Error(err.detail || `Erreur ${resp.status}`);
+      const contentType = resp.headers.get('content-type') || '';
+      let detail = '';
+      if (contentType.includes('application/json')) {
+        const err = await resp.json().catch(() => null);
+        detail = err?.detail || '';
+      } else {
+        detail = await resp.text().catch(() => '');
+      }
+      throw new Error((detail || `Erreur ${resp.status}`).trim());
     }
+    return resp;
+  }
+
+  async request(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', ...options.headers };
+    const resp = await this.requestRaw(path, { ...options, headers });
+    if (resp.status === 204) return null;
+    const contentType = resp.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return resp;
     return resp.json();
   }
 
@@ -43,6 +59,8 @@ class ApiClient {
   post(path, data) { return this.request(path, { method: 'POST', body: JSON.stringify(data) }); }
   put(path, data) { return this.request(path, { method: 'PUT', body: JSON.stringify(data) }); }
   del(path) { return this.request(path, { method: 'DELETE' }); }
+  postForm(path, formData) { return this.requestRaw(path, { method: 'POST', body: formData }).then(resp => resp.json()); }
+  download(path) { return this.requestRaw(path); }
 
   login(email, password) { return this.post('/auth/login', { email, password }); }
   requestMagicLink(email) { return this.post('/auth/magic-link', { email }); }
@@ -74,11 +92,7 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    const headers = {};
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-    const resp = await fetch(`${API_BASE}/schedule-reviews/${reviewId}/attachments`, { method: 'POST', headers, body: formData });
-    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
-    return resp.json();
+    return this.postForm(`/schedule-reviews/${reviewId}/attachments`, formData);
   }
   getScheduleReviewAttachments(reviewId) { return this.get(`/schedule-reviews/${reviewId}/attachments`); }
   deleteScheduleReviewAttachment(reviewId, attId) { return this.del(`/schedule-reviews/${reviewId}/attachments/${attId}`); }
@@ -107,11 +121,7 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    const headers = {};
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-    const resp = await fetch(`${API_BASE}/invoices/${invoiceId}/attachments`, { method: 'POST', headers, body: formData });
-    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
-    return resp.json();
+    return this.postForm(`/invoices/${invoiceId}/attachments`, formData);
   }
   getAttachments(invoiceId) { return this.get(`/invoices/${invoiceId}/attachments`); }
   deleteAttachment(invoiceId, attId) { return this.del(`/invoices/${invoiceId}/attachments/${attId}`); }
@@ -127,11 +137,7 @@ class ApiClient {
     formData.append('category', category);
     formData.append('description', description);
     formData.append('uploaded_by', 'admin');
-    const headers = {};
-    if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
-    const resp = await fetch(`${API_BASE}/accommodations/${accommodationId}/attachments`, { method: 'POST', headers, body: formData });
-    if (!resp.ok) { const err = await resp.json().catch(() => ({ detail: 'Erreur upload' })); throw new Error(err.detail || `Erreur ${resp.status}`); }
-    return resp.json();
+    return this.postForm(`/accommodations/${accommodationId}/attachments`, formData);
   }
   getAccommodationAttachments(accommodationId) { return this.get(`/accommodations/${accommodationId}/attachments`); }
   deleteAccommodationAttachment(accommodationId, attId) { return this.del(`/accommodations/${accommodationId}/attachments/${attId}`); }

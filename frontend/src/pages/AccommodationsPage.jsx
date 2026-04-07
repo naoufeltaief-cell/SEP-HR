@@ -428,7 +428,17 @@ export default function AccommodationsPage({ toast }) {
                       <button
                         className="btn btn-outline btn-sm"
                         style={{ padding: '2px 8px' }}
-                        onClick={() => window.open(api.getAccommodationAttachmentUrl(accommodation.id, attachment.id), '_blank')}
+                        onClick={async () => {
+                          try {
+                            await api.openAccommodationAttachment(
+                              accommodation.id,
+                              attachment.id,
+                              attachment.original_filename || attachment.filename || 'hebergement'
+                            );
+                          } catch (err) {
+                            toast?.(`Erreur: ${err.message}`);
+                          }
+                        }}
                       >
                         <Eye size={12} />
                       </button>
@@ -587,7 +597,17 @@ export default function AccommodationsPage({ toast }) {
                     <button
                       className="btn btn-outline btn-sm"
                       style={{ padding: '2px 8px' }}
-                      onClick={() => window.open(api.getAccommodationAttachmentUrl(modal.id, attachment.id), '_blank')}
+                      onClick={async () => {
+                        try {
+                          await api.openAccommodationAttachment(
+                            modal.id,
+                            attachment.id,
+                            attachment.original_filename || attachment.filename || 'hebergement'
+                          );
+                        } catch (err) {
+                          toast?.(`Erreur: ${err.message}`);
+                        }
+                      }}
                     >
                       <Eye size={12} />
                     </button>

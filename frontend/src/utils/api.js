@@ -61,6 +61,25 @@ class ApiClient {
   del(path) { return this.request(path, { method: 'DELETE' }); }
   postForm(path, formData) { return this.requestRaw(path, { method: 'POST', body: formData }).then(resp => resp.json()); }
   download(path) { return this.requestRaw(path); }
+  async openProtectedFile(path, fallbackFilename = 'document') {
+    const resp = await this.requestRaw(path, { headers: { Accept: '*/*' } });
+    const blob = await resp.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const opened = window.open(blobUrl, '_blank', 'noopener,noreferrer');
+
+    if (!opened) {
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.download = fallbackFilename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    window.setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60000);
+  }
 
   login(email, password) { return this.post('/auth/login', { email, password }); }
   requestMagicLink(email) { return this.post('/auth/magic-link', { email }); }
@@ -96,6 +115,9 @@ class ApiClient {
   }
   getScheduleReviewAttachments(reviewId) { return this.get(`/schedule-reviews/${reviewId}/attachments`); }
   deleteScheduleReviewAttachment(reviewId, attId) { return this.del(`/schedule-reviews/${reviewId}/attachments/${attId}`); }
+  openScheduleReviewAttachment(reviewId, attId, fallbackFilename = 'justificatif') {
+    return this.openProtectedFile(`/schedule-reviews/${reviewId}/attachments/${attId}`, fallbackFilename);
+  }
   generateFromSchedules(data) { return this.post('/invoices-approved/generate-from-approved-schedules', data); }
   generateAllApprovedInvoices(data) { return this.post('/invoices-approved/generate-all-approved-schedules', data); }
 
@@ -115,6 +137,9 @@ class ApiClient {
   getTimesheetAttachments(timesheetId) { return this.get(`/timesheets/${timesheetId}/attachments`); }
   deleteTimesheetAttachment(timesheetId, attId) { return this.del(`/timesheets/${timesheetId}/attachments/${attId}`); }
   getTimesheetAttachmentUrl(timesheetId, attId) { return `${API_BASE}/timesheets/${timesheetId}/attachments/${attId}`; }
+  openTimesheetAttachment(timesheetId, attId, fallbackFilename = 'fdt') {
+    return this.openProtectedFile(`/timesheets/${timesheetId}/attachments/${attId}`, fallbackFilename);
+  }
 
   getInvoices(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/invoices/${qs ? '?' + qs : ''}`); }
   getInvoice(id) { return this.get(`/invoices/${id}`); }
@@ -153,6 +178,9 @@ class ApiClient {
   getAccommodationAttachments(accommodationId) { return this.get(`/accommodations/${accommodationId}/attachments`); }
   deleteAccommodationAttachment(accommodationId, attId) { return this.del(`/accommodations/${accommodationId}/attachments/${attId}`); }
   getAccommodationAttachmentUrl(accommodationId, attId) { return `${API_BASE}/accommodations/${accommodationId}/attachments/${attId}`; }
+  openAccommodationAttachment(accommodationId, attId, fallbackFilename = 'hebergement') {
+    return this.openProtectedFile(`/accommodations/${accommodationId}/attachments/${attId}`, fallbackFilename);
+  }
 
   getClients() { return this.get('/clients/'); }
   createClient(data) { return this.post('/clients/', data); }

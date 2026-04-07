@@ -539,7 +539,17 @@ export default function TimesheetsPage({ toast }) {
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 6 }}>
-                          <button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => window.open(api.getTimesheetAttachmentUrl(timesheet.id, attachment.id), '_blank')}>
+                          <button
+                            className="btn btn-outline btn-sm"
+                            style={{ padding: '2px 8px' }}
+                            onClick={async () => {
+                              try {
+                                await api.openTimesheetAttachment(timesheet.id, attachment.id, attachment.original_filename || attachment.filename || 'fdt');
+                              } catch (err) {
+                                toast?.('Erreur: ' + err.message);
+                              }
+                            }}
+                          >
                             <Eye size={12} />
                           </button>
                           <button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => deleteAttachment(timesheet.id, attachment.id)}>

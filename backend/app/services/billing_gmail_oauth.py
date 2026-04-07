@@ -1,9 +1,11 @@
 import base64
 import os
+import re
 from datetime import datetime, timedelta
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import unescape
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -20,6 +22,7 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 GMAIL_MESSAGES_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+GMAIL_DRAFTS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
 
 BILLING_GMAIL_CLIENT_ID = (
     os.getenv("BILLING_GMAIL_CLIENT_ID")
@@ -35,6 +38,7 @@ BILLING_GMAIL_CLIENT_SECRET = (
 )
 BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", "paie@soins-expert-plus.com").strip().lower()
 GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",
     "openid",
@@ -234,18 +238,49 @@ async def get_valid_billing_access_token(db: AsyncSession, conn: BillingEmailCon
     return await _refresh_access_token(db, conn)
 
 
+def _html_to_text(value: str) -> str:
+    raw = value or ""
+    raw = re.sub(r"(?i)<br\s*/?>", "\n", raw)
+    raw = re.sub(r"(?i)</p\s*>", "\n\n", raw)
+    raw = re.sub(r"(?i)</div\s*>", "\n", raw)
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    raw = unescape(raw)
+    raw = raw.replace("\xa0", " ")
+    raw = re.sub(r"[ \t]+\n", "\n", raw)
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
+    return raw.strip()
+
+
 def _build_raw_message(
     to_email: str,
     subject: str,
-    body_text: str,
+    body_text: str = "",
+    body_html: str = "",
     attachment_bytes: bytes = b"",
     attachment_name: str = "",
+    in_reply_to: str = "",
+    references: str = "",
 ) -> str:
     msg = MIMEMultipart("mixed")
     msg["From"] = f"Soins Expert Plus <{BILLING_SENDER_EMAIL}>"
     msg["To"] = to_email
     msg["Subject"] = subject
-    msg.attach(MIMEText(body_text, "plain", "utf-8"))
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
+
+    text_value = (body_text or "").strip()
+    html_value = (body_html or "").strip()
+    if not text_value and html_value:
+        text_value = _html_to_text(html_value)
+
+    body_part = MIMEMultipart("alternative")
+    if text_value or not html_value:
+        body_part.attach(MIMEText(text_value, "plain", "utf-8"))
+    if html_value:
+        body_part.attach(MIMEText(html_value, "html", "utf-8"))
+    msg.attach(body_part)
     if attachment_bytes:
         part = MIMEApplication(attachment_bytes, _subtype="pdf")
         part.add_header(
@@ -353,6 +388,8 @@ async def list_recent_billing_gmail_messages(
                     "from": _header_value(headers, "From"),
                     "subject": _header_value(headers, "Subject"),
                     "date": _header_value(headers, "Date")[:25],
+                    "internet_message_id": _header_value(headers, "Message-ID"),
+                    "references": _header_value(headers, "References"),
                     "body_preview": body_preview[:200],
                     "has_pdf_attachment": _payload_has_pdf(payload.get("payload") or {}),
                 }
@@ -373,9 +410,13 @@ async def send_via_connected_billing_gmail(
     db: AsyncSession,
     to_email: str,
     subject: str,
-    body_text: str,
+    body_text: str = "",
+    body_html: str = "",
     attachment_bytes: bytes = b"",
     attachment_name: str = "",
+    thread_id: str = "",
+    in_reply_to: str = "",
+    references: str = "",
 ) -> Optional[dict]:
     conn = await get_billing_gmail_connection(db)
     if not conn or not conn.is_active or not conn.refresh_token:
@@ -386,9 +427,15 @@ async def send_via_connected_billing_gmail(
         to_email=to_email,
         subject=subject,
         body_text=body_text,
+        body_html=body_html,
         attachment_bytes=attachment_bytes,
         attachment_name=attachment_name,
+        in_reply_to=in_reply_to,
+        references=references,
     )
+    payload = {"raw": raw}
+    if thread_id:
+        payload["threadId"] = thread_id
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
@@ -397,7 +444,7 @@ async def send_via_connected_billing_gmail(
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
             },
-            json={"raw": raw},
+            json=payload,
         )
 
     if response.status_code == 401:
@@ -409,7 +456,7 @@ async def send_via_connected_billing_gmail(
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json",
                 },
-                json={"raw": raw},
+                json=payload,
             )
 
     if response.status_code != 200:
@@ -427,4 +474,86 @@ async def send_via_connected_billing_gmail(
         "from_email": BILLING_SENDER_EMAIL,
         "account_email": conn.email,
         "message_id": result.get("id", ""),
+    }
+
+
+async def create_billing_gmail_draft(
+    db: AsyncSession,
+    to_email: str,
+    subject: str,
+    body_text: str = "",
+    body_html: str = "",
+    thread_id: str = "",
+    in_reply_to: str = "",
+    references: str = "",
+) -> Optional[dict]:
+    conn = await get_billing_gmail_connection(db)
+    if not conn or not conn.is_active or not conn.refresh_token:
+        return None
+
+    access_token = await get_valid_billing_access_token(db, conn)
+    raw = _build_raw_message(
+        to_email=to_email,
+        subject=subject,
+        body_text=body_text,
+        body_html=body_html,
+        in_reply_to=in_reply_to,
+        references=references,
+    )
+    payload = {"message": {"raw": raw}}
+    if thread_id:
+        payload["message"]["threadId"] = thread_id
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            GMAIL_DRAFTS_URL,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    if response.status_code == 401:
+        access_token = await _refresh_access_token(db, conn)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                GMAIL_DRAFTS_URL,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+
+    if response.status_code == 403 and (
+        "insufficient" in response.text.lower()
+        or "permission" in response.text.lower()
+        or "scope" in response.text.lower()
+    ):
+        conn.last_error = response.text
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(
+            "La connexion Gmail actuelle n'a pas encore la permission de creer des brouillons. Clique 'Reconnecter Gmail' pour autoriser l'acces aux brouillons Gmail."
+        )
+
+    if response.status_code != 200:
+        conn.last_error = response.text
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(f"Creation du brouillon Gmail echouee: {response.text}")
+
+    conn.last_error = ""
+    conn.updated_at = datetime.utcnow()
+    await db.commit()
+    result = response.json()
+    message = result.get("message") or {}
+    return {
+        "transport": "gmail_oauth",
+        "from_email": BILLING_SENDER_EMAIL,
+        "account_email": conn.email,
+        "draft_id": result.get("id", ""),
+        "message_id": message.get("id", ""),
+        "thread_id": message.get("threadId", thread_id or ""),
     }

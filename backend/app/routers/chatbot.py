@@ -19,7 +19,11 @@ from ..models.models import Employee, Schedule, Client, Accommodation, new_id
 from ..models.models_invoice import Invoice
 from ..models.schemas import ChatMessage
 from ..services.auth_service import require_admin
-from ..services.billing_gmail_oauth import get_billing_gmail_connection, list_recent_billing_gmail_messages
+from ..services.billing_gmail_oauth import (
+    create_billing_gmail_draft,
+    get_billing_gmail_connection,
+    list_recent_billing_gmail_messages,
+)
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
 from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS
 
@@ -70,7 +74,8 @@ RAW_TOOLS = [
     {"name": "generate_invoice_for_employee", "description": "Générer une facture brouillon à partir des horaires d'un employé pour une période donnée. Utiliser quand on te demande explicitement de générer une facture.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}}, "required": ["period_start", "period_end"]}},
     {"name": "read_recent_emails", "description": "Lire les courriels récents de la boîte de réception.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "folder": {"type": "string", "default": "INBOX"}}}},
     {"name": "generate_current_invoice_for_employee", "description": "Generer une facture brouillon pour la periode actuelle de facturation d'un employe.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "client_name": {"type": "string"}, "client_id": {"type": "integer"}}, "required": []}},
-    {"name": "send_email", "description": "Envoyer un courriel.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}}, "required": ["to", "subject", "body_html"]}},
+    {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}}, "required": ["to", "subject", "body_text"]}},
+    {"name": "send_email", "description": "Envoyer immediatement un courriel. Ne jamais utiliser pour un brouillon Gmail ou si l'utilisateur veut revoir le message avant envoi.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}}, "required": ["to", "subject", "body_html"]}},
     {"name": "create_schedule_shift", "description": "Creer un quart dans l'horaire. Les heures doivent etre en format 24 h HH:MM.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": ["date", "start", "end"]}},
     {"name": "update_schedule_shift", "description": "Modifier un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": []}},
     {"name": "delete_schedule_shift", "description": "Supprimer un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}}, "required": []}},
@@ -559,6 +564,20 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession) -> str:
         if name == 'send_email':
             await _send_email(input_data['to'], input_data['subject'], input_data['body_html'])
             return f"Courriel envoyé à {input_data['to']}: {input_data['subject']}"
+        if name == 'create_email_draft':
+            draft = await create_billing_gmail_draft(
+                db,
+                to_email=input_data['to'],
+                subject=input_data['subject'],
+                body_text=input_data.get('body_text', ''),
+                body_html=input_data.get('body_html', ''),
+                thread_id=input_data.get('thread_id', ''),
+                in_reply_to=input_data.get('in_reply_to', ''),
+                references=input_data.get('references', ''),
+            )
+            if not draft:
+                return "Le compte Gmail de facturation n'est pas connecte. Clique 'Reconnecter Gmail' dans Facturation pour brancher paie@soins-expert-plus.com."
+            return json.dumps({"message": "Brouillon Gmail cree", "draft": draft}, ensure_ascii=False)
         if name == 'create_schedule_shift':
             emp = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
             if not emp:
@@ -802,13 +821,13 @@ AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. T
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les employés actifs, lire les courriels, proposer des candidats et créer des quarts de travail. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as accès aux outils de facturation, recrutement, courriels et rapports. Utilise les outils dès qu'une action ou une donnée système est demandée. Réponds en français.\n\n" + BUSINESS_KNOWLEDGE
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, consulter et modifier les horaires, ajouter des hebergements et generer des factures brouillon a partir des donnees deja dans la plateforme. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
-GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements et horaires. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie ou la generation d'une facture, execute l'action demandee puis resume le resultat. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 
 def _detect_prompt(message: str):
     m = message.lower()
-    if any(kw in m for kw in ['factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impay', 'conciliation', 'courriel', 'email', 'hebergement', 'hébergement']):
+    if any(kw in m for kw in ['factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impay', 'conciliation', 'courriel', 'email', 'gmail', 'brouillon', 'draft', 'hebergement', 'hébergement']):
         return AGENT_FACTURATION_PROMPT, 'facturation'
     if any(kw in m for kw in ['candidat', 'recrutement', 'besoin', 'soumission', 'disponib', 'assignation', 'placement', 'horaire', 'quart']):
         return AGENT_RECRUTEMENT_PROMPT, 'recrutement'

@@ -84,6 +84,7 @@ export default function ScheduleApprovalPanel({
   currentReview,
   currentInvoice,
   reviewAttachments,
+  busy = false,
   onApprove,
   onRevoke,
   onGenerateInvoice,
@@ -327,12 +328,12 @@ export default function ScheduleApprovalPanel({
         savedShiftIds.push(shift.id);
       } catch (err) {
         allOk = false;
-        toast?.(`Erreur sauvegarde ${shift.date || ''}: ${err.message || 'Échec'}`);
+        toast?.(`Erreur sauvegarde ${shift.date || ''}: ${err.message || 'Ã‰chec'}`);
       }
     }
 
     if (allOk && dirtyShifts.length > 0) {
-      toast?.(`${dirtyShifts.length} quart(s) sauvegardé(s)`);
+      toast?.(`${dirtyShifts.length} quart(s) sauvegardÃ©(s)`);
       if (savedShiftIds.length > 0) {
         const nextEditableShifts = editableShiftsRef.current.map(row => savedShiftMap.get(row.id) || row);
         editableShiftsRef.current = nextEditableShifts;
@@ -361,12 +362,16 @@ export default function ScheduleApprovalPanel({
 
   const handleApprove = async () => {
     const ok = await saveAllDirtyShifts();
-    if (ok) onApprove?.();
+    if (ok) {
+      await onApprove?.();
+    }
   };
 
   const handleGenerateInvoice = async () => {
     const ok = await saveAllDirtyShifts();
-    if (ok) onGenerateInvoice?.();
+    if (ok) {
+      await onGenerateInvoice?.();
+    }
   };
 
   const removeShiftLine = async (shift) => {
@@ -391,11 +396,11 @@ export default function ScheduleApprovalPanel({
         next.delete(shift.id);
         return next;
       });
-      toast?.('Quart supprimé');
+      toast?.('Quart supprimÃ©');
       await onRefreshParent?.();
     } catch (err) {
       setEditableShifts(snapshot);
-      toast?.('Erreur: ' + (err.message || 'Échec de la suppression'));
+      toast?.('Erreur: ' + (err.message || 'Ã‰chec de la suppression'));
     } finally {
       isSavingRef.current = false;
       setSavingShiftId(null);
@@ -416,10 +421,10 @@ export default function ScheduleApprovalPanel({
         notes: accomForm.notes || '',
       });
       setAccomForm({ total_cost: '', start_date: '', end_date: '', notes: '' });
-      toast?.('Hébergement ajouté');
+      toast?.('HÃ©bergement ajoutÃ©');
       await loadAccommodations();
     } catch (err) {
-      toast?.('Erreur: ' + (err.message || "Échec de l'ajout"));
+      toast?.('Erreur: ' + (err.message || "Ã‰chec de l'ajout"));
     } finally {
       setSavingAccommodation(false);
     }
@@ -482,18 +487,18 @@ export default function ScheduleApprovalPanel({
     <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--brand-d)' }}>
-          📋 Validation hebdomadaire — {employee?.name || ''} / {client?.name || 'Client'}
+          ðŸ“‹ Validation hebdomadaire â€” {employee?.name || ''} / {client?.name || 'Client'}
         </div>
         <div style={{ fontSize: 11, color: 'var(--text3)' }}>
-          {currentReview?.status ? `Statut: ${currentReview.status}` : 'Aucune approbation enregistrée'}
+          {currentReview?.status ? `Statut: ${currentReview.status}` : 'Aucune approbation enregistrÃ©e'}
         </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
         <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Quarts</div><div style={{ fontSize: 16, fontWeight: 700, color: 'var(--brand)' }}>{editableShifts.length}</div></div>
-        <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Heures affichées</div><div style={{ fontSize: 16, fontWeight: 700 }}>{plannedHours.toFixed(2)} h</div></div>
-        <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Kilométrage</div><div style={{ fontSize: 16, fontWeight: 700 }}>{totalKm.toFixed(0)} km</div></div>
-        <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Frais estimés</div><div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(totalFrais)}</div></div>
+        <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Heures affichÃ©es</div><div style={{ fontSize: 16, fontWeight: 700 }}>{plannedHours.toFixed(2)} h</div></div>
+        <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>KilomÃ©trage</div><div style={{ fontSize: 16, fontWeight: 700 }}>{totalKm.toFixed(0)} km</div></div>
+        <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Frais estimÃ©s</div><div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(totalFrais)}</div></div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, alignItems: 'start', marginBottom: 12 }}>
@@ -501,20 +506,20 @@ export default function ScheduleApprovalPanel({
           <div style={editorCard}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 10, flexWrap: 'wrap' }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>📋 Quarts / Services</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>ðŸ“‹ Quarts / Services</div>
                 <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>Heures au format 24 h, par exemple 07:00 ou 15:30.</div>
               </div>
               <button className="btn btn-outline btn-sm" onClick={addQuickShiftRow}>+ Ajouter quart</button>
             </div>
 
             {editableShifts.length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--text3)', textAlign: 'center', padding: 12 }}>Aucun quart à modifier</div>
+              <div style={{ fontSize: 12, color: 'var(--text3)', textAlign: 'center', padding: 12 }}>Aucun quart Ã  modifier</div>
             ) : (
               <div style={tableWrap}>
                 <table style={tableStyle}>
                   <thead>
                     <tr>
-                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
+                      {['DATE', 'DÃ‰BUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
                         <th key={header} style={thStyle}>{header}</th>
                       ))}
                     </tr>
@@ -547,15 +552,15 @@ export default function ScheduleApprovalPanel({
           </div>
 
           <div style={editorCard}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#2A7B88', marginBottom: 10 }}>💲 Frais / Notes</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#2A7B88', marginBottom: 10 }}>ðŸ’² Frais / Notes</div>
             {editableShifts.length === 0 ? (
-              <div style={{ fontSize: 12, color: 'var(--text3)', textAlign: 'center', padding: 12 }}>Aucun frais lié à des quarts</div>
+              <div style={{ fontSize: 12, color: 'var(--text3)', textAlign: 'center', padding: 12 }}>Aucun frais liÃ© Ã  des quarts</div>
             ) : (
               <div style={tableWrap}>
                 <table style={{ ...tableStyle, minWidth: 760 }}>
                   <thead>
                     <tr>
-                      {['DATE', 'KM', 'DÉPLACEMENT H', 'AUTRE $', 'NOTES'].map(header => (
+                      {['DATE', 'KM', 'DÃ‰PLACEMENT H', 'AUTRE $', 'NOTES'].map(header => (
                         <th key={header} style={thStyle}>{header}</th>
                       ))}
                     </tr>
@@ -581,15 +586,15 @@ export default function ScheduleApprovalPanel({
         </div>
 
         <div style={sectionCard}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Résumé estimatif</div>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>RÃ©sumÃ© estimatif</div>
           <div style={{ display: 'grid', gap: 6, fontSize: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Services</span><strong>{fmtMoney(totals.service)}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Garde</span><strong>{fmtMoney(totals.garde)}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Rappel</span><strong>{fmtMoney(totals.rappel)}</strong></div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Kilométrage</span><strong>{fmtMoney(totals.km)}</strong></div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Déplacement</span><strong>{fmtMoney(totals.dep)}</strong></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>KilomÃ©trage</span><strong>{fmtMoney(totals.km)}</strong></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>DÃ©placement</span><strong>{fmtMoney(totals.dep)}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Autres frais</span><strong>{fmtMoney(totals.autres)}</strong></div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Hébergement</span><strong>{fmtMoney(totals.accom)}</strong></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>HÃ©bergement</span><strong>{fmtMoney(totals.accom)}</strong></div>
             <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 8, marginTop: 4, borderTop: '1px solid #dde5e8', fontSize: 13 }}><span>Sous-total</span><strong>{fmtMoney(totals.subtotal)}</strong></div>
             {!client?.tax_exempt && (
               <>
@@ -597,10 +602,10 @@ export default function ScheduleApprovalPanel({
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>TVQ</span><strong>{fmtMoney(totals.tvq)}</strong></div>
               </>
             )}
-            {client?.tax_exempt && <div style={{ fontSize: 11, color: '#28A745', paddingTop: 4 }}>Client exempté de taxes</div>}
+            {client?.tax_exempt && <div style={{ fontSize: 11, color: '#28A745', paddingTop: 4 }}>Client exemptÃ© de taxes</div>}
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 16, padding: '12px 14px', marginTop: 12, background: '#2A7B88', color: '#fff', borderRadius: 10 }}>
-            <span>Total estimé</span>
+            <span>Total estimÃ©</span>
             <strong>{fmtMoney(totals.total)}</strong>
           </div>
         </div>
@@ -609,16 +614,16 @@ export default function ScheduleApprovalPanel({
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}>
         <div style={sectionCard}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>Hébergement lié à la semaine</div>
-            <div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargement…' : `${accommodationEstimates.length} ligne(s)`}</div>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>HÃ©bergement liÃ© Ã  la semaine</div>
+            <div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargementâ€¦' : `${accommodationEstimates.length} ligne(s)`}</div>
           </div>
           {accommodationEstimates.length === 0 ? (
-            <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hébergement trouvé pour cette semaine.</div>
+            <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hÃ©bergement trouvÃ© pour cette semaine.</div>
           ) : (
             <div>
               {accommodationEstimates.map(a => (
                 <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .8fr', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
-                  <span>{a.start_date} → {a.end_date}</span>
+                  <span>{a.start_date} â†’ {a.end_date}</span>
                   <span>{a.estimate.days} jour(s)</span>
                   <span>{fmtMoney(a.estimate.costPerDay)}/jour</span>
                   <strong>{fmtMoney(a.estimate.amount)}</strong>
@@ -627,11 +632,11 @@ export default function ScheduleApprovalPanel({
             </div>
           )}
           <div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Ajout rapide hébergement</div>
+            <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Ajout rapide hÃ©bergement</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1.2fr auto', gap: 6 }}>
               <input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.start_date} onChange={e => setAccomForm(f => ({ ...f, start_date: e.target.value }))} />
               <input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.end_date} onChange={e => setAccomForm(f => ({ ...f, end_date: e.target.value }))} />
-              <input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Coût total" value={accomForm.total_cost} onChange={e => setAccomForm(f => ({ ...f, total_cost: e.target.value }))} />
+              <input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="CoÃ»t total" value={accomForm.total_cost} onChange={e => setAccomForm(f => ({ ...f, total_cost: e.target.value }))} />
               <input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Notes" value={accomForm.notes} onChange={e => setAccomForm(f => ({ ...f, notes: e.target.value }))} />
               <button className="btn btn-outline btn-sm" onClick={saveQuickAccommodation} disabled={savingAccommodation}>{savingAccommodation ? '...' : 'Ajouter'}</button>
             </div>
@@ -642,31 +647,31 @@ export default function ScheduleApprovalPanel({
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Approbation / justificatifs</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 12 }}>
             <div>
-              <label style={{ fontSize: 11, color: 'var(--text3)' }}>Heures approuvées</label>
+              <label style={{ fontSize: 11, color: 'var(--text3)' }}>Heures approuvÃ©es</label>
               <input className="input" type="number" step="0.25" value={reviewDraft.approvedHours} onChange={e => setReviewDraft(d => ({ ...d, approvedHours: e.target.value }))} />
             </div>
             <div>
               <label style={{ fontSize: 11, color: 'var(--text3)' }}>Notes</label>
-              <input className="input" value={reviewDraft.notes} onChange={e => setReviewDraft(d => ({ ...d, notes: e.target.value }))} placeholder="Notes de vérification" />
+              <input className="input" value={reviewDraft.notes} onChange={e => setReviewDraft(d => ({ ...d, notes: e.target.value }))} placeholder="Notes de vÃ©rification" />
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-            {dirtyIds.size > 0 && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center' }}>⚠️ {dirtyIds.size} modification(s) non sauvegardée(s)</div>}
-            <button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll}>{savingAll ? '⏳ Sauvegarde…' : 'Sauvegarder'}</button>
-            <button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={handleApprove} disabled={!editableShifts.length || savingAll}>{savingAll ? '⏳…' : 'Approuver les heures'}</button>
-            <button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>Révoquer</button>
-            <button className="btn btn-primary btn-sm" onClick={handleGenerateInvoice} disabled={!canGenerateInvoice || savingAll}>Générer la facture approuvée</button>
-            <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }}>Ajouter justificatif<input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={onUpload} /></label>
+            {dirtyIds.size > 0 && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center' }}>âš ï¸ {dirtyIds.size} modification(s) non sauvegardÃ©e(s)</div>}
+            <button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll || busy}>{savingAll || busy ? 'â³ Sauvegardeâ€¦' : 'Sauvegarder'}</button>
+            <button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={handleApprove} disabled={!editableShifts.length || savingAll || busy}>{savingAll || busy ? 'â³â€¦' : 'Approuver les heures'}</button>
+            <button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview || busy}>RÃ©voquer</button>
+            <button className="btn btn-primary btn-sm" onClick={handleGenerateInvoice} disabled={!canGenerateInvoice || savingAll || busy}>GÃ©nÃ©rer la facture approuvÃ©e</button>
+            <label className="btn btn-outline btn-sm" style={{ cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}>Ajouter justificatif<input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={onUpload} disabled={busy} /></label>
             {currentInvoice && <button className="btn btn-outline btn-sm" onClick={onGoInvoices}>Voir dans Facturation</button>}
           </div>
 
-          {!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de générer la facture approuvée.</div>}
-          {currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}
+          {!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de gÃ©nÃ©rer la facture approuvÃ©e.</div>}
+          {currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture gÃ©nÃ©rÃ©e</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} â€” {fmtMoney(currentInvoice.total || 0)}</div></div>}
 
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Justificatifs ({reviewAttachments.length})</div>
           {reviewAttachments.length === 0 ? (
-            <div style={{ fontSize: 11, color: 'var(--text3)' }}>Aucune pièce jointe</div>
+            <div style={{ fontSize: 11, color: 'var(--text3)' }}>Aucune piÃ¨ce jointe</div>
           ) : reviewAttachments.map(att => (
             <div key={att.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
               <span>{att.filename}</span>

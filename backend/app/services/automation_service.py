@@ -14,6 +14,7 @@ from ..models.models import AutomationRun
 from ..models.models_invoice import Invoice, InvoiceStatus
 from .billing_gmail_oauth import (
     BILLING_SENDER_EMAIL,
+    create_billing_gmail_draft,
     list_recent_billing_gmail_documents,
     send_via_connected_billing_gmail,
 )
@@ -308,6 +309,139 @@ def _reminder_text(period_start, period_end) -> str:
         "J'attends votre retour.\n\n"
         "Merci et bonne journée"
     )
+
+
+def _reminder_subject(period_start, period_end) -> str:
+    return f"Votre Feuille de temps pour la periode du {format_french_period(period_start, period_end)}"
+
+
+def _reminder_html(period_start, period_end) -> str:
+    formatted_period = format_french_period(period_start, period_end)
+    return f"""
+    <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.72;color:#204d97;max-width:720px;margin:0 auto;padding:20px 28px;background:#ffffff">
+      <p style="margin:0 0 34px 0;font-size:16px;color:#204d97">Bonjour,</p>
+      <p style="margin:0 0 38px 0;font-size:16px;color:#204d97">J'espere que vous allez bien.</p>
+      <p style="margin:0 0 18px 0;font-size:16px;color:#204d97">
+        Nous aurons besoin de votre Feuille de temps pour <strong>la periode du {formatted_period}</strong>.
+      </p>
+      <p style="margin:0 0 38px 0;font-size:16px;color:#204d97">
+        Pour les <strong>PAB</strong>, bien vouloir envoyer votre <strong>feuille de route</strong> pour la periode mentionnee.
+      </p>
+      <p style="margin:0 0 38px 0;font-size:17px;color:#204d97;font-weight:700">
+        <span style="background:#fff35c;padding:2px 4px">**Veuillez ignorer ce courriel si vous avez deja envoye votre FDT.**</span>
+      </p>
+      <p style="margin:0 0 38px 0;font-size:16px;color:#204d97">J'attends votre retour.</p>
+      <p style="margin:0 0 52px 0;font-size:16px;color:#204d97">Merci et bonne journee</p>
+      <p style="margin:0 0 24px 0;color:#6b7280;font-size:16px">--</p>
+      <div style="border-top:1px solid #d7e3f6;padding-top:16px">
+        <p style="margin:0;font-size:18px;font-weight:700;color:#2b4ea0">Service Financiers</p>
+        <p style="margin:6px 0 0 0;font-size:15px;color:#2b4ea0">Soins Expert Plus</p>
+        <p style="margin:6px 0 0 0;font-size:15px;color:#2b4ea0">{BILLING_SENDER_EMAIL}</p>
+      </div>
+    </div>
+    """
+
+
+def _reminder_text(period_start, period_end) -> str:
+    formatted_period = format_french_period(period_start, period_end)
+    return (
+        "Bonjour,\n\n"
+        "J'espere que vous allez bien.\n\n"
+        f"Nous aurons besoin de votre Feuille de temps pour la periode du {formatted_period}.\n\n"
+        "Pour les PAB, bien vouloir envoyer votre feuille de route pour la periode mentionnee.\n\n"
+        "**Veuillez ignorer ce courriel si vous avez deja envoye votre FDT.**\n\n"
+        "J'attends votre retour.\n\n"
+        "Merci et bonne journee\n\n"
+        "--\n\n"
+        "Service Financiers\n"
+        "Soins Expert Plus\n"
+        f"{BILLING_SENDER_EMAIL}"
+    )
+
+
+def _build_weekly_timesheet_reminder_payload(reference_date: date | None = None) -> dict:
+    anchor = reference_date or datetime.now(AUTOMATION_TIMEZONE).date()
+    period_start, period_end = completed_billing_period(anchor)
+    recipients = _parse_bcc_recipients()
+    return {
+        "period_start": period_start,
+        "period_end": period_end,
+        "period_label": format_french_period(period_start, period_end),
+        "subject": _reminder_subject(period_start, period_end),
+        "body_html": _reminder_html(period_start, period_end),
+        "body_text": _reminder_text(period_start, period_end),
+        "to_email": TIMESHEET_REMINDER_TO,
+        "bcc_recipients": recipients,
+        "recipient_count": len(recipients),
+    }
+
+
+def get_automation_config() -> dict:
+    return {
+        "timezone": str(AUTOMATION_TIMEZONE),
+        "timesheet_reminder": {
+            "enabled": TIMESHEET_REMINDER_ENABLED,
+            "day_of_week": "Sunday",
+            "day_of_week_fr": "dimanche",
+            "time": f"{TIMESHEET_REMINDER_HOUR:02d}:{TIMESHEET_REMINDER_MINUTE:02d}",
+            "to_email": TIMESHEET_REMINDER_TO,
+            "bcc_recipients": _parse_bcc_recipients(),
+        },
+        "timesheet_inbox_monitor": {
+            "enabled": TIMESHEET_INBOX_MONITOR_ENABLED,
+            "max_results": TIMESHEET_INBOX_MAX_RESULTS,
+            "search": TIMESHEET_INBOX_SEARCH,
+        },
+        "timesheet_auto_draft": {
+            "enabled": TIMESHEET_AUTO_DRAFT_ENABLED,
+            "min_confidence": TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE,
+        },
+    }
+
+
+async def draft_weekly_timesheet_reminder(triggered_by: str = "system") -> dict:
+    payload = _build_weekly_timesheet_reminder_payload()
+    async with async_session() as db:
+        draft = await create_billing_gmail_draft(
+            db,
+            to_email=payload["to_email"],
+            subject=payload["subject"],
+            body_text=payload["body_text"],
+            body_html=payload["body_html"],
+            bcc_emails=payload["bcc_recipients"],
+        )
+        if not draft:
+            return {
+                "status": "not_connected",
+                "message": "Le compte Gmail de facturation n'est pas connecte",
+                "period_start": payload["period_start"].isoformat(),
+                "period_end": payload["period_end"].isoformat(),
+                "period_label": payload["period_label"],
+                "recipient_count": payload["recipient_count"],
+            }
+
+        db.add(
+            AutomationRun(
+                job_key="weekly_timesheet_reminder_draft",
+                period_key=f"{payload['period_start'].isoformat()}_{payload['period_end'].isoformat()}_{datetime.now(AUTOMATION_TIMEZONE).strftime('%H%M%S')}",
+                status="drafted",
+                details=f"{payload['subject']} | {payload['recipient_count']} destinataires CCI",
+                triggered_by=triggered_by or "system",
+            )
+        )
+        await db.commit()
+
+    return {
+        "status": "drafted",
+        "job_key": "weekly_timesheet_reminder_draft",
+        "period_start": payload["period_start"].isoformat(),
+        "period_end": payload["period_end"].isoformat(),
+        "period_label": payload["period_label"],
+        "recipient_count": payload["recipient_count"],
+        "to_email": payload["to_email"],
+        "bcc_recipients": payload["bcc_recipients"],
+        "draft": draft,
+    }
 
 
 async def send_weekly_timesheet_reminder(triggered_by: str = "system", force: bool = False) -> dict:

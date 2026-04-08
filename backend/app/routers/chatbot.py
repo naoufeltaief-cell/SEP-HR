@@ -10,6 +10,7 @@ import httpx
 import imaplib
 import email as email_lib
 from email.header import decode_header
+from email.utils import getaddresses
 from datetime import datetime, date, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,12 @@ from ..services.billing_gmail_oauth import (
     list_recent_billing_gmail_documents,
     list_recent_billing_gmail_messages,
 )
-from ..services.automation_service import process_incoming_timesheet_emails, send_weekly_timesheet_reminder
+from ..services.automation_service import (
+    draft_weekly_timesheet_reminder,
+    get_automation_config,
+    process_incoming_timesheet_emails,
+    send_weekly_timesheet_reminder,
+)
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
 from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
 from ..services.timesheet_service import (
@@ -86,7 +92,7 @@ RAW_TOOLS = [
     {"name": "generate_invoice_for_employee", "description": "Générer une facture brouillon à partir des horaires d'un employé pour une période donnée. Utiliser quand on te demande explicitement de générer une facture.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}}, "required": ["period_start", "period_end"]}},
     {"name": "read_recent_emails", "description": "Lire les courriels récents de la boîte de réception.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "folder": {"type": "string", "default": "INBOX"}}}},
     {"name": "generate_current_invoice_for_employee", "description": "Generer une facture brouillon pour la periode actuelle de facturation d'un employe.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "client_name": {"type": "string"}, "client_id": {"type": "integer"}}, "required": []}},
-    {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}}, "required": ["to", "subject", "body_text"]}},
+    {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Peut aussi servir pour un brouillon de masse avec CC ou CCI. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}, "cc": {"type": "string"}, "bcc": {"type": "string"}, "cc_list": {"type": "array", "items": {"type": "string"}}, "bcc_list": {"type": "array", "items": {"type": "string"}}}, "required": ["to", "subject", "body_text"]}},
     {"name": "send_email", "description": "Envoyer immediatement un courriel. Ne jamais utiliser pour un brouillon Gmail ou si l'utilisateur veut revoir le message avant envoi.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}}, "required": ["to", "subject", "body_html"]}},
     {"name": "create_schedule_shift", "description": "Creer un quart dans l'horaire. Les heures doivent etre en format 24 h HH:MM.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": ["date", "start", "end"]}},
     {"name": "update_schedule_shift", "description": "Modifier un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": []}},
@@ -101,6 +107,8 @@ RAW_TOOLS = [
     {"name": "analyze_recent_timesheet_documents", "description": "Analyser les dernieres FDT recues dans la boite paie et resumer les quarts, pauses, signatures et periodes detectees. Utiliser pour lister les vraies FDT recentes ou pour resumer les quarts/pauses par employe.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "unread_only": {"type": "boolean", "default": False}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}, "required": []}},
     {"name": "process_incoming_timesheet_emails", "description": "Traiter automatiquement la boite paie: filtrer les vraies FDT, les indexer au bon employe et preparer les brouillons de facture quand le niveau de confiance est suffisant.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 30}, "unread_only": {"type": "boolean", "default": False}}, "required": []}},
     {"name": "send_weekly_timesheet_reminder", "description": "Envoyer le rappel hebdomadaire de FDT avec la periode automatiquement calculee.", "input_schema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "required": []}},
+    {"name": "draft_weekly_timesheet_reminder", "description": "Creer un brouillon Gmail du rappel hebdomadaire de FDT avec les destinataires CCI configures et la periode automatiquement calculee. Utiliser quand l'utilisateur demande un test, un brouillon Gmail, ou veut verifier le rendu avant envoi.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "get_automation_config", "description": "Retourner la configuration des taches automatiques du dimanche: jour, heure, fuseau horaire, courriel d'envoi et destinataires CCI du rappel FDT.", "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}, "required": []}},
     {"name": "get_timesheet_documents_summary", "description": "Obtenir un resume des FDT et documents regroupes par semaine ou par mois.", "input_schema": {"type": "object", "properties": {"group_by": {"type": "string", "enum": ["week", "month"]}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}, "required": []}},
     {"name": "get_accommodation_documents_summary", "description": "Obtenir un resume des hebergements et documents regroupes par semaine ou par mois avec le total $.", "input_schema": {"type": "object", "properties": {"group_by": {"type": "string", "enum": ["week", "month"]}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}, "required": []}},
     {"name": "get_business_info", "description": "Obtenir les informations business.", "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}}},
@@ -244,6 +252,23 @@ def _apply_schedule_time_guard(name: str, input_data: dict, user_message: str):
     if len(explicit_times) > 1 and not guarded.get("current_end"):
         guarded["current_end"] = explicit_times[1]
     return guarded
+
+
+def _parse_recipient_input(*values):
+    raw_chunks = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            raw_chunks.extend(str(item or "").strip() for item in value if str(item or "").strip())
+        else:
+            raw_chunks.append(str(value or "").strip())
+    recipients = []
+    for _, email in getaddresses(raw_chunks):
+        normalized = (email or "").strip()
+        if normalized and normalized not in recipients:
+            recipients.append(normalized)
+    return recipients
 
 async def _find_employee(db: AsyncSession, employee_id=None, employee_name=None):
     if employee_id:
@@ -729,6 +754,8 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             await _send_email(input_data['to'], input_data['subject'], input_data['body_html'])
             return f"Courriel envoyé à {input_data['to']}: {input_data['subject']}"
         if name == 'create_email_draft':
+            cc_emails = _parse_recipient_input(input_data.get('cc'), input_data.get('cc_list'))
+            bcc_emails = _parse_recipient_input(input_data.get('bcc'), input_data.get('bcc_list'))
             draft = await create_billing_gmail_draft(
                 db,
                 to_email=input_data['to'],
@@ -738,6 +765,8 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 thread_id=input_data.get('thread_id', ''),
                 in_reply_to=input_data.get('in_reply_to', ''),
                 references=input_data.get('references', ''),
+                cc_emails=cc_emails,
+                bcc_emails=bcc_emails,
             )
             if not draft:
                 return "Le compte Gmail de facturation n'est pas connecte. Clique 'Reconnecter Gmail' dans Facturation pour brancher paie@soins-expert-plus.com."
@@ -1074,6 +1103,11 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 force=bool(input_data.get('force')),
             )
             return json.dumps(result, ensure_ascii=False)
+        if name == 'draft_weekly_timesheet_reminder':
+            result = await draft_weekly_timesheet_reminder(triggered_by="chatbot")
+            return json.dumps(result, ensure_ascii=False)
+        if name == 'get_automation_config':
+            return json.dumps(get_automation_config(), ensure_ascii=False)
         if name == 'get_timesheet_documents_summary':
             emp = None
             if input_data.get('employee_id') or input_data.get('employee_name'):
@@ -1123,6 +1157,30 @@ def _detect_prompt(message: str):
     if any(kw in m for kw in ['candidat', 'recrutement', 'besoin', 'soumission', 'disponib', 'assignation', 'placement']):
         return AGENT_RECRUTEMENT_PROMPT, 'recrutement'
     return GENERAL_PROMPT, 'general'
+
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter ou surveiller les courriels entrants et preparer les brouillons, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements, horaires et FDT. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie, l'indexation de FDT recues, le traitement automatique des courriels entrants, la generation d'une facture, une conciliation FDT-facture ou l'envoi du rappel hebdomadaire de FDT, execute l'action demandee puis resume le resultat. Agis comme un commis de facturation prudent: ignore les pieces jointes qui ne sont pas pertinentes et dis clairement quand une verification visuelle reste necessaire. Pour lister les dernieres vraies FDT recues ou analyser les quarts, pauses et signatures visibles, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Quand l'utilisateur demande un niveau de confiance, utilise reconcile_timesheet_invoice et cite clairement le niveau eleve, moyen ou faible. Quand l'utilisateur demande de traiter ou surveiller les courriels entrants, utilise process_incoming_timesheet_emails. Quand l'utilisateur demande un rappel hebdomadaire en brouillon Gmail ou un test d'envoi de masse en brouillon, utilise draft_weekly_timesheet_reminder. Quand l'utilisateur demande le jour, l'heure, le fuseau horaire ou les destinataires du rappel du dimanche, utilise get_automation_config. Quand l'utilisateur demande un resume documentaire par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+
+
+def _detect_prompt(message: str):
+    m = _norm(message)
+    facturation_keywords = [
+        'factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impay', 'conciliation',
+        'courriel', 'courriels', 'email', 'emails', 'gmail', 'brouillon', 'draft',
+        'hebergement', 'rappel', 'dimanche', 'hebdomadaire', 'automatisation', 'automation',
+        'document', 'documents', 'piece jointe', 'pieces jointes', 'signature', 'signer',
+        'pause', 'pauses', 'visible', 'visibles', 'pdf', 'jpg', 'jpeg', 'cci', 'bcc'
+    ]
+    recrutement_keywords = [
+        'candidat', 'recrutement', 'besoin', 'soumission', 'disponib', 'assignation',
+        'placement', 'horaire', 'quart', 'quarts'
+    ]
+    if any(kw in m for kw in facturation_keywords):
+        return AGENT_FACTURATION_PROMPT, 'facturation'
+    if any(kw in m for kw in recrutement_keywords):
+        return AGENT_RECRUTEMENT_PROMPT, 'recrutement'
+    return GENERAL_PROMPT, 'general'
+
 
 def _history_to_input(history, user_message):
     items = []

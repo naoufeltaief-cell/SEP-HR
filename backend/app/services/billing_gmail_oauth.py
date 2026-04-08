@@ -629,6 +629,8 @@ async def create_billing_gmail_draft(
     thread_id: str = "",
     in_reply_to: str = "",
     references: str = "",
+    cc_emails: Optional[list[str]] = None,
+    bcc_emails: Optional[list[str]] = None,
 ) -> Optional[dict]:
     conn = await get_billing_gmail_connection(db)
     if not conn or not conn.is_active or not conn.refresh_token:
@@ -642,6 +644,8 @@ async def create_billing_gmail_draft(
         body_html=body_html,
         in_reply_to=in_reply_to,
         references=references,
+        cc_emails=cc_emails,
+        bcc_emails=bcc_emails,
     )
     payload = {"message": {"raw": raw}}
     if thread_id:

@@ -4,8 +4,8 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 from ..database import get_db
-from ..models.models import Accommodation, AccommodationAttachment, new_id
-from ..models.schemas import AccommodationCreate, AccommodationOut
+from ..models.models import Accommodation, AccommodationAttachment, Employee, new_id
+from ..models.schemas import AccommodationCreate, AccommodationOut, AccommodationUpdate
 from ..services.auth_service import require_admin
 
 router = APIRouter()
@@ -38,6 +38,34 @@ async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(r
 async def create_accommodation(data: AccommodationCreate, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     accom = Accommodation(id=new_id(), **data.model_dump())
     db.add(accom)
+    await db.commit()
+    await db.refresh(accom)
+    return AccommodationOut.model_validate(accom)
+
+
+@router.put("/{aid}")
+async def update_accommodation(
+    aid: str,
+    data: AccommodationUpdate,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(select(Accommodation).where(Accommodation.id == aid))
+    accom = result.scalar_one_or_none()
+    if not accom:
+        raise HTTPException(status_code=404, detail="Hébergement introuvable")
+
+    payload = data.model_dump(exclude_unset=True)
+    employee_id = payload.get("employee_id")
+    if employee_id is not None:
+        employee_result = await db.execute(select(Employee).where(Employee.id == employee_id))
+        employee = employee_result.scalar_one_or_none()
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employé introuvable")
+
+    for field, value in payload.items():
+        setattr(accom, field, value)
+
     await db.commit()
     await db.refresh(accom)
     return AccommodationOut.model_validate(accom)

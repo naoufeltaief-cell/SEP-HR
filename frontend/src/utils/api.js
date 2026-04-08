@@ -167,6 +167,7 @@ class ApiClient {
 
   getAccommodations() { return this.get('/accommodations/'); }
   createAccommodation(data) { return this.post('/accommodations/', data); }
+  updateAccommodation(id, data) { return this.put(`/accommodations/${id}`, data); }
   deleteAccommodation(id) { return this.del(`/accommodations/${id}`); }
   async uploadAccommodationAttachment(accommodationId, file, category = 'hebergement', description = '') {
     const formData = new FormData();

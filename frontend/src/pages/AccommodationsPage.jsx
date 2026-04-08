@@ -168,6 +168,21 @@ export default function AccommodationsPage({ toast }) {
     });
   };
 
+  const openEdit = async (accommodation) => {
+    setModalAttachments([]);
+    setModal({
+      id: accommodation.id,
+      employee_id: String(accommodation.employee_id || ''),
+      total_cost: Number(accommodation.total_cost || 0),
+      start_date: accommodation.start_date || '',
+      end_date: accommodation.end_date || '',
+      days_worked: Number(accommodation.days_worked || 0),
+      cost_per_day: Number(accommodation.cost_per_day || 0),
+      notes: accommodation.notes || '',
+    });
+    await loadAttachments(accommodation.id, { syncModal: true });
+  };
+
   const toggleExpand = async (accommodationId) => {
     const nextExpanded = !expandedRows[accommodationId];
     setExpandedRows((prev) => ({ ...prev, [accommodationId]: nextExpanded }));
@@ -193,10 +208,6 @@ export default function AccommodationsPage({ toast }) {
   };
 
   const saveAccommodation = async () => {
-    if (modal?.id) {
-      toast?.("L'hebergement est deja enregistre. Ajoutez maintenant les documents necessaires.");
-      return;
-    }
     if (!modal.employee_id || !modal.start_date || !modal.end_date || !modal.total_cost) {
       toast?.('Remplir tous les champs obligatoires');
       return;
@@ -210,21 +221,28 @@ export default function AccommodationsPage({ toast }) {
 
     const costPerDay = Math.round((Number(modal.total_cost) / daysWorked) * 100) / 100;
     try {
-      const created = await api.createAccommodation({
+      const payload = {
         ...modal,
         employee_id: Number(modal.employee_id),
         days_worked: daysWorked,
         cost_per_day: costPerDay,
-      });
-      toast?.(`Hebergement ajoute - ${fmtMoney(costPerDay)}/jour x ${daysWorked} jour(s)`);
+      };
+      const saved = modal.id
+        ? await api.updateAccommodation(modal.id, payload)
+        : await api.createAccommodation(payload);
+      toast?.(
+        modal.id
+          ? `Hebergement mis a jour - ${fmtMoney(costPerDay)}/jour x ${daysWorked} jour(s)`
+          : `Hebergement ajoute - ${fmtMoney(costPerDay)}/jour x ${daysWorked} jour(s)`
+      );
       setModal((prev) => ({
         ...prev,
-        id: created.id,
+        id: saved.id,
         days_worked: daysWorked,
         cost_per_day: costPerDay,
       }));
       await reload();
-      await loadAttachments(created.id, { syncModal: true });
+      await loadAttachments(saved.id, { syncModal: true });
     } catch (err) {
       toast?.(`Erreur: ${err.message}`);
     }
@@ -363,6 +381,9 @@ export default function AccommodationsPage({ toast }) {
                   {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   Details
                 </button>
+                <button className="btn btn-outline btn-sm" onClick={() => openEdit(accommodation)}>
+                  Lier employe
+                </button>
                 <button className="btn btn-outline btn-sm" style={{ color: 'var(--red)' }} onClick={() => deleteAccommodation(accommodation.id)}>
                   <Trash2 size={14} /> Supprimer
                 </button>
@@ -459,7 +480,7 @@ export default function AccommodationsPage({ toast }) {
       })}
 
       {modal && (
-        <Modal title="Ajouter un hebergement" onClose={() => setModal(null)}>
+        <Modal title={modal.id ? "Modifier / lier un hebergement" : "Ajouter un hebergement"} onClose={() => setModal(null)}>
           <div className="field">
             <label>Employe</label>
             <select
@@ -542,9 +563,8 @@ export default function AccommodationsPage({ toast }) {
               className="btn btn-primary"
               style={{ flex: 1, justifyContent: 'center' }}
               onClick={saveAccommodation}
-              disabled={!!modal.id}
             >
-              {modal.id ? 'Hebergement enregistre' : "Ajouter l'hebergement"}
+              {modal.id ? "Enregistrer les changements" : "Ajouter l'hebergement"}
             </button>
             <button className="btn btn-outline" style={{ flex: 1, justifyContent: 'center' }} onClick={() => setModal(null)}>
               Fermer

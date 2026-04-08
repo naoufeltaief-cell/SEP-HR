@@ -253,6 +253,15 @@ class AccommodationCreate(BaseModel):
     cost_per_day: float = 0
     notes: str = ""
 
+class AccommodationUpdate(BaseModel):
+    employee_id: int | None = None
+    total_cost: float | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    days_worked: int | None = None
+    cost_per_day: float | None = None
+    notes: str | None = None
+
 class AccommodationOut(BaseModel):
     id: str
     employee_id: int

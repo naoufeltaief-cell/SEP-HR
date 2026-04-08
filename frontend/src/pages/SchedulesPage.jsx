@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { Suspense, lazy, useState, useEffect, useCallback, useMemo } from "react";
 import api from "../utils/api";
 import {
   fmtDay,
@@ -10,8 +10,6 @@ import {
 } from "../utils/helpers";
 import { Avatar, Modal } from "../components/UI";
 import ScheduleApprovalPanel from "../components/ScheduleApprovalPanel";
-import ScheduleComposerModal from "../components/ScheduleComposerModal";
-import EmployeeDossierModal from "../components/EmployeeDossierModal";
 import {
   ChevronLeft,
   ChevronRight,
@@ -27,6 +25,8 @@ import {
 } from "lucide-react";
 
 const ApprovalPanel = ScheduleApprovalPanel;
+const ScheduleComposerModal = lazy(() => import("../components/ScheduleComposerModal"));
+const EmployeeDossierModal = lazy(() => import("../components/EmployeeDossierModal"));
 
 const MONTHS_FULL = [
   "Janvier",
@@ -1783,27 +1783,35 @@ export default function SchedulesPage({ toast, onNavigate }) {
           </tbody>
         </table>
       </div>
-      <ScheduleComposerModal
-        modal={modal}
-        employees={employees}
-        clients={clients}
-        schedules={schedules}
-        catalogItems={scheduleCatalogItems}
-        onClose={() => setModal(null)}
-        onChangeField={updateModalField}
-        onCreateCatalogItem={createScheduleCatalogItem}
-        onSave={saveShift}
-        onDelete={deleteShift}
-      />
-      <EmployeeDossierModal
-        employeeId={employeeDossierId}
-        clients={clients}
-        schedules={schedules}
-        visibleDates={viewISOs}
-        onClose={() => setEmployeeDossierId(null)}
-        onNavigate={onNavigate}
-        toast={toast}
-      />
+      {(modal || employeeDossierId) && (
+        <Suspense fallback={null}>
+          {modal ? (
+            <ScheduleComposerModal
+              modal={modal}
+              employees={employees}
+              clients={clients}
+              schedules={schedules}
+              catalogItems={scheduleCatalogItems}
+              onClose={() => setModal(null)}
+              onChangeField={updateModalField}
+              onCreateCatalogItem={createScheduleCatalogItem}
+              onSave={saveShift}
+              onDelete={deleteShift}
+            />
+          ) : null}
+          {employeeDossierId ? (
+            <EmployeeDossierModal
+              employeeId={employeeDossierId}
+              clients={clients}
+              schedules={schedules}
+              visibleDates={viewISOs}
+              onClose={() => setEmployeeDossierId(null)}
+              onNavigate={onNavigate}
+              toast={toast}
+            />
+          ) : null}
+        </Suspense>
+      )}
 
       {/* ── Import Modal ── */}
       <Modal

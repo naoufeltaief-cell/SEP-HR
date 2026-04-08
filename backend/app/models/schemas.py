@@ -63,7 +63,39 @@ class NoteCreate(BaseModel):
     author: str = "Admin"
 
 
+class EmployeeDocumentOut(BaseModel):
+    id: int
+    employee_id: int
+    filename: str
+    original_filename: str
+    file_type: str
+    file_size: int
+    category: str
+    description: str
+    uploaded_by: str
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
 # ── Client ──
+class ScheduleCatalogItemCreate(BaseModel):
+    kind: str
+    label: str
+
+
+class ScheduleCatalogItemOut(BaseModel):
+    id: int
+    kind: str
+    label: str
+    created_by: str
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
 class ClientCreate(BaseModel):
     name: str
     address: str = ""

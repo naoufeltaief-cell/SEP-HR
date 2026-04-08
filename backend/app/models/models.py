@@ -74,6 +74,7 @@ class Employee(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     notes = relationship("EmployeeNote", back_populates="employee", order_by="desc(EmployeeNote.created_at)")
+    documents = relationship("EmployeeDocument", back_populates="employee", cascade="all, delete-orphan", order_by="desc(EmployeeDocument.created_at)")
     schedules = relationship("Schedule", back_populates="employee")
 
 
@@ -85,6 +86,34 @@ class EmployeeNote(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     author = Column(String, default="Admin")
     employee = relationship("Employee", back_populates="notes")
+
+
+class EmployeeDocument(Base):
+    __tablename__ = "employee_documents"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True)
+    filename = Column(String(255), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    file_type = Column(String(50), nullable=False)
+    file_size = Column(Integer, default=0)
+    file_data = Column(LargeBinary, nullable=False)
+    category = Column(String(50), default="document")
+    description = Column(Text, default="")
+    uploaded_by = Column(String(255), default="admin")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    employee = relationship("Employee", back_populates="documents")
+
+
+class ScheduleCatalogItem(Base):
+    __tablename__ = "schedule_catalog_items"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kind = Column(String(32), nullable=False, index=True)
+    label = Column(String(255), nullable=False)
+    created_by = Column(String(255), default="admin")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint("kind", "label", name="uq_schedule_catalog_kind_label"),
+    )
 
 
 class Client(Base):

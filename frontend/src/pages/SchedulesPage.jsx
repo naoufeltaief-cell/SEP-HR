@@ -200,6 +200,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [filterText, setFilterText] = useState("");
   const [modal, setModal] = useState(null);
   const [employeeDossierId, setEmployeeDossierId] = useState(null);
+  const [scheduleCatalogItems, setScheduleCatalogItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [approvals, setApprovals] = useState([]);
   const [expandedEmp, setExpandedEmp] = useState(null);
@@ -217,16 +218,18 @@ export default function SchedulesPage({ toast, onNavigate }) {
 
   const reload = useCallback(async () => {
     try {
-      const [scheds, emps, cls, reviews, legacyApprovals] = await Promise.all([
+      const [scheds, emps, cls, reviews, legacyApprovals, catalogItems] = await Promise.all([
         api.getSchedules(),
         api.getEmployees(),
         api.getClients(),
         api.getScheduleReviews().catch(() => []),
         api.getApprovals().catch(() => []),
+        api.getScheduleCatalogItems().catch(() => []),
       ]);
       setSchedules(scheds || []);
       setEmployees(emps || []);
       setClients(cls || []);
+      setScheduleCatalogItems(catalogItems || []);
       setApprovals(mergeApprovalLists(reviews || [], legacyApprovals || []));
     } catch (err) {
       toast?.("Erreur: " + err.message);
@@ -584,6 +587,26 @@ export default function SchedulesPage({ toast, onNavigate }) {
       toast?.("Erreur: " + err.message);
     }
   };
+
+  const createScheduleCatalogItem = useCallback(
+    async (kind, label) => {
+      const created = await api.createScheduleCatalogItem(kind, label);
+      setScheduleCatalogItems((prev) => {
+        const existing = (prev || []).find(
+          (item) =>
+            String(item.kind) === String(created.kind) &&
+            String(item.label).trim().toLowerCase() ===
+              String(created.label).trim().toLowerCase(),
+        );
+        if (existing) return prev;
+        return [...(prev || []), created].sort((a, b) =>
+          `${a.kind}:${a.label}`.localeCompare(`${b.kind}:${b.label}`),
+        );
+      });
+      return created;
+    },
+    [],
+  );
   const toggleBillingPanel = async (
     empId,
     clientId,
@@ -1765,8 +1788,10 @@ export default function SchedulesPage({ toast, onNavigate }) {
         employees={employees}
         clients={clients}
         schedules={schedules}
+        catalogItems={scheduleCatalogItems}
         onClose={() => setModal(null)}
         onChangeField={updateModalField}
+        onCreateCatalogItem={createScheduleCatalogItem}
         onSave={saveShift}
         onDelete={deleteShift}
       />

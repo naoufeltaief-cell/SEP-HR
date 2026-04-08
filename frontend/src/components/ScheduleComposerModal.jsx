@@ -119,10 +119,14 @@ function SearchableSelect({
   allLabel,
   allOptions,
   onSelect,
+  onCreate,
   disabled = false,
+  allowCreate = false,
+  createLabel = "Ajouter",
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [creating, setCreating] = useState(false);
   const rootRef = useRef(null);
 
   useEffect(() => {
@@ -163,6 +167,15 @@ function SearchableSelect({
     return source.filter((item) => item.label.toLowerCase().includes(q));
   }, [allOptions, assignedOptions, query]);
 
+  const canCreate = useMemo(() => {
+    if (!allowCreate || !query.trim()) return false;
+    const normalizedQuery = query.trim().toLowerCase();
+    const combined = [...(assignedOptions || []), ...(allOptions || [])];
+    return !combined.some(
+      (item) => String(item.label || "").trim().toLowerCase() === normalizedQuery,
+    );
+  }, [allowCreate, allOptions, assignedOptions, query]);
+
   return (
     <div ref={rootRef} style={{ position: "relative" }}>
       <div
@@ -175,7 +188,7 @@ function SearchableSelect({
       >
         <div
           style={{
-            color: "#9a8cb3",
+            color: "var(--brand-m)",
             display: "flex",
             justifyContent: "center",
           }}
@@ -189,26 +202,26 @@ function SearchableSelect({
           style={{
             width: "100%",
             background: "#fff",
-            border: "1px solid #dacff0",
+            border: "1px solid var(--border)",
             borderRadius: 14,
             padding: "12px 14px",
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
             cursor: disabled ? "default" : "pointer",
-            color: "#2b2450",
-            boxShadow: open ? "0 0 0 2px rgba(167, 109, 255, 0.12)" : "none",
+            color: "var(--text)",
+            boxShadow: open ? "0 0 0 2px rgba(42,123,136,.12)" : "none",
           }}
         >
           <div style={{ textAlign: "left" }}>
-            <div style={{ fontSize: 12, color: "#7c7394", marginBottom: 2 }}>
+            <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 2 }}>
               {label}
             </div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>
               {selected?.label || placeholder}
             </div>
           </div>
-          <ChevronDown size={18} style={{ color: "#8c75bd" }} />
+          <ChevronDown size={18} style={{ color: "var(--brand-m)" }} />
         </button>
       </div>
 
@@ -221,8 +234,8 @@ function SearchableSelect({
             top: "calc(100% + 8px)",
             background: "#fff",
             borderRadius: 16,
-            border: "1px solid #e2d8f4",
-            boxShadow: "0 18px 45px rgba(68, 43, 102, 0.18)",
+            border: "1px solid var(--border)",
+            boxShadow: "0 18px 45px rgba(27, 94, 104, 0.18)",
             padding: 12,
             zIndex: 30,
           }}
@@ -234,7 +247,7 @@ function SearchableSelect({
                 position: "absolute",
                 left: 12,
                 top: 11,
-                color: "#9c90b6",
+                color: "var(--text3)",
               }}
             />
             <input
@@ -254,9 +267,9 @@ function SearchableSelect({
                   style={{
                     fontSize: 11,
                     fontWeight: 700,
-                    color: "#564675",
+                    color: "var(--brand-d)",
                     padding: "6px 8px",
-                    background: "#f7f2ff",
+                    background: "var(--brand-xl)",
                     borderRadius: 10,
                   }}
                 >
@@ -277,7 +290,7 @@ function SearchableSelect({
                   >
                     <span>{option.label}</span>
                     {option.meta && (
-                      <span style={{ fontSize: 11, color: "#8f82a9" }}>
+                      <span style={{ fontSize: 11, color: "var(--text3)" }}>
                         {option.meta}
                       </span>
                     )}
@@ -292,7 +305,7 @@ function SearchableSelect({
                   style={{
                     fontSize: 11,
                     fontWeight: 700,
-                    color: "#564675",
+                    color: "var(--brand-d)",
                     padding: "10px 8px 6px",
                     background: "transparent",
                   }}
@@ -314,7 +327,7 @@ function SearchableSelect({
                   >
                     <span>{option.label}</span>
                     {option.meta && (
-                      <span style={{ fontSize: 11, color: "#8f82a9" }}>
+                      <span style={{ fontSize: 11, color: "var(--text3)" }}>
                         {option.meta}
                       </span>
                     )}
@@ -323,16 +336,56 @@ function SearchableSelect({
               </>
             )}
 
+            {canCreate && (
+              <button
+                type="button"
+                disabled={creating}
+                onClick={async () => {
+                  try {
+                    setCreating(true);
+                    const fallbackOption = {
+                      value: query.trim(),
+                      label: query.trim(),
+                    };
+                    const created =
+                      (await onCreate?.(query.trim(), fallbackOption)) ||
+                      fallbackOption;
+                    onSelect(created);
+                    setOpen(false);
+                    setQuery("");
+                  } finally {
+                    setCreating(false);
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  border: "1px dashed var(--brand-m)",
+                  background: "var(--brand-xl)",
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color: "var(--brand-d)",
+                  textAlign: "left",
+                  marginTop: 8,
+                  opacity: creating ? 0.7 : 1,
+                }}
+              >
+                {creating ? "Ajout..." : `${createLabel} "${query.trim()}"`}
+              </button>
+            )}
+
             {filteredAssigned.length === 0 && filteredAll.length === 0 && (
               <div
                 style={{
                   padding: "18px 10px",
                   fontSize: 13,
-                  color: "#8f82a9",
+                  color: "var(--text3)",
                   textAlign: "center",
                 }}
               >
-                Aucun resultat
+                {canCreate ? "Tu peux ajouter cette valeur ci-dessus." : "Aucun resultat"}
               </div>
             )}
           </div>
@@ -346,7 +399,7 @@ function optionRowStyle(active) {
   return {
     width: "100%",
     border: "none",
-    background: active ? "#f5efff" : "transparent",
+    background: active ? "var(--brand-xl)" : "transparent",
     borderRadius: 10,
     padding: "10px 10px",
     display: "flex",
@@ -355,7 +408,7 @@ function optionRowStyle(active) {
     gap: 12,
     cursor: "pointer",
     fontSize: 14,
-    color: "#2e2a45",
+    color: "var(--text)",
     textAlign: "left",
   };
 }
@@ -365,8 +418,10 @@ export default function ScheduleComposerModal({
   employees,
   clients,
   schedules,
+  catalogItems = [],
   onClose,
   onChangeField,
+  onCreateCatalogItem,
   onSave,
   onDelete,
 }) {
@@ -393,9 +448,13 @@ export default function ScheduleComposerModal({
       .filter(Boolean)
       .map((label) => ({ value: label, label })),
   );
+  const catalogPositions = (catalogItems || [])
+    .filter((item) => item.kind === "position")
+    .map((item) => ({ value: item.label, label: item.label }));
   const allPositions = dedupeOptions(
     [
       ...DEFAULT_POSITIONS,
+      ...catalogPositions.map((item) => item.label),
       ...employees.map((employee) => employee.position),
       modal.data.positionLabel,
     ]
@@ -426,9 +485,15 @@ export default function ScheduleComposerModal({
       .filter(Boolean)
       .map((label) => ({ value: label, label })),
   );
+  const catalogLocations = (catalogItems || [])
+    .filter((item) => item.kind === "location")
+    .map((item) => ({ value: item.label, label: item.label }));
   const allLocations = dedupeOptions(
-    schedules
-      .map((shift) => shift.location)
+    catalogLocations
+      .map((item) => item.label)
+      .concat(
+        schedules.map((shift) => shift.location)
+      )
       .concat(clients.map((client) => client.name))
       .filter(Boolean)
       .map((label) => {
@@ -456,7 +521,7 @@ export default function ScheduleComposerModal({
         position: "fixed",
         inset: 0,
         zIndex: 1400,
-        background: "rgba(24, 15, 36, 0.46)",
+        background: "rgba(27, 94, 104, 0.28)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -470,14 +535,14 @@ export default function ScheduleComposerModal({
           width: "min(940px, 96vw)",
           maxHeight: "92vh",
           overflowY: "auto",
-          background: "#f7f5fb",
+          background: "#f8fcfc",
           borderRadius: 26,
-          boxShadow: "0 32px 90px rgba(28, 17, 44, 0.34)",
+          boxShadow: "0 32px 90px rgba(27, 94, 104, 0.24)",
         }}
       >
         <div
           style={{
-            background: "linear-gradient(135deg, #8c5af4, #ba6cff)",
+            background: "linear-gradient(135deg, var(--brand-d), var(--brand))",
             color: "#fff",
             padding: "18px 22px",
             display: "flex",
@@ -527,7 +592,7 @@ export default function ScheduleComposerModal({
               gridTemplateColumns: "repeat(24, minmax(0, 1fr))",
               gap: 0,
               background: "#fff",
-              border: "1px solid #e4dcf3",
+              border: "1px solid var(--border)",
               borderRadius: 12,
               overflow: "hidden",
               marginBottom: 18,
@@ -543,14 +608,14 @@ export default function ScheduleComposerModal({
                   style={{
                     borderRight:
                       index < TIMELINE_HOURS.length - 1
-                        ? "1px solid #eee8f8"
+                        ? "1px solid #e3f0f2"
                         : "none",
                   }}
                 >
                   <div
                     style={{
                       fontSize: 11,
-                      color: "#9972ef",
+                      color: "var(--brand-m)",
                       textAlign: "center",
                       paddingTop: 6,
                     }}
@@ -563,7 +628,7 @@ export default function ScheduleComposerModal({
                         height: 10,
                         margin: "0 2px",
                         borderRadius: 999,
-                        background: active ? "#39c5cc" : "transparent",
+                        background: active ? "var(--brand)" : "transparent",
                       }}
                     />
                   </div>
@@ -576,7 +641,7 @@ export default function ScheduleComposerModal({
             style={{
               background: "#fff",
               borderRadius: 22,
-              border: "1px solid #ece4f7",
+              border: "1px solid var(--border)",
               padding: 18,
             }}
           >
@@ -700,9 +765,9 @@ export default function ScheduleComposerModal({
                               );
                             }}
                             style={{
-                              border: `1px solid ${active ? "#a76dff" : "#ddd4ef"}`,
-                              background: active ? "#f4ebff" : "#fff",
-                              color: active ? "#7d4ce2" : "#5f5675",
+                              border: `1px solid ${active ? "var(--brand)" : "var(--border)"}`,
+                              background: active ? "var(--brand-xl)" : "#fff",
+                              color: active ? "var(--brand-d)" : "var(--text2)",
                               borderRadius: 999,
                               padding: "7px 12px",
                               fontSize: 12,
@@ -766,41 +831,68 @@ export default function ScheduleComposerModal({
                   gap: 14,
                 }}
               >
-                <SearchableSelect
-                  label="Position"
-                  value={modal.data.positionLabel}
-                  placeholder="Selectionner une position"
-                  icon={BriefcaseBusiness}
-                  assignedLabel="Positions assignees"
-                  assignedOptions={assignedPositions}
-                  allLabel="Toutes les positions"
-                  allOptions={allPositions}
-                  onSelect={(option) => {
-                    onChangeField("positionLabel", option.value);
-                    onChangeField(
-                      "billableRate",
-                      estimateRateFromPosition(
-                        option.label,
-                        modal.data.billableRate,
-                      ),
-                    );
-                  }}
-                />
-                <SearchableSelect
-                  label="Lieu"
-                  value={modal.data.location}
-                  placeholder="Selectionnez un lieu"
-                  icon={MapPin}
-                  assignedLabel="Lieux assignes"
-                  assignedOptions={assignedLocations}
-                  allLabel="Tous les lieux"
-                  allOptions={allLocations}
-                  onSelect={(option) => {
-                    onChangeField("location", option.label);
-                    if (option.clientId)
-                      onChangeField("clientId", option.clientId);
-                  }}
-                />
+                  <SearchableSelect
+                    label="Position"
+                    value={modal.data.positionLabel}
+                    placeholder="Selectionner une position"
+                    icon={BriefcaseBusiness}
+                    assignedLabel="Positions assignees"
+                    assignedOptions={assignedPositions}
+                    allLabel="Toutes les positions"
+                    allOptions={allPositions}
+                    allowCreate
+                    createLabel="Ajouter le poste"
+                    onCreate={async (label, fallbackOption) => {
+                      if (!onCreateCatalogItem) return fallbackOption;
+                      const created = await onCreateCatalogItem("position", label);
+                      return {
+                        value: created?.label || fallbackOption.value,
+                        label: created?.label || fallbackOption.label,
+                      };
+                    }}
+                    onSelect={(option) => {
+                      onChangeField("positionLabel", option.value);
+                      onChangeField(
+                        "billableRate",
+                        estimateRateFromPosition(
+                          option.label,
+                          modal.data.billableRate,
+                        ),
+                      );
+                      if (
+                        option.label &&
+                        option.label !== (selectedEmployee?.position || "")
+                      ) {
+                        onChangeField("applyPositionToEmployee", true);
+                      }
+                    }}
+                  />
+                  <SearchableSelect
+                    label="Lieu"
+                    value={modal.data.location}
+                    placeholder="Selectionnez un lieu"
+                    icon={MapPin}
+                    assignedLabel="Lieux assignes"
+                    assignedOptions={assignedLocations}
+                    allLabel="Tous les lieux"
+                    allOptions={allLocations}
+                    allowCreate
+                    createLabel="Ajouter le lieu"
+                    onCreate={async (label, fallbackOption) => {
+                      if (!onCreateCatalogItem) return fallbackOption;
+                      const created = await onCreateCatalogItem("location", label);
+                      return {
+                        value: created?.label || fallbackOption.value,
+                        label: created?.label || fallbackOption.label,
+                      };
+                    }}
+                    onSelect={(option) => {
+                      onChangeField("location", option.label);
+                      if (option.clientId) {
+                        onChangeField("clientId", option.clientId);
+                      }
+                    }}
+                  />
               </div>
 
               <div
@@ -838,7 +930,7 @@ export default function ScheduleComposerModal({
                       gap: 8,
                       alignItems: "center",
                       fontSize: 12,
-                      color: "#5f5675",
+                        color: "var(--text2)",
                     }}
                   >
                     <input
@@ -1007,7 +1099,7 @@ function FieldShell({ icon: Icon, children }) {
     >
       <div
         style={{
-          color: "#9a8cb3",
+          color: "var(--brand-m)",
           display: "flex",
           justifyContent: "center",
           paddingTop: 10,
@@ -1023,7 +1115,7 @@ function FieldShell({ icon: Icon, children }) {
 function LabeledInput({ label, suffix, ...props }) {
   return (
     <label style={{ display: "grid", gap: 6 }}>
-      <span style={{ fontSize: 12, color: "#7c7394" }}>{label}</span>
+      <span style={{ fontSize: 12, color: "var(--text3)" }}>{label}</span>
       <div style={{ position: "relative" }}>
         <input
           className="input"
@@ -1038,7 +1130,7 @@ function LabeledInput({ label, suffix, ...props }) {
               top: "50%",
               transform: "translateY(-50%)",
               fontSize: 12,
-              color: "#8d82a8",
+              color: "var(--text3)",
               fontWeight: 700,
             }}
           >
@@ -1053,7 +1145,7 @@ function LabeledInput({ label, suffix, ...props }) {
 function LabeledSelect({ label, value, onChange, options, placeholder }) {
   return (
     <label style={{ display: "grid", gap: 6 }}>
-      <span style={{ fontSize: 12, color: "#7c7394" }}>{label}</span>
+      <span style={{ fontSize: 12, color: "var(--text3)" }}>{label}</span>
       <select className="input" value={value} onChange={onChange}>
         <option value="">{placeholder}</option>
         {options.map((option) => (
@@ -1083,20 +1175,20 @@ function SelectButton({
       }}
     >
       <div
-        style={{ color: "#9a8cb3", display: "flex", justifyContent: "center" }}
+        style={{ color: "var(--brand-m)", display: "flex", justifyContent: "center" }}
       >
         <Icon size={22} />
       </div>
       <div
         style={{
           background: "#fff",
-          border: "1px solid #dacff0",
+          border: "1px solid var(--border)",
           borderRadius: 14,
           padding: "12px 14px",
           opacity: disabled ? 0.72 : 1,
         }}
       >
-        <div style={{ fontSize: 12, color: "#7c7394", marginBottom: 2 }}>
+        <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 2 }}>
           {label}
         </div>
         {customContent || (
@@ -1120,7 +1212,7 @@ function InfoRow({
       style={{
         background: "#fff",
         borderRadius: 18,
-        border: "1px solid #ece4f7",
+        border: "1px solid var(--border)",
         padding: "16px 18px",
         display: "grid",
         gridTemplateColumns: "28px 1fr auto",
@@ -1129,15 +1221,15 @@ function InfoRow({
       }}
     >
       <div
-        style={{ color: "#9a8cb3", display: "flex", justifyContent: "center" }}
+        style={{ color: "var(--brand-m)", display: "flex", justifyContent: "center" }}
       >
         <Icon size={22} />
       </div>
       <div>
-        <div style={{ fontWeight: 700, color: "#2b2450", marginBottom: 4 }}>
+        <div style={{ fontWeight: 700, color: "var(--brand-d)", marginBottom: 4 }}>
           {label}
         </div>
-        <div style={{ fontSize: 12, color: "#8d82a8", marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 10 }}>
           {helper}
         </div>
         {children}
@@ -1150,7 +1242,7 @@ function InfoRow({
             alignSelf: "start",
             border: "none",
             background: "transparent",
-            color: "#a76dff",
+            color: "var(--brand)",
             fontSize: 22,
             fontWeight: 700,
             cursor: "pointer",

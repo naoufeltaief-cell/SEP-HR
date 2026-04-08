@@ -1,11 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   CalendarDays,
+  Download,
+  FilePlus2,
   FileText,
   Info,
   MessageSquareText,
+  Paperclip,
   StickyNote,
-  UserCircle2,
+  Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import api from "../utils/api";
@@ -18,22 +22,158 @@ function SectionField({ label, value }) {
       <div
         style={{
           fontSize: 11,
-          color: "#8d82a8",
+          color: "var(--text3)",
           textTransform: "uppercase",
-          letterSpacing: ".03em",
+          letterSpacing: ".04em",
         }}
       >
         {label}
       </div>
-      <div style={{ fontSize: 14, color: "#2b2450", fontWeight: 600 }}>
+      <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 600 }}>
         {value || "-"}
       </div>
     </div>
   );
 }
 
-function formatShiftLine(shift) {
-  return `${shift.date} | ${shift.start}-${shift.end}`;
+function StatCard({ label, value, subtle = "" }) {
+  return (
+    <div
+      style={{
+        background: "#fff",
+        border: "1px solid var(--border)",
+        borderRadius: 16,
+        padding: "14px 16px",
+      }}
+    >
+      <div style={{ fontSize: 11, color: "var(--text3)", marginBottom: 6 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: "var(--brand-d)" }}>
+        {value}
+      </div>
+      {subtle ? (
+        <div style={{ fontSize: 12, color: "var(--text3)", marginTop: 4 }}>
+          {subtle}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function NavButton({ icon: Icon, active, label, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        border: "none",
+        borderRadius: 12,
+        background: active ? "var(--brand)" : "transparent",
+        color: active ? "#fff" : "var(--brand-d)",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 12px",
+        fontWeight: 700,
+        cursor: "pointer",
+        textAlign: "left",
+      }}
+    >
+      <Icon size={16} />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function DocumentRow({
+  title,
+  subtitle,
+  badge = "",
+  onDownload,
+  onDelete,
+  allowDelete = false,
+}) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr auto",
+        gap: 12,
+        alignItems: "center",
+        padding: "10px 12px",
+        borderRadius: 12,
+        background: "#fff",
+        border: "1px solid var(--border)",
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            flexWrap: "wrap",
+            marginBottom: 4,
+          }}
+        >
+          <div style={{ color: "var(--text)", fontWeight: 700 }}>{title}</div>
+          {badge ? (
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "var(--brand-d)",
+                background: "var(--brand-xl)",
+                borderRadius: 999,
+                padding: "2px 8px",
+              }}
+            >
+              {badge}
+            </span>
+          ) : null}
+        </div>
+        <div style={{ color: "var(--text3)", fontSize: 12 }}>{subtitle}</div>
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button type="button" className="btn btn-outline btn-sm" onClick={onDownload}>
+          <Download size={13} /> Telecharger
+        </button>
+        {allowDelete ? (
+          <button type="button" className="btn btn-outline btn-sm" onClick={onDelete}>
+            <Trash2 size={13} />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function EmptyPanel({ icon: Icon, title, subtitle }) {
+  return (
+    <div
+      style={{
+        border: "1px dashed var(--border)",
+        borderRadius: 14,
+        background: "#fff",
+        padding: 22,
+        color: "var(--text3)",
+        textAlign: "center",
+      }}
+    >
+      <Icon size={24} style={{ color: "var(--brand-m)", marginBottom: 10 }} />
+      <div style={{ fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>
+        {title}
+      </div>
+      <div style={{ fontSize: 13 }}>{subtitle}</div>
+    </div>
+  );
+}
+
+function formatShiftLine(shift, clientName) {
+  const location = shift.location ? ` | ${shift.location}` : "";
+  const client = clientName ? ` | ${clientName}` : "";
+  return `${shift.date} | ${shift.start}-${shift.end}${location}${client}`;
 }
 
 export default function EmployeeDossierModal({
@@ -48,36 +188,104 @@ export default function EmployeeDossierModal({
   const [detail, setDetail] = useState(null);
   const [timesheets, setTimesheets] = useState([]);
   const [accommodations, setAccommodations] = useState([]);
+  const [employeeDocuments, setEmployeeDocuments] = useState([]);
+  const [linkedDocuments, setLinkedDocuments] = useState([]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("info");
   const [noteText, setNoteText] = useState("");
+  const [documentFile, setDocumentFile] = useState(null);
+  const [documentDescription, setDocumentDescription] = useState("");
+  const [uploadKey, setUploadKey] = useState(0);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
 
   useEffect(() => {
     if (!employeeId) return undefined;
     let mounted = true;
+
     const load = async () => {
       setLoading(true);
       try {
-        const [employeeDetail, employeeTimesheets, allAccommodations] =
+        const [employeeDetail, employeeTimesheets, allAccommodations, extraDocuments] =
           await Promise.all([
             api.getEmployee(employeeId),
             api.getTimesheets({ employee_id: employeeId }),
             api.getAccommodations(),
+            api.getEmployeeDocuments(employeeId).catch(() => []),
           ]);
+
+        const employeeAccommodations = (allAccommodations || []).filter(
+          (item) => Number(item.employee_id) === Number(employeeId),
+        );
+
+        const [timesheetAttachmentGroups, accommodationAttachmentGroups] =
+          await Promise.all([
+            Promise.all(
+              (employeeTimesheets || []).slice(0, 8).map(async (item) => ({
+                sourceType: "timesheet",
+                sourceId: item.id,
+                sourceLabel: `FDT ${item.period_start} -> ${item.period_end}`,
+                attachments: await api.getTimesheetAttachments(item.id).catch(() => []),
+              })),
+            ),
+            Promise.all(
+              employeeAccommodations.slice(0, 8).map(async (item) => ({
+                sourceType: "accommodation",
+                sourceId: item.id,
+                sourceLabel: `Hebergement ${item.start_date} -> ${item.end_date}`,
+                attachments: await api
+                  .getAccommodationAttachments(item.id)
+                  .catch(() => []),
+              })),
+            ),
+          ]);
+
+        const linked = [
+          ...timesheetAttachmentGroups.flatMap((group) =>
+            (group.attachments || []).map((attachment) => ({
+              key: `timesheet-${group.sourceId}-${attachment.id}`,
+              kind: "timesheet",
+              sourceId: group.sourceId,
+              attachmentId: attachment.id,
+              title: attachment.original_filename || attachment.filename || "FDT",
+              subtitle: `${group.sourceLabel} | ${
+                attachment.created_at?.slice(0, 10) || "-"
+              }`,
+              badge: "FDT",
+              fallbackFilename:
+                attachment.original_filename || attachment.filename || "fdt",
+            })),
+          ),
+          ...accommodationAttachmentGroups.flatMap((group) =>
+            (group.attachments || []).map((attachment) => ({
+              key: `accommodation-${group.sourceId}-${attachment.id}`,
+              kind: "accommodation",
+              sourceId: group.sourceId,
+              attachmentId: attachment.id,
+              title:
+                attachment.original_filename || attachment.filename || "Hebergement",
+              subtitle: `${group.sourceLabel} | ${
+                attachment.created_at?.slice(0, 10) || "-"
+              }`,
+              badge: "Hebergement",
+              fallbackFilename:
+                attachment.original_filename || attachment.filename || "hebergement",
+            })),
+          ),
+        ];
+
         if (!mounted) return;
         setDetail(employeeDetail);
         setTimesheets(employeeTimesheets || []);
-        setAccommodations(
-          (allAccommodations || []).filter(
-            (item) => Number(item.employee_id) === Number(employeeId),
-          ),
-        );
+        setAccommodations(employeeAccommodations);
+        setEmployeeDocuments(extraDocuments || []);
+        setLinkedDocuments(linked);
       } catch (err) {
         toast?.("Erreur dossier employe: " + err.message);
       } finally {
         if (mounted) setLoading(false);
       }
     };
+
     load();
     return () => {
       mounted = false;
@@ -88,6 +296,7 @@ export default function EmployeeDossierModal({
     () => clients.find((item) => item.id === detail?.client_id)?.name || "",
     [clients, detail],
   );
+
   const employeeShifts = useMemo(
     () =>
       schedules.filter(
@@ -95,6 +304,7 @@ export default function EmployeeDossierModal({
       ),
     [employeeId, schedules],
   );
+
   const visibleHours = useMemo(
     () =>
       employeeShifts
@@ -102,32 +312,27 @@ export default function EmployeeDossierModal({
         .reduce((sum, shift) => sum + Number(shift.hours || 0), 0),
     [employeeShifts, visibleDates],
   );
+
   const totalHours = useMemo(
     () =>
       employeeShifts.reduce((sum, shift) => sum + Number(shift.hours || 0), 0),
     [employeeShifts],
   );
+
+  const totalAccommodation = useMemo(
+    () =>
+      accommodations.reduce((sum, item) => sum + Number(item.total_cost || 0), 0),
+    [accommodations],
+  );
+
   const upcomingShifts = useMemo(
     () =>
       [...employeeShifts]
         .sort((a, b) =>
           `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`),
         )
-        .slice(0, 12),
+        .slice(0, 14),
     [employeeShifts],
-  );
-  const attachmentTotals = useMemo(
-    () => ({
-      timesheets: timesheets.reduce(
-        (sum, item) => sum + Number(item.attachment_count || 0),
-        0,
-      ),
-      accommodations: accommodations.reduce(
-        (sum, item) => sum + Number(item.attachment_count || 0),
-        0,
-      ),
-    }),
-    [accommodations, timesheets],
   );
 
   const addNote = async () => {
@@ -143,6 +348,67 @@ export default function EmployeeDossierModal({
     }
   };
 
+  const uploadAdditionalDocument = async () => {
+    if (!detail?.id || !documentFile) {
+      toast?.("Selectionne un document a televerser");
+      return;
+    }
+    try {
+      setUploadingDocument(true);
+      await api.uploadEmployeeDocument(
+        detail.id,
+        documentFile,
+        "document",
+        documentDescription,
+      );
+      const refreshedDocuments = await api.getEmployeeDocuments(detail.id);
+      setEmployeeDocuments(refreshedDocuments || []);
+      setDocumentFile(null);
+      setDocumentDescription("");
+      setUploadKey((value) => value + 1);
+      toast?.("Document employe ajoute");
+      const refreshed = await api.getEmployee(detail.id);
+      setDetail(refreshed);
+    } catch (err) {
+      toast?.("Erreur document employe: " + err.message);
+    } finally {
+      setUploadingDocument(false);
+    }
+  };
+
+  const deleteAdditionalDocument = async (documentId) => {
+    if (!detail?.id || !documentId) return;
+    try {
+      await api.deleteEmployeeDocument(detail.id, documentId);
+      setEmployeeDocuments((prev) =>
+        prev.filter((item) => Number(item.id) !== Number(documentId)),
+      );
+      toast?.("Document supprime");
+    } catch (err) {
+      toast?.("Erreur suppression document: " + err.message);
+    }
+  };
+
+  const downloadLinkedDocument = async (item) => {
+    try {
+      if (item.kind === "timesheet") {
+        await api.downloadProtectedFile(
+          `/timesheets/${item.sourceId}/attachments/${item.attachmentId}`,
+          item.fallbackFilename,
+        );
+        return;
+      }
+      if (item.kind === "accommodation") {
+        await api.downloadProtectedFile(
+          `/accommodations/${item.sourceId}/attachments/${item.attachmentId}`,
+          item.fallbackFilename,
+        );
+      }
+    } catch (err) {
+      toast?.("Erreur telechargement: " + err.message);
+    }
+  };
+
   if (!employeeId) return null;
 
   return (
@@ -151,7 +417,7 @@ export default function EmployeeDossierModal({
         position: "fixed",
         inset: 0,
         zIndex: 1450,
-        background: "rgba(20, 16, 34, 0.42)",
+        background: "rgba(27, 94, 104, 0.22)",
         display: "flex",
         alignItems: "stretch",
         justifyContent: "center",
@@ -162,20 +428,20 @@ export default function EmployeeDossierModal({
       <div
         onClick={(event) => event.stopPropagation()}
         style={{
-          width: "min(1180px, 98vw)",
+          width: "min(1220px, 98vw)",
           maxHeight: "94vh",
           overflow: "hidden",
-          background: "#fbfaff",
+          background: "#f8fcfc",
           borderRadius: 24,
           display: "grid",
           gridTemplateColumns: "240px 1fr",
-          boxShadow: "0 28px 80px rgba(18, 14, 30, 0.28)",
+          boxShadow: "0 28px 80px rgba(27, 94, 104, 0.22)",
         }}
       >
         <aside
           style={{
-            background: "#f2effa",
-            borderRight: "1px solid #e7def4",
+            background: "var(--brand-xl)",
+            borderRight: "1px solid var(--border)",
             padding: 18,
             display: "grid",
             gridTemplateRows: "auto auto 1fr auto",
@@ -190,7 +456,7 @@ export default function EmployeeDossierModal({
                 border: "none",
                 background: "transparent",
                 cursor: "pointer",
-                color: "#8b7ca9",
+                color: "var(--brand-d)",
               }}
             >
               <X size={22} />
@@ -201,20 +467,20 @@ export default function EmployeeDossierModal({
             <Avatar
               name={detail?.name || "EMP"}
               size={62}
-              bg="#d9cef3"
-              color="#7a5ad1"
+              bg="var(--brand-l)"
+              color="var(--brand)"
             />
             <div
               style={{
                 fontWeight: 800,
                 fontSize: 18,
-                color: "#2b2450",
+                color: "var(--brand-d)",
                 marginTop: 10,
               }}
             >
               {detail?.name || "Chargement..."}
             </div>
-            <div style={{ fontSize: 13, color: "#8d82a8", marginTop: 4 }}>
+            <div style={{ fontSize: 13, color: "var(--text3)", marginTop: 4 }}>
               {detail?.position || "Poste a confirmer"}
             </div>
           </div>
@@ -266,476 +532,366 @@ export default function EmployeeDossierModal({
 
         <main style={{ overflowY: "auto", padding: 22 }}>
           {loading && !detail ? (
-            <div style={{ padding: 40, textAlign: "center", color: "#8d82a8" }}>
+            <div style={{ padding: 40, textAlign: "center", color: "var(--text3)" }}>
               Chargement du dossier employe...
             </div>
-          ) : (
-            <>
-              {tab === "info" && (
-                <div style={{ display: "grid", gap: 18 }}>
-                  <div
-                    style={{ fontSize: 22, fontWeight: 800, color: "#2b2450" }}
-                  >
-                    Dossier de l'employe
-                  </div>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-                      gap: 12,
-                    }}
-                  >
-                    <StatCard
-                      label="Heures visibles"
-                      value={`${visibleHours.toFixed(2)}h`}
-                    />
-                    <StatCard
-                      label="Heures totales"
-                      value={`${totalHours.toFixed(2)}h`}
-                    />
-                    <StatCard label="FDT" value={String(timesheets.length)} />
-                    <StatCard
-                      label="Hebergement"
-                      value={String(accommodations.length)}
-                    />
-                  </div>
+          ) : null}
 
-                  <div
-                    style={{
-                      background: "#fff",
-                      border: "1px solid #ece4f7",
-                      borderRadius: 18,
-                      padding: 18,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontWeight: 700,
-                        color: "#2b2450",
-                        marginBottom: 14,
-                      }}
-                    >
-                      Informations generales
-                    </div>
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                        gap: 18,
-                      }}
-                    >
-                      <SectionField label="Nom" value={detail?.name} />
-                      <SectionField label="Poste" value={detail?.position} />
-                      <SectionField
-                        label="Client associe"
-                        value={clientName || "Aucun"}
-                      />
-                      <SectionField
-                        label="Courriel"
-                        value={detail?.email || "-"}
-                      />
-                      <SectionField
-                        label="Telephone"
-                        value={detail?.phone || "-"}
-                      />
-                      <SectionField
-                        label="Taux horaire"
-                        value={`${fmtMoney(detail?.rate || 0)}/h`}
-                      />
-                    </div>
-                  </div>
+          {!loading && detail && tab === "info" ? (
+            <div style={{ display: "grid", gap: 18 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                  gap: 14,
+                }}
+              >
+                <StatCard label="Heures visibles" value={`${visibleHours.toFixed(2)} h`} />
+                <StatCard label="Heures totales" value={`${totalHours.toFixed(2)} h`} />
+                <StatCard label="FDT" value={String(timesheets.length)} />
+                <StatCard
+                  label="Hebergement"
+                  value={fmtMoney(totalAccommodation)}
+                  subtle={`${accommodations.length} dossier(s)`}
+                />
+              </div>
 
-                  <div
-                    style={{
-                      background: "#fff",
-                      border: "1px solid #ece4f7",
-                      borderRadius: 18,
-                      padding: 18,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontWeight: 700,
-                        color: "#2b2450",
-                        marginBottom: 14,
-                      }}
-                    >
-                      Apercu horaire
-                    </div>
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {upcomingShifts.length === 0 && (
-                        <div style={{ color: "#8d82a8", fontSize: 13 }}>
-                          Aucun quart trouve pour cette ressource.
-                        </div>
-                      )}
-                      {upcomingShifts.map((shift) => (
-                        <div
-                          key={shift.id}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "1.3fr .8fr .6fr",
-                            gap: 12,
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            background: "#faf8ff",
-                            border: "1px solid #f0e9fb",
-                          }}
-                        >
-                          <div style={{ fontWeight: 600, color: "#2b2450" }}>
-                            {formatShiftLine(shift)}
-                          </div>
-                          <div style={{ color: "#6d6188", fontSize: 13 }}>
-                            {shift.location || "Lieu a confirmer"}
-                          </div>
-                          <div
-                            style={{
-                              textAlign: "right",
-                              fontWeight: 700,
-                              color: "#22849a",
-                            }}
-                          >
-                            {Number(shift.hours || 0).toFixed(2)}h
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+              <div
+                style={{
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 18,
+                  padding: 18,
+                  display: "grid",
+                  gap: 16,
+                }}
+              >
+                <div style={{ fontWeight: 800, color: "var(--brand-d)" }}>
+                  Informations generales
                 </div>
-              )}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                    gap: 14,
+                  }}
+                >
+                  <SectionField label="Courriel" value={detail.email} />
+                  <SectionField label="Telephone" value={detail.phone} />
+                  <SectionField label="Client par defaut" value={clientName} />
+                  <SectionField label="Poste" value={detail.position} />
+                  <SectionField label="Taux" value={fmtMoney(Number(detail.rate || 0))} />
+                  <SectionField
+                    label="Notes"
+                    value={`${detail.notes?.length || 0} note(s)`}
+                  />
+                </div>
+              </div>
 
-              {tab === "documents" && (
-                <div style={{ display: "grid", gap: 18 }}>
-                  <div
-                    style={{ fontSize: 22, fontWeight: 800, color: "#2b2450" }}
-                  >
-                    Notes et documents
-                  </div>
-
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
-                      gap: 12,
-                    }}
-                  >
-                    <StatCard
-                      label="FDT recues"
-                      value={String(timesheets.length)}
-                      subtle={`${attachmentTotals.timesheets} piece(s)`}
-                    />
-                    <StatCard
-                      label="Dossiers hebergement"
-                      value={String(accommodations.length)}
-                      subtle={`${attachmentTotals.accommodations} document(s)`}
-                    />
-                    <StatCard
-                      label="Notes"
-                      value={String(detail?.notes?.length || 0)}
-                    />
-                    <StatCard
-                      label="Client principal"
-                      value={clientName || "Aucun"}
-                    />
-                  </div>
-
-                  <div
-                    style={{
-                      background: "#fff",
-                      border: "1px solid #ece4f7",
-                      borderRadius: 18,
-                      padding: 18,
-                    }}
-                  >
+              <div
+                style={{
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 18,
+                  padding: 18,
+                  display: "grid",
+                  gap: 14,
+                }}
+              >
+                <div style={{ fontWeight: 800, color: "var(--brand-d)" }}>
+                  Prochains quarts
+                </div>
+                {upcomingShifts.length ? (
+                  upcomingShifts.map((shift) => (
                     <div
+                      key={shift.id}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        marginBottom: 14,
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        background: "var(--brand-xl)",
+                        border: "1px solid var(--border)",
+                        color: "var(--text)",
+                        fontSize: 14,
                       }}
                     >
-                      <MessageSquareText
-                        size={18}
-                        style={{ color: "#8c5af4" }}
-                      />
-                      <div style={{ fontWeight: 700, color: "#2b2450" }}>
-                        Notes recruteur
-                      </div>
+                      {formatShiftLine(
+                        shift,
+                        clients.find((client) => client.id === shift.client_id)?.name || "",
+                      )}
                     </div>
-                    <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-                      <input
-                        className="input"
-                        style={{ flex: 1 }}
-                        value={noteText}
-                        placeholder="Ajouter une note au dossier..."
-                        onChange={(event) => setNoteText(event.target.value)}
-                        onKeyDown={(event) =>
-                          event.key === "Enter" && addNote()
-                        }
-                      />
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-sm"
-                        onClick={addNote}
-                      >
-                        Ajouter
-                      </button>
+                  ))
+                ) : (
+                  <EmptyPanel
+                    icon={CalendarDays}
+                    title="Aucun quart"
+                    subtitle="Aucun quart n'est rattache a cette ressource pour le moment."
+                  />
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && detail && tab === "documents" ? (
+            <div style={{ display: "grid", gap: 18 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1.1fr .9fr",
+                  gap: 18,
+                  alignItems: "start",
+                }}
+              >
+                <div
+                  style={{
+                    background: "#fff",
+                    border: "1px solid var(--border)",
+                    borderRadius: 18,
+                    padding: 18,
+                    display: "grid",
+                    gap: 14,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <MessageSquareText size={18} style={{ color: "var(--brand-d)" }} />
+                    <div style={{ fontWeight: 800, color: "var(--brand-d)" }}>
+                      Notes internes
                     </div>
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {(detail?.notes || []).map((note) => (
+                  </div>
+                  <textarea
+                    className="input"
+                    rows={4}
+                    value={noteText}
+                    onChange={(event) => setNoteText(event.target.value)}
+                    placeholder="Ajouter une note interne sur cette ressource..."
+                    style={{ width: "100%", resize: "vertical" }}
+                  />
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button type="button" className="btn btn-primary" onClick={addNote}>
+                      <StickyNote size={14} /> Ajouter la note
+                    </button>
+                  </div>
+
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {(detail.notes || []).length ? (
+                      detail.notes.map((note) => (
                         <div
                           key={note.id}
                           style={{
-                            padding: 12,
+                            background: "var(--brand-xl)",
+                            border: "1px solid var(--border)",
                             borderRadius: 12,
-                            background: "#faf8ff",
-                            border: "1px solid #f0e9fb",
+                            padding: "12px 14px",
                           }}
                         >
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              gap: 12,
-                              marginBottom: 6,
-                            }}
-                          >
-                            <strong style={{ color: "#2b2450" }}>
-                              {note.author || "Admin"}
-                            </strong>
-                            <span style={{ fontSize: 11, color: "#8d82a8" }}>
-                              {new Date(note.created_at).toLocaleString(
-                                "fr-CA",
-                              )}
-                            </span>
-                          </div>
-                          <div style={{ color: "#4b4463", fontSize: 14 }}>
+                          <div style={{ color: "var(--text)", marginBottom: 6 }}>
                             {note.content}
                           </div>
+                          <div style={{ fontSize: 12, color: "var(--text3)" }}>
+                            {note.author || "Admin"} | {note.created_at?.slice(0, 10) || "-"}
+                          </div>
                         </div>
-                      ))}
-                      {(!detail?.notes || !detail.notes.length) && (
-                        <div style={{ fontSize: 13, color: "#8d82a8" }}>
-                          Aucune note pour le moment.
-                        </div>
-                      )}
+                      ))
+                    ) : (
+                      <EmptyPanel
+                        icon={StickyNote}
+                        title="Aucune note"
+                        subtitle="Les notes internes de cette ressource apparaitront ici."
+                      />
+                    )}
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background: "#fff",
+                    border: "1px solid var(--border)",
+                    borderRadius: 18,
+                    padding: 18,
+                    display: "grid",
+                    gap: 14,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <FilePlus2 size={18} style={{ color: "var(--brand-d)" }} />
+                    <div style={{ fontWeight: 800, color: "var(--brand-d)" }}>
+                      Ajouter un document
                     </div>
                   </div>
-
-                  <div
-                    style={{
-                      background: "#fff",
-                      border: "1px solid #ece4f7",
-                      borderRadius: 18,
-                      padding: 18,
-                    }}
+                  <input
+                    key={uploadKey}
+                    type="file"
+                    className="input"
+                    onChange={(event) => setDocumentFile(event.target.files?.[0] || null)}
+                  />
+                  <input
+                    className="input"
+                    placeholder="Description optionnelle"
+                    value={documentDescription}
+                    onChange={(event) => setDocumentDescription(event.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={uploadingDocument}
+                    onClick={uploadAdditionalDocument}
                   >
+                    <Upload size={14} />
+                    {uploadingDocument ? "Ajout..." : "Ajouter le document"}
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 18,
+                  padding: 18,
+                  display: "grid",
+                  gap: 14,
+                }}
+              >
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <Paperclip size={18} style={{ color: "var(--brand-d)" }} />
+                  <div style={{ fontWeight: 800, color: "var(--brand-d)" }}>
+                    Documents du dossier
+                  </div>
+                </div>
+                {employeeDocuments.length ? (
+                  employeeDocuments.map((document) => (
+                    <DocumentRow
+                      key={document.id}
+                      title={document.original_filename || document.filename}
+                      subtitle={`${document.description || "Document ajoute manuellement"} | ${
+                        document.created_at?.slice(0, 10) || "-"
+                      }`}
+                      badge={document.category || "document"}
+                      onDownload={async () => {
+                        try {
+                          await api.downloadEmployeeDocument(
+                            detail.id,
+                            document.id,
+                            document.original_filename || document.filename || "document",
+                          );
+                        } catch (err) {
+                          toast?.("Erreur telechargement: " + err.message);
+                        }
+                      }}
+                      onDelete={() => deleteAdditionalDocument(document.id)}
+                      allowDelete
+                    />
+                  ))
+                ) : (
+                  <EmptyPanel
+                    icon={FileText}
+                    title="Aucun document additionnel"
+                    subtitle="Ajoute des documents de dossier ici pour y acceder en 1 clic."
+                  />
+                )}
+              </div>
+
+              <div
+                style={{
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 18,
+                  padding: 18,
+                  display: "grid",
+                  gap: 14,
+                }}
+              >
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <Paperclip size={18} style={{ color: "var(--brand-d)" }} />
+                  <div style={{ fontWeight: 800, color: "var(--brand-d)" }}>
+                    Documents relies a la ressource
+                  </div>
+                </div>
+                {linkedDocuments.length ? (
+                  linkedDocuments.map((item) => (
+                    <DocumentRow
+                      key={item.key}
+                      title={item.title}
+                      subtitle={item.subtitle}
+                      badge={item.badge}
+                      onDownload={() => downloadLinkedDocument(item)}
+                    />
+                  ))
+                ) : (
+                  <EmptyPanel
+                    icon={Paperclip}
+                    title="Aucune piece jointe"
+                    subtitle="Les FDT et factures d'hebergement liees apparaitront ici."
+                  />
+                )}
+              </div>
+            </div>
+          ) : null}
+
+          {!loading && detail && tab === "schedule" ? (
+            <div style={{ display: "grid", gap: 18 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  gap: 14,
+                }}
+              >
+                <StatCard label="Quarts visibles" value={String(
+                  employeeShifts.filter((shift) => (visibleDates || []).includes(shift.date))
+                    .length,
+                )} />
+                <StatCard label="Feuilles de temps" value={String(timesheets.length)} />
+                <StatCard label="Hebergement" value={String(accommodations.length)} />
+              </div>
+
+              <div
+                style={{
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 18,
+                  padding: 18,
+                  display: "grid",
+                  gap: 14,
+                }}
+              >
+                <div style={{ fontWeight: 800, color: "var(--brand-d)" }}>
+                  Horaire de la ressource
+                </div>
+                {upcomingShifts.length ? (
+                  upcomingShifts.map((shift) => (
                     <div
+                      key={shift.id}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        marginBottom: 14,
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        background: "var(--brand-xl)",
+                        border: "1px solid var(--border)",
+                        display: "grid",
+                        gap: 4,
                       }}
                     >
-                      <FileText size={18} style={{ color: "#8c5af4" }} />
-                      <div style={{ fontWeight: 700, color: "#2b2450" }}>
-                        Documents relies
+                      <div style={{ fontWeight: 700, color: "var(--text)" }}>
+                        {`${shift.date} | ${shift.start} -> ${shift.end}`}
+                      </div>
+                      <div style={{ fontSize: 13, color: "var(--text3)" }}>
+                        {clients.find((client) => client.id === shift.client_id)?.name ||
+                          shift.location ||
+                          "Lieu a confirmer"}
                       </div>
                     </div>
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {timesheets.slice(0, 5).map((item) => (
-                        <div
-                          key={item.id}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "1.3fr .8fr .5fr",
-                            gap: 12,
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            background: "#faf8ff",
-                            border: "1px solid #f0e9fb",
-                          }}
-                        >
-                          <div style={{ color: "#2b2450", fontWeight: 600 }}>
-                            FDT {item.period_start} {"->"} {item.period_end}
-                          </div>
-                          <div style={{ color: "#6d6188", fontSize: 13 }}>
-                            {item.status}
-                          </div>
-                          <div
-                            style={{
-                              textAlign: "right",
-                              color: "#8d82a8",
-                              fontSize: 13,
-                            }}
-                          >
-                            {item.attachment_count || 0} piece(s)
-                          </div>
-                        </div>
-                      ))}
-                      {accommodations.slice(0, 5).map((item) => (
-                        <div
-                          key={item.id}
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "1.3fr .8fr .5fr",
-                            gap: 12,
-                            padding: "10px 12px",
-                            borderRadius: 12,
-                            background: "#faf8ff",
-                            border: "1px solid #f0e9fb",
-                          }}
-                        >
-                          <div style={{ color: "#2b2450", fontWeight: 600 }}>
-                            Hebergement {item.start_date} {"->"} {item.end_date}
-                          </div>
-                          <div style={{ color: "#6d6188", fontSize: 13 }}>
-                            {fmtMoney(item.total_cost || 0)}
-                          </div>
-                          <div
-                            style={{
-                              textAlign: "right",
-                              color: "#8d82a8",
-                              fontSize: 13,
-                            }}
-                          >
-                            {item.attachment_count || 0} piece(s)
-                          </div>
-                        </div>
-                      ))}
-                      {timesheets.length === 0 &&
-                        accommodations.length === 0 && (
-                          <div style={{ fontSize: 13, color: "#8d82a8" }}>
-                            Aucun document relie trouve. Les pieces sont gerees
-                            dans Feuilles de temps et Hebergement.
-                          </div>
-                        )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {tab === "schedule" && (
-                <div style={{ display: "grid", gap: 18 }}>
-                  <div
-                    style={{ fontSize: 22, fontWeight: 800, color: "#2b2450" }}
-                  >
-                    Historique horaire
-                  </div>
-                  <div
-                    style={{
-                      background: "#fff",
-                      border: "1px solid #ece4f7",
-                      borderRadius: 18,
-                      padding: 18,
-                    }}
-                  >
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {employeeShifts.length === 0 && (
-                        <div style={{ fontSize: 13, color: "#8d82a8" }}>
-                          Aucun quart disponible.
-                        </div>
-                      )}
-                      {employeeShifts
-                        .slice()
-                        .sort((a, b) =>
-                          `${b.date} ${b.start}`.localeCompare(
-                            `${a.date} ${a.start}`,
-                          ),
-                        )
-                        .slice(0, 16)
-                        .map((shift) => (
-                          <div
-                            key={shift.id}
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: "1.2fr .9fr .6fr .6fr",
-                              gap: 12,
-                              padding: "10px 12px",
-                              borderRadius: 12,
-                              background: "#faf8ff",
-                              border: "1px solid #f0e9fb",
-                            }}
-                          >
-                            <div style={{ fontWeight: 600, color: "#2b2450" }}>
-                              {formatShiftLine(shift)}
-                            </div>
-                            <div style={{ color: "#6d6188", fontSize: 13 }}>
-                              {shift.location || "Lieu a confirmer"}
-                            </div>
-                            <div style={{ color: "#6d6188", fontSize: 13 }}>
-                              {shift.status || "draft"}
-                            </div>
-                            <div
-                              style={{
-                                textAlign: "right",
-                                fontWeight: 700,
-                                color: "#22849a",
-                              }}
-                            >
-                              {Number(shift.hours || 0).toFixed(2)}h
-                            </div>
-                          </div>
-                        ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+                  ))
+                ) : (
+                  <EmptyPanel
+                    icon={CalendarDays}
+                    title="Aucun quart a afficher"
+                    subtitle="L'horaire de cette ressource apparaitra ici."
+                  />
+                )}
+              </div>
+            </div>
+          ) : null}
         </main>
       </div>
-    </div>
-  );
-}
-
-function NavButton({ icon: Icon, active, label, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        border: "none",
-        borderRadius: 12,
-        background: active ? "#a76dff" : "transparent",
-        color: active ? "#fff" : "#564675",
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 12px",
-        fontWeight: 700,
-        cursor: "pointer",
-        textAlign: "left",
-      }}
-    >
-      <Icon size={16} />
-      <span>{label}</span>
-    </button>
-  );
-}
-
-function StatCard({ label, value, subtle = "" }) {
-  return (
-    <div
-      style={{
-        background: "#fff",
-        border: "1px solid #ece4f7",
-        borderRadius: 16,
-        padding: "14px 16px",
-      }}
-    >
-      <div style={{ fontSize: 11, color: "#8d82a8", marginBottom: 6 }}>
-        {label}
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 800, color: "#2b2450" }}>
-        {value}
-      </div>
-      {subtle ? (
-        <div style={{ fontSize: 12, color: "#8d82a8", marginTop: 4 }}>
-          {subtle}
-        </div>
-      ) : null}
     </div>
   );
 }

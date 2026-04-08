@@ -80,6 +80,18 @@ class ApiClient {
 
     window.setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60000);
   }
+  async downloadProtectedFile(path, fallbackFilename = 'document') {
+    const resp = await this.requestRaw(path, { headers: { Accept: '*/*' } });
+    const blob = await resp.blob();
+    const blobUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = fallbackFilename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => window.URL.revokeObjectURL(blobUrl), 60000);
+  }
 
   login(email, password) { return this.post('/auth/login', { email, password }); }
   requestMagicLink(email) { return this.post('/auth/magic-link', { email }); }
@@ -92,11 +104,31 @@ class ApiClient {
   createEmployee(data) { return this.post('/employees/', data); }
   updateEmployee(id, data) { return this.put(`/employees/${id}`, data); }
   addEmployeeNote(id, data) { return this.post(`/employees/${id}/notes`, data); }
+  getEmployeeDocuments(id) { return this.get(`/employees/${id}/documents`); }
+  async uploadEmployeeDocument(id, file, category = 'document', description = '') {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    formData.append('description', description);
+    formData.append('uploaded_by', this.user?.email || 'admin');
+    return this.postForm(`/employees/${id}/documents`, formData);
+  }
+  deleteEmployeeDocument(id, docId) { return this.del(`/employees/${id}/documents/${docId}`); }
+  downloadEmployeeDocument(id, docId, fallbackFilename = 'document') {
+    return this.downloadProtectedFile(`/employees/${id}/documents/${docId}`, fallbackFilename);
+  }
 
   getSchedules(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/schedules/${qs ? '?' + qs : ''}`); }
   createSchedule(data) { return this.post('/schedules/', data); }
   updateSchedule(id, data) { return this.put(`/schedules/${id}`, data); }
   deleteSchedule(id) { return this.del(`/schedules/${id}`); }
+  getScheduleCatalogItems(kind = '') {
+    const qs = new URLSearchParams(kind ? { kind } : {}).toString();
+    return this.get(`/schedule-catalogs/${qs ? '?' + qs : ''}`);
+  }
+  createScheduleCatalogItem(kind, label) {
+    return this.post('/schedule-catalogs/', { kind, label });
+  }
   publishAll() { return this.post('/schedules/publish-all', {}); }
   approveWeek(data) { return this.post('/schedules/approve-week', data); }
   revokeWeek(data) { return this.post('/schedules/revoke-week', data); }

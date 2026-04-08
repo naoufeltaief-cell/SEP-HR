@@ -79,12 +79,9 @@ export default function ScheduleApprovalPanel({
   client,
   shifts,
   allEmployeeSchedules,
-  validationSummary,
   reviewDraft,
   setReviewDraft,
   currentReview,
-  currentTimesheet,
-  timesheetAttachments,
   currentInvoice,
   reviewAttachments,
   onApprove,
@@ -364,16 +361,12 @@ export default function ScheduleApprovalPanel({
 
   const handleApprove = async () => {
     const ok = await saveAllDirtyShifts();
-    if (ok) {
-      await onApprove?.();
-    }
+    if (ok) onApprove?.();
   };
 
   const handleGenerateInvoice = async () => {
     const ok = await saveAllDirtyShifts();
-    if (ok) {
-      await onGenerateInvoice?.();
-    }
+    if (ok) onGenerateInvoice?.();
   };
 
   const removeShiftLine = async (shift) => {
@@ -471,19 +464,6 @@ export default function ScheduleApprovalPanel({
   const totalKm = editableShifts.reduce((sum, shift) => sum + (Number(shift.km) || 0), 0);
   const totalFrais = totals.km + totals.dep + totals.autres;
   const canGenerateInvoice = currentReview?.status === 'approved';
-  const openTimesheetDocument = async (attId) => {
-    if (!currentTimesheet?.id || !attId) return;
-    try {
-      const attachment = (timesheetAttachments || []).find((item) => item.id === attId);
-      await api.openTimesheetAttachment(
-        currentTimesheet.id,
-        attId,
-        attachment?.original_filename || attachment?.filename || 'fdt'
-      );
-    } catch (err) {
-      toast?.('Erreur: ' + err.message);
-    }
-  };
 
   const sectionCard = { background: '#fff', borderRadius: 12, padding: 16, border: '1px solid #dfe7ea', boxShadow: '0 2px 12px rgba(16, 24, 40, 0.04)' };
   const editorCard = { background: '#f8fbfc', borderRadius: 12, padding: 16, border: '1px solid #e2ecef' };
@@ -508,61 +488,6 @@ export default function ScheduleApprovalPanel({
           {currentReview?.status ? `Statut: ${currentReview.status}` : 'Aucune approbation enregistrée'}
         </div>
       </div>
-
-      {validationSummary && (
-        <div style={{ ...sectionCard, marginBottom: 12, background: '#fcfefe' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700 }}>Conciliation automatique</div>
-              <div style={{ fontSize: 11, color: 'var(--text3)' }}>
-                Confiance <strong>{validationSummary.confidence_level || 'moyen'}</strong> ({Math.round(Number(validationSummary.confidence_score || 0) * 100)}%)
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <span className="badge" style={{ background: '#eef7ff', color: '#1d4f91' }}>
-                FDT: {validationSummary.timesheet_id ? `${validationSummary.timesheet_attachment_count || 0} doc` : 'manquante'}
-              </span>
-              <span className="badge" style={{ background: '#f5f5ff', color: '#5546b3' }}>
-                Facture: {validationSummary.invoice_id ? (validationSummary.invoice_number || 'generee') : 'non generee'}
-              </span>
-              <span className="badge" style={{ background: '#effaf2', color: '#1f7a3f' }}>
-                Hebergement: {fmtMoney(validationSummary.accommodation_amount || 0)}
-              </span>
-            </div>
-          </div>
-
-          {!!validationSummary.flags?.length && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-              {validationSummary.flags.map((flag) => (
-                <span key={flag} className="badge" style={{ background: '#f4f7f8', color: '#35515a' }}>
-                  {String(flag).replaceAll('_', ' ')}
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, fontSize: 11 }}>
-            <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
-              <div style={{ color: 'var(--text3)' }}>Horaire vs FDT</div>
-              <strong>
-                {validationSummary.timesheet_id
-                  ? (validationSummary.timesheet_hours == null
-                    ? `${Number(validationSummary.scheduled_hours || 0).toFixed(2)} h / document recu`
-                    : `${Number(validationSummary.scheduled_hours || 0).toFixed(2)} h / ${Number(validationSummary.timesheet_hours || 0).toFixed(2)} h`)
-                  : 'FDT manquante'}
-              </strong>
-            </div>
-            <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
-              <div style={{ color: 'var(--text3)' }}>Orientation</div>
-              <strong>{validationSummary.orientation_shift_count || 0} quart(s) a verifier</strong>
-            </div>
-            <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
-              <div style={{ color: 'var(--text3)' }}>Prochaine action</div>
-              <strong>{validationSummary.recommendations?.[0] || 'Verification finale'}</strong>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
         <div style={sectionCard}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Quarts</div><div style={{ fontSize: 16, fontWeight: 700, color: 'var(--brand)' }}>{editableShifts.length}</div></div>
@@ -738,22 +663,6 @@ export default function ScheduleApprovalPanel({
 
           {!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de générer la facture approuvée.</div>}
           {currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}
-
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>FDT indexee ({timesheetAttachments.length})</div>
-          {timesheetAttachments.length === 0 ? (
-            <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>
-              {currentTimesheet?.id ? 'Aucune piece jointe FDT sur cette periode.' : 'Aucune FDT indexee pour cette periode.'}
-            </div>
-          ) : (
-            <div style={{ marginBottom: 14 }}>
-              {timesheetAttachments.map(att => (
-                <div key={`timesheet-${att.id}`} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
-                  <span>{att.original_filename || att.filename}</span>
-                  <button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => openTimesheetDocument(att.id)}><Eye size={12} /></button>
-                </div>
-              ))}
-            </div>
-          )}
 
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Justificatifs ({reviewAttachments.length})</div>
           {reviewAttachments.length === 0 ? (

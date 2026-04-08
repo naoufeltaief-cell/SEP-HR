@@ -11,6 +11,7 @@ import CandidatesPage from './pages/CandidatesPage';
 import TimesheetsPage from './pages/TimesheetsPage';
 import InvoicesPage from './pages/InvoicesPage';
 import AccommodationsPage from './pages/AccommodationsPage';
+import EmployeeSchedulePage from './pages/EmployeeSchedulePage';
 import api from './utils/api';
 
 export default function App() {
@@ -20,7 +21,7 @@ export default function App() {
   const [overdueCount, setOverdueCount] = useState(0);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.role !== 'admin') return;
     api.getInvoices().then(invoices => {
       const count = invoices.filter(inv => {
         if (inv.status === 'paid') return false;
@@ -30,6 +31,12 @@ export default function App() {
       setOverdueCount(count);
     }).catch(() => {});
   }, [user, page]);
+
+  useEffect(() => {
+    if (user?.role === 'employee' && page !== 'my-schedule') {
+      setPage('my-schedule');
+    }
+  }, [page, user]);
 
   if (loading) {
     return (
@@ -44,7 +51,7 @@ export default function App() {
 
   if (!user) return <LoginPage />;
 
-  const pages = {
+  const adminPages = {
     dashboard: <DashboardPage onNavigate={setPage} />,
     schedules: <SchedulesPage toast={toast} onNavigate={setPage} />,
     employees: <EmployeesPage toast={toast} />,
@@ -53,6 +60,10 @@ export default function App() {
     invoices: <InvoicesPage toast={toast} />,
     accommodations: <AccommodationsPage toast={toast} />,
   };
+  const employeePages = {
+    'my-schedule': <EmployeeSchedulePage toast={toast} user={user} />,
+  };
+  const pages = user?.role === 'admin' ? adminPages : employeePages;
 
   return (
     <div className="app-layout">

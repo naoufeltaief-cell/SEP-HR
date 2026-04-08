@@ -103,6 +103,7 @@ class ApiClient {
   getEmployee(id) { return this.get(`/employees/${id}`); }
   createEmployee(data) { return this.post('/employees/', data); }
   updateEmployee(id, data) { return this.put(`/employees/${id}`, data); }
+  inviteEmployeeAccess(id) { return this.post(`/employees/${id}/invite-access`, {}); }
   addEmployeeNote(id, data) { return this.post(`/employees/${id}/notes`, data); }
   getEmployeeDocuments(id) { return this.get(`/employees/${id}/documents`); }
   async uploadEmployeeDocument(id, file, category = 'document', description = '') {

@@ -40,7 +40,7 @@ export function ToastContainer({ toasts }) {
   );
 }
 
-const NAV = [
+const ADMIN_NAV = [
   { id: 'dashboard', label: 'Tableau de bord', icon: Home },
   { id: 'schedules', label: 'Horaires', icon: Calendar },
   { id: 'employees', label: 'Employés', icon: Users },
@@ -50,7 +50,12 @@ const NAV = [
   { id: 'invoices', label: 'Facturation', icon: DollarSign },
 ];
 
+const EMPLOYEE_NAV = [
+  { id: 'my-schedule', label: 'Mon horaire', icon: Calendar },
+];
+
 export function Sidebar({ currentPage, onNavigate, onLogout, user, overdueCount = 0 }) {
+  const navItems = user?.role === 'admin' ? ADMIN_NAV : EMPLOYEE_NAV;
   return (
     <>
       <aside className="sidebar">
@@ -58,7 +63,7 @@ export function Sidebar({ currentPage, onNavigate, onLogout, user, overdueCount 
           <img src={LOGO_SRC} alt="Soins Expert Plus" />
         </div>
         <nav className="sidebar-nav">
-          {NAV.map(n => {
+          {navItems.map(n => {
             const Icon = n.icon;
             return (
               <button

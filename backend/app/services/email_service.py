@@ -62,6 +62,41 @@ async def send_welcome_email(email: str, name: str):
     await _send_email(email, subject, html)
 
 
+async def send_employee_portal_invitation(
+    email: str,
+    token: str,
+    name: str = "",
+    expires_hours: int = 72,
+):
+    """Send employee portal invitation with a magic sign-in link."""
+    link = f"{FRONTEND_URL}/auth/magic?token={token}"
+    subject = "Acces au portail employe — Soins Expert Plus"
+    html = f"""
+    <div style="font-family:system-ui;max-width:560px;margin:auto;padding:30px">
+        <div style="text-align:center;margin-bottom:20px">
+            <h2 style="color:#1d4ed8;margin:0">Soins Expert Plus</h2>
+            <p style="color:#6b7280;margin-top:8px">Portail employe</p>
+        </div>
+        <p>Bonjour{' ' + name if name else ''},</p>
+        <p>Votre acces au portail employe est pret. Vous pourrez y consulter votre horaire publie.</p>
+        <div style="text-align:center;margin:30px 0">
+            <a href="{link}" style="background:#1d4ed8;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:16px">
+                Acceder a mon portail
+            </a>
+        </div>
+        <p style="font-size:13px;color:#6b7280">
+            Ce lien de connexion est valide pendant {expires_hours} heure(s). Aucun mot de passe temporaire n'est envoye.
+        </p>
+        <p style="font-size:13px;color:#6b7280">
+            Si le lien expire, vous pourrez toujours utiliser l'option de connexion par courriel sur la page d'accueil.
+        </p>
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+        <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus — 9437-7827 Quebec Inc.</p>
+    </div>
+    """
+    await _send_email(email, subject, html)
+
+
 async def _send_email(to: str, subject: str, html: str, bcc_emails=None):
     """Send an email via SMTP"""
     if not SMTP_PASS:

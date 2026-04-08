@@ -97,6 +97,9 @@ async def submit_timesheet(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
+    if getattr(user, "role", "") == "employee":
+        if not getattr(user, "employee_id", None) or user.employee_id != data.employee_id:
+            raise HTTPException(status_code=403, detail="Acces refuse a cette FDT")
     target, created = await upsert_submitted_timesheet(db, data)
     await sync_timesheet_attachments_to_reviews(db, target)
     await db.commit()

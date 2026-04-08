@@ -27,7 +27,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     else:
         raise HTTPException(status_code=400, detail="Mot de passe requis ou utilisez le magic link")
     token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
-    return TokenResponse(access_token=token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role})
+    return TokenResponse(access_token=token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role, "employee_id": user.employee_id})
 
 
 @router.post("/magic-link")
@@ -55,7 +55,7 @@ async def verify_magic_link(token: str, db: AsyncSession = Depends(get_db)):
     user.magic_token_expires = None
     await db.commit()
     access_token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
-    return TokenResponse(access_token=access_token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role})
+    return TokenResponse(access_token=access_token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role, "employee_id": user.employee_id})
 
 
 @router.post("/register", response_model=TokenResponse)
@@ -74,7 +74,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(user)
     token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
-    return TokenResponse(access_token=token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role})
+    return TokenResponse(access_token=token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role, "employee_id": user.employee_id})
 
 
 @router.post("/set-password")
@@ -86,4 +86,4 @@ async def set_password(req: PasswordSetRequest, user: User = Depends(get_current
 
 @router.get("/me")
 async def get_me(user: User = Depends(get_current_user)):
-    return {"id": user.id, "email": user.email, "name": user.name, "role": user.role}
+    return {"id": user.id, "email": user.email, "name": user.name, "role": user.role, "employee_id": user.employee_id}

@@ -65,6 +65,42 @@ function computeAccommodationEstimate(accommodation, allEmployeeSchedules, bille
   return { days: billedWorkedDates.length, costPerDay: costPerWorkedDay, amount: billedWorkedDates.length * costPerWorkedDay };
 }
 
+function normalizeApprovalRecord(record, source = 'review') {
+  if (!record) return null;
+  return {
+    ...record,
+    employee_id: Number(record.employee_id || 0),
+    client_id: Number(record.client_id || 0),
+    week_start: record.week_start ? String(record.week_start) : '',
+    week_end: record.week_end ? String(record.week_end) : '',
+    status: record.status || 'pending',
+    notes: record.notes || '',
+    approved_hours: Number(record.approved_hours || 0),
+    approved_shift_count: Number(record.approved_shift_count || 0),
+    week_total_hours: Number(record.week_total_hours || 0),
+    attachment_count: Number(record.attachment_count || 0),
+    source,
+  };
+}
+
+function mergeApprovalLists(reviews = [], legacyApprovals = []) {
+  const merged = new Map();
+
+  for (const approval of legacyApprovals || []) {
+    const normalized = normalizeApprovalRecord(approval, 'legacy');
+    if (!normalized) continue;
+    merged.set(`${normalized.employee_id}:${normalized.client_id}:${normalized.week_start}`, normalized);
+  }
+
+  for (const review of reviews || []) {
+    const normalized = normalizeApprovalRecord(review, 'review');
+    if (!normalized) continue;
+    merged.set(`${normalized.employee_id}:${normalized.client_id}:${normalized.week_start}`, normalized);
+  }
+
+  return Array.from(merged.values()).sort((a, b) => String(b.week_start || '').localeCompare(String(a.week_start || '')));
+}
+
 export default function SchedulesPage({ toast, onNavigate }) {
   const [schedules, setSchedules] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -87,16 +123,17 @@ export default function SchedulesPage({ toast, onNavigate }) {
 
   const reload = useCallback(async () => {
     try {
-      const [scheds, emps, cls, reviews] = await Promise.all([
+      const [scheds, emps, cls, reviews, legacyApprovals] = await Promise.all([
         api.getSchedules(),
         api.getEmployees(),
         api.getClients(),
         api.getScheduleReviews().catch(() => []),
+        api.getApprovals().catch(() => []),
       ]);
       setSchedules(scheds || []);
       setEmployees(emps || []);
       setClients(cls || []);
-      setApprovals(reviews || []);
+      setApprovals(mergeApprovalLists(reviews || [], legacyApprovals || []));
     } catch (err) {
       toast?.('Erreur: ' + err.message);
     } finally {
@@ -121,17 +158,162 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const getClientWeekHours = (employeeId, clientId, fallbackClientId = null) => getClientWeekShifts(employeeId, clientId, fallbackClientId).reduce((sum, s) => sum + (Number(s.hours) || 0), 0);
   const getEmployeeRate = (employeeId) => Number(employees.find(emp => String(emp.id) === String(employeeId))?.rate || 0);
   const getValidationSummary = () => null;
+  const resolveApproval = useCallback(async (employeeId, clientId, weekStart) => {
+    const [reviews, legacyApprovals] = await Promise.all([
+      api.getScheduleReviews({ employee_id: employeeId, client_id: clientId, week_start: weekStart }).catch(() => []),
+      api.getApprovals({ employee_id: employeeId, client_id: clientId, week_start: weekStart }).catch(() => []),
+    ]);
+    const merged = mergeApprovalLists(reviews || [], legacyApprovals || []);
+    return merged[0] || null;
+  }, []);
 
   const openAdd = (employeeId = '', date = fmtISO(viewDates[0] || new Date())) => setModal({ type: 'add', data: { employeeId, date, start: '07:00', end: '15:00', pause: 0.5, pauseMinutes: 30, hours: 7.5, location: '', clientId: '', km: 0, deplacement: 0, autreDep: 0, notes: '', billableRate: getEmployeeRate(employeeId) } });
   const openEdit = (shift) => setModal({ type: 'edit', data: { id: shift.id, employeeId: shift.employee_id, date: shift.date, start: normalizeTimeForInput(shift.start), end: normalizeTimeForInput(shift.end), pause: Number(shift.pause || 0), pauseMinutes: pauseHoursToMinutes(shift.pause || 0), hours: Number(shift.hours || 0), location: shift.location || '', clientId: shift.client_id || '', km: shift.km || 0, deplacement: shift.deplacement || 0, autreDep: shift.autre_dep || 0, notes: shift.notes || '', billableRate: Number(shift.billable_rate || 0) } });
   const updateModalField = (field, value) => setModal(m => { const next = { ...m, data: { ...m.data, [field]: value } }; if (field === 'employeeId' && m.type === 'add') next.data.billableRate = getEmployeeRate(value); if (field === 'start' || field === 'end' || field === 'pauseMinutes') { next.data.pause = pauseMinutesToHours(next.data.pauseMinutes); next.data.hours = calcHours(next.data.start, next.data.end, Number(next.data.pause || 0)); } return next; });
   const saveShift = async () => { try { const d = modal.data; const payload = { employee_id: Number(d.employeeId), date: d.date, start: normalizeTimeForInput(d.start), end: normalizeTimeForInput(d.end), pause: Number(d.pause || 0), hours: Number(d.hours || 0), location: d.location || '', client_id: d.clientId ? Number(d.clientId) : null, km: Number(d.km || 0), deplacement: Number(d.deplacement || 0), autre_dep: Number(d.autreDep || 0), notes: d.notes || '', billable_rate: Number(d.billableRate || getEmployeeRate(d.employeeId) || 0), status: 'published' }; if (modal.type === 'add') await api.createSchedule(payload); else await api.updateSchedule(d.id, payload); toast?.(modal.type === 'add' ? 'Quart ajouté' : 'Quart modifié'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
   const deleteShift = async () => { try { await api.deleteSchedule(modal.data.id); toast?.('Quart supprimé'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
-  const toggleBillingPanel = async (empId, clientId, fallbackClientId = null) => { if (expandedEmp?.empId === empId && expandedEmp?.clientId === clientId) { setExpandedEmp(null); setCurrentReview(null); setCurrentTimesheet(null); setTimesheetAttachments([]); setCurrentInvoice(null); setReviewAttachments([]); return; } const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we || !empId || !clientId) return; setBillingLoading(true); setExpandedEmp({ empId, clientId, fallbackClientId }); setCurrentReview(null); setCurrentTimesheet(null); setTimesheetAttachments([]); setCurrentInvoice(null); setReviewAttachments([]); const plannedHours = Number(getClientWeekHours(empId, clientId, fallbackClientId).toFixed(2)); setReviewDraft({ approvedHours: plannedHours, notes: '' }); try { const [reviews, invoices, timesheets] = await Promise.all([api.getScheduleReviews({ employee_id: empId, client_id: clientId, week_start: ws }), api.getInvoices({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we }), api.getTimesheets({ employee_id: empId, period_start: ws, period_end: we })]); const review = (reviews || [])[0] || null; const invoice = (invoices || [])[0] || null; const timesheet = (timesheets || []).find(item => item.employee_id === empId && item.period_start === ws && item.period_end === we) || null; setCurrentReview(review); setCurrentTimesheet(timesheet); setCurrentInvoice(invoice); if (review?.id) { setReviewDraft({ approvedHours: Number(review.approved_hours || plannedHours), notes: review.notes || '' }); const att = await api.getScheduleReviewAttachments(review.id).catch(() => []); setReviewAttachments(att || []); } if (timesheet?.id) { const att = await api.getTimesheetAttachments(timesheet.id).catch(() => []); setTimesheetAttachments(att || []); } } catch (err) { toast?.('Erreur: ' + err.message); } finally { setBillingLoading(false); } };
+  const toggleBillingPanel = async (empId, clientId, fallbackClientId = null) => {
+    if (expandedEmp?.empId === empId && expandedEmp?.clientId === clientId) {
+      setExpandedEmp(null);
+      setCurrentReview(null);
+      setCurrentTimesheet(null);
+      setTimesheetAttachments([]);
+      setCurrentInvoice(null);
+      setReviewAttachments([]);
+      return;
+    }
+
+    const ws = getWeekStart();
+    const we = getWeekEnd();
+    if (!ws || !we || !empId || !clientId) return;
+
+    setBillingLoading(true);
+    setExpandedEmp({ empId, clientId, fallbackClientId });
+    setCurrentReview(null);
+    setCurrentTimesheet(null);
+    setTimesheetAttachments([]);
+    setCurrentInvoice(null);
+    setReviewAttachments([]);
+
+    const plannedHours = Number(getClientWeekHours(empId, clientId, fallbackClientId).toFixed(2));
+    setReviewDraft({ approvedHours: plannedHours, notes: '' });
+
+    try {
+      const [review, invoices, timesheets] = await Promise.all([
+        resolveApproval(empId, clientId, ws),
+        api.getInvoices({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we }),
+        api.getTimesheets({ employee_id: empId, period_start: ws, period_end: we }),
+      ]);
+      const invoice = (invoices || [])[0] || null;
+      const timesheet = (timesheets || []).find(item => item.employee_id === empId && item.period_start === ws && item.period_end === we) || null;
+      setCurrentReview(review || null);
+      setCurrentTimesheet(timesheet);
+      setCurrentInvoice(invoice);
+
+      if (review?.id) {
+        setReviewDraft({ approvedHours: Number(review.approved_hours || plannedHours), notes: review.notes || '' });
+        const att = await api.getScheduleReviewAttachments(review.id).catch(() => []);
+        setReviewAttachments(att || []);
+      }
+      if (timesheet?.id) {
+        const att = await api.getTimesheetAttachments(timesheet.id).catch(() => []);
+        setTimesheetAttachments(att || []);
+      }
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    } finally {
+      setBillingLoading(false);
+    }
+  };
   const saveReview = async (empId, clientId, fallbackClientId = null, approve = false) => { const ws = getWeekStart(); if (!ws || !empId || !clientId) return; try { setBillingLoading(true); const approvedHours = Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0); const notes = reviewDraft?.notes || ''; let review = approve ? await api.approveReviewedWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }) : await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }); if (approve && (!review || review.status !== 'approved')) review = { ...(review || {}), employee_id: empId, client_id: clientId, week_start: ws, status: 'approved' }; setCurrentReview(review || null); setApprovals(prev => { const rest = prev.filter(a => !(a.employee_id === empId && a.client_id === clientId && a.week_start === ws)); return review ? [review, ...rest] : rest; }); if (approve) await reload(); toast?.(approve ? 'Heures approuvées' : 'Révision enregistrée'); } catch (err) { toast?.('Erreur: ' + err.message); } finally { setBillingLoading(false); } };
   const revokeWeek = async (employeeId, clientId) => { const ws = getWeekStart(); if (!ws || !employeeId || !clientId) return; try { await api.revokeReviewedWeek({ employee_id: employeeId, client_id: clientId, week_start: ws }); toast?.('Approbation révoquée'); await reload(); setCurrentReview(r => r ? { ...r, status: 'rejected' } : r); setCurrentInvoice(null); } catch (err) { toast?.('Erreur: ' + err.message); } };
   const handleReviewAttachment = async (e, empId, clientId, fallbackClientId = null) => { const file = e.target.files?.[0]; if (!file || !empId || !clientId) return; try { let review = currentReview; if (!review?.id) { review = await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: getWeekStart(), approved_hours: Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0), notes: reviewDraft?.notes || '' }); setCurrentReview(review || null); } if (!review?.id) throw new Error('Révision introuvable'); await api.uploadScheduleReviewAttachment(review.id, file, 'justificatif', file.name); const att = await api.getScheduleReviewAttachments(review.id); setReviewAttachments(att || []); toast?.('Justificatif ajouté'); } catch (err) { toast?.('Erreur: ' + err.message); } finally { e.target.value = ''; } };
   const deleteReviewAttachment = async (attId) => { if (!currentReview?.id || !attId) return; try { await api.deleteScheduleReviewAttachment(currentReview.id, attId); const att = await api.getScheduleReviewAttachments(currentReview.id); setReviewAttachments(att || []); toast?.('Justificatif supprimé'); } catch (err) { toast?.('Erreur: ' + err.message); } };
+  const saveReviewCompat = async (empId, clientId, fallbackClientId = null, approve = false) => {
+    const ws = getWeekStart();
+    if (!ws || !empId || !clientId) return;
+
+    try {
+      setBillingLoading(true);
+      const approvedHours = Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0);
+      const notes = reviewDraft?.notes || '';
+
+      if (approve) {
+        try {
+          await api.approveReviewedWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes });
+        } catch {
+          await api.approveWeek({ employee_id: empId, client_id: clientId, week_start: ws, notes });
+        }
+      } else {
+        await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes });
+      }
+
+      const review = await resolveApproval(empId, clientId, ws);
+      setCurrentReview(review || null);
+
+      if (review?.id) {
+        const att = await api.getScheduleReviewAttachments(review.id).catch(() => []);
+        setReviewAttachments(att || []);
+      }
+
+      setApprovals(prev => {
+        const rest = prev.filter(a => !(a.employee_id === empId && a.client_id === clientId && a.week_start === ws));
+        return review ? mergeApprovalLists([review], rest) : rest;
+      });
+
+      await reload();
+      toast?.(approve ? 'Heures approuvées' : 'Révision enregistrée');
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    } finally {
+      setBillingLoading(false);
+    }
+  };
+
+  const revokeWeekCompat = async (employeeId, clientId) => {
+    const ws = getWeekStart();
+    if (!ws || !employeeId || !clientId) return;
+
+    try {
+      try {
+        await api.revokeReviewedWeek({ employee_id: employeeId, client_id: clientId, week_start: ws });
+      } catch {
+        await api.revokeWeek({ employee_id: employeeId, client_id: clientId, week_start: ws });
+      }
+      toast?.('Approbation révoquée');
+      await reload();
+      setCurrentReview(r => r ? { ...r, status: 'rejected' } : r);
+      setCurrentInvoice(null);
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    }
+  };
+
+  const generateInvoiceCompat = async (empId, clientId) => {
+    const ws = getWeekStart();
+    const we = getWeekEnd();
+    if (!ws || !we || !empId || !clientId) return;
+
+    const approvalStatus = currentReview?.status || getWeekApprovalStatus(empId, clientId)?.status;
+    if (approvalStatus !== 'approved') {
+      toast?.('Approuve les heures avant de générer la facture');
+      return;
+    }
+
+    try {
+      setBillingLoading(true);
+      const result = await api.generateFromSchedules({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we });
+      setCurrentInvoice(result || null);
+      toast?.(`Facture ${result.number} générée`);
+    } catch (err) {
+      const msg = err.message || '';
+      const isNetworkError = msg === 'Failed to fetch' || msg === 'NetworkError when attempting to fetch resource.' || msg === 'Load failed';
+      toast?.('Erreur: ' + (isNetworkError ? 'Impossible de joindre le serveur.' : (msg || 'Erreur réseau')));
+    } finally {
+      setBillingLoading(false);
+    }
+  };
+
   const openReviewAttachment = async (attId) => {
     if (!currentReview?.id || !attId) return;
     try {
@@ -306,7 +488,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const handleDrop = (e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer?.files?.[0]; if (f) setImportFile(f); };
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text3)' }}>Chargement des horaires...</div>;
-  return <><div className="page-header"><h1 className="page-title"><Calendar size={22} style={{ marginRight: 8, verticalAlign: 'text-bottom', color: 'var(--brand)' }} />Horaires</h1><div style={{ display: 'flex', gap: 8 }}>{viewMode === 'week' && <button className="btn btn-outline btn-sm" onClick={generateAllApproved} disabled={bulkLoading}><FileText size={13} /> {bulkLoading ? 'Génération…' : 'Générer toutes les factures approuvées'}</button>}<button className="btn btn-outline btn-sm" onClick={() => api.publishAll().then(() => { toast?.('Quarts publiés'); reload(); }).catch(err => toast?.('Erreur: ' + err.message))}><Send size={13} /> Publier tout</button><button className="btn btn-outline btn-sm" onClick={() => { setImportFile(null); setImportResult(null); setImportModal(true); }}><Upload size={13} /> Importer</button><button className="btn btn-outline btn-sm" onClick={() => setExportModal(true)}><Download size={13} /> Exporter</button><button className="btn btn-primary btn-sm" onClick={() => openAdd()}><Plus size={14} /> Ajouter</button></div></div><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}><ChevronLeft size={16} /></button><span style={{ fontSize: 13, fontWeight: 600, minWidth: 230, textAlign: 'center' }}>{periodLabel}</span><button className="btn btn-outline btn-sm" onClick={() => navigate(1)}><ChevronRight size={16} /></button></div><div style={{ display: 'flex', gap: 6 }}><button className={`btn btn-sm ${viewMode === 'week' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('week')}>Semaine</button><button className={`btn btn-sm ${viewMode === 'month' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('month')}>Mois</button></div></div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ position: 'relative', maxWidth: 300 }}><Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text3)' }} /><input className="input" style={{ paddingLeft: 32, padding: '7px 12px 7px 32px', fontSize: 12 }} placeholder="Rechercher un employé..." value={filterText} onChange={e => setFilterText(e.target.value)} /></div><div style={{ fontSize: 12, color: 'var(--text3)' }}>{schedules.length} quarts · {employees.length} employés</div></div></div><div className="schedule-grid"><table><thead><tr><th>Employé</th>{viewDates.map((d, i) => <th key={i}>{fmtDay(d)}</th>)}<th style={{ minWidth: 120, background: 'var(--brand-xl)' }}>Total</th></tr></thead><tbody>{activeEmps.map(e => { const periodShifts = schedules.filter(s => s.employee_id === e.id && viewISOs.includes(s.date)); const totalHrs = periodShifts.reduce((sum, s) => sum + Number(s.hours || 0), 0); const totalKm = periodShifts.reduce((sum, s) => sum + Number(s.km || 0), 0); const totalDep = periodShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0), 0); const totalFrais = totalDep + totalKm * RATE_KM; const empClientIds = getEmployeeClientIds(e, periodShifts); return <React.Fragment key={e.id}><tr><td><div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('employees')}><Avatar name={e.name} size={30} /><div><div style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div></div></div></td>{viewDates.map((d, i) => { const iso = fmtISO(d); const shifts = schedules.filter(s => s.employee_id === e.id && s.date === iso); return <td key={i} onDoubleClick={() => openAdd(e.id, iso)}>{shifts.map(s => <ShiftPill key={s.id} shift={s} onClick={() => openEdit(s)} />)}{shifts.length === 0 && <div onClick={() => openAdd(e.id, iso)} style={{ opacity: .25, textAlign: 'center', fontSize: 16, lineHeight: '30px', color: 'var(--brand)', cursor: 'pointer' }}>+</div>}</td>; })}<td style={{ minWidth: 160, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}><div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>{totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}{totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}{viewMode === 'week' && empClientIds.map(cid => { const appr = getWeekApprovalStatus(e.id, cid); const isApproved = appr && appr.status === 'approved'; const cl = clients.find(c => c.id === cid); return <div key={cid} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6 }}><div style={{ fontSize: 9, color: 'var(--text3)' }}>{(cl?.name || 'Client').slice(0, 18)}</div><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer', background: isApproved ? '#28A745' : '#FFC107', color: isApproved ? '#fff' : '#000' }} onClick={() => isApproved ? revokeWeek(e.id, cid) : saveReview(e.id, cid, e.client_id || null, true)}>{isApproved ? '✓ Approuvé' : 'Approuver heures'}</button><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'var(--brand)' : 'var(--surface)', color: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? '#fff' : 'var(--text2)' }} onClick={() => toggleBillingPanel(e.id, cid, e.client_id || null)}>📋 {expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'Fermer' : 'Détails'}</button></div>; })}</td></tr>{viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} validationSummary={null} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentTimesheet={currentTimesheet} timesheetAttachments={timesheetAttachments} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} onSave={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeek(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoice(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onOpenAttachment={openReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} toast={toast} />}</div></td></tr>}</React.Fragment>; })}</tbody></table></div><Modal open={!!modal} onClose={() => setModal(null)} title={modal?.type === 'edit' ? 'Modifier le quart' : 'Ajouter un quart'}>{modal && <div style={{ display: 'grid', gap: 10 }}><div><label>Employé</label><select className="input" value={modal.data.employeeId} onChange={e => updateModalField('employeeId', e.target.value)}><option value="">Choisir</option>{employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label>Date</label><input className="input" type="date" value={modal.data.date} onChange={e => updateModalField('date', e.target.value)} /></div><div><label>Client</label><select className="input" value={modal.data.clientId} onChange={e => updateModalField('clientId', e.target.value)}><option value="">—</option>{clients.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}</select></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Début</label><input className="input" type="time" value={modal.data.start} onChange={e => updateModalField('start', e.target.value)} /></div><div><label>Fin</label><input className="input" type="time" value={modal.data.end} onChange={e => updateModalField('end', e.target.value)} /></div><div><label>Pause min</label><input className="input" type="number" value={modal.data.pauseMinutes} onChange={e => updateModalField('pauseMinutes', e.target.value)} /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Heures</label><input className="input" value={Number(modal.data.hours || 0).toFixed(2)} readOnly /></div><div><label>KM</label><input className="input" type="number" value={modal.data.km} onChange={e => updateModalField('km', e.target.value)} /></div><div><label>Déplacement (heures)</label><input className="input" type="number" step="0.25" value={modal.data.deplacement} onChange={e => updateModalField('deplacement', e.target.value)} /></div></div><div><label>Autre dépense ($)</label><input className="input" type="number" step="0.01" value={modal.data.autreDep} onChange={e => updateModalField('autreDep', e.target.value)} /></div><div><label>Lieu</label><input className="input" value={modal.data.location} onChange={e => updateModalField('location', e.target.value)} /></div><div><label>Notes</label><input className="input" value={modal.data.notes} onChange={e => updateModalField('notes', e.target.value)} /></div><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}><div>{modal.type === 'edit' && <button className="btn btn-outline btn-sm" onClick={deleteShift}><Trash2 size={14} /> Supprimer</button>}</div><div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline btn-sm" onClick={() => setModal(null)}>Annuler</button><button className="btn btn-primary btn-sm" onClick={saveShift}>Sauvegarder</button></div></div></div>}</Modal>
+  return <><div className="page-header"><h1 className="page-title"><Calendar size={22} style={{ marginRight: 8, verticalAlign: 'text-bottom', color: 'var(--brand)' }} />Horaires</h1><div style={{ display: 'flex', gap: 8 }}>{viewMode === 'week' && <button className="btn btn-outline btn-sm" onClick={generateAllApproved} disabled={bulkLoading}><FileText size={13} /> {bulkLoading ? 'Génération…' : 'Générer toutes les factures approuvées'}</button>}<button className="btn btn-outline btn-sm" onClick={() => api.publishAll().then(() => { toast?.('Quarts publiés'); reload(); }).catch(err => toast?.('Erreur: ' + err.message))}><Send size={13} /> Publier tout</button><button className="btn btn-outline btn-sm" onClick={() => { setImportFile(null); setImportResult(null); setImportModal(true); }}><Upload size={13} /> Importer</button><button className="btn btn-outline btn-sm" onClick={() => setExportModal(true)}><Download size={13} /> Exporter</button><button className="btn btn-primary btn-sm" onClick={() => openAdd()}><Plus size={14} /> Ajouter</button></div></div><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}><ChevronLeft size={16} /></button><span style={{ fontSize: 13, fontWeight: 600, minWidth: 230, textAlign: 'center' }}>{periodLabel}</span><button className="btn btn-outline btn-sm" onClick={() => navigate(1)}><ChevronRight size={16} /></button></div><div style={{ display: 'flex', gap: 6 }}><button className={`btn btn-sm ${viewMode === 'week' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('week')}>Semaine</button><button className={`btn btn-sm ${viewMode === 'month' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('month')}>Mois</button></div></div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ position: 'relative', maxWidth: 300 }}><Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text3)' }} /><input className="input" style={{ paddingLeft: 32, padding: '7px 12px 7px 32px', fontSize: 12 }} placeholder="Rechercher un employé..." value={filterText} onChange={e => setFilterText(e.target.value)} /></div><div style={{ fontSize: 12, color: 'var(--text3)' }}>{schedules.length} quarts · {employees.length} employés</div></div></div><div className="schedule-grid"><table><thead><tr><th>Employé</th>{viewDates.map((d, i) => <th key={i}>{fmtDay(d)}</th>)}<th style={{ minWidth: 120, background: 'var(--brand-xl)' }}>Total</th></tr></thead><tbody>{activeEmps.map(e => { const periodShifts = schedules.filter(s => s.employee_id === e.id && viewISOs.includes(s.date)); const totalHrs = periodShifts.reduce((sum, s) => sum + Number(s.hours || 0), 0); const totalKm = periodShifts.reduce((sum, s) => sum + Number(s.km || 0), 0); const totalDep = periodShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0), 0); const totalFrais = totalDep + totalKm * RATE_KM; const empClientIds = getEmployeeClientIds(e, periodShifts); return <React.Fragment key={e.id}><tr><td><div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('employees')}><Avatar name={e.name} size={30} /><div><div style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div></div></div></td>{viewDates.map((d, i) => { const iso = fmtISO(d); const shifts = schedules.filter(s => s.employee_id === e.id && s.date === iso); return <td key={i} onDoubleClick={() => openAdd(e.id, iso)}>{shifts.map(s => <ShiftPill key={s.id} shift={s} onClick={() => openEdit(s)} />)}{shifts.length === 0 && <div onClick={() => openAdd(e.id, iso)} style={{ opacity: .25, textAlign: 'center', fontSize: 16, lineHeight: '30px', color: 'var(--brand)', cursor: 'pointer' }}>+</div>}</td>; })}<td style={{ minWidth: 160, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}><div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>{totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}{totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}{viewMode === 'week' && empClientIds.map(cid => { const appr = getWeekApprovalStatus(e.id, cid); const isApproved = appr && appr.status === 'approved'; const cl = clients.find(c => c.id === cid); return <div key={cid} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6 }}><div style={{ fontSize: 9, color: 'var(--text3)' }}>{(cl?.name || 'Client').slice(0, 18)}</div><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer', background: isApproved ? '#28A745' : '#FFC107', color: isApproved ? '#fff' : '#000' }} onClick={() => isApproved ? revokeWeekCompat(e.id, cid) : saveReviewCompat(e.id, cid, e.client_id || null, true)}>{isApproved ? '✓ Approuvé' : 'Approuver heures'}</button><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'var(--brand)' : 'var(--surface)', color: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? '#fff' : 'var(--text2)' }} onClick={() => toggleBillingPanel(e.id, cid, e.client_id || null)}>📋 {expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'Fermer' : 'Détails'}</button></div>; })}</td></tr>{viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} validationSummary={null} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentTimesheet={currentTimesheet} timesheetAttachments={timesheetAttachments} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} onSave={() => saveReviewCompat(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReviewCompat(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeekCompat(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoiceCompat(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onOpenAttachment={openReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} toast={toast} />}</div></td></tr>}</React.Fragment>; })}</tbody></table></div><Modal open={!!modal} onClose={() => setModal(null)} title={modal?.type === 'edit' ? 'Modifier le quart' : 'Ajouter un quart'}>{modal && <div style={{ display: 'grid', gap: 10 }}><div><label>Employé</label><select className="input" value={modal.data.employeeId} onChange={e => updateModalField('employeeId', e.target.value)}><option value="">Choisir</option>{employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label>Date</label><input className="input" type="date" value={modal.data.date} onChange={e => updateModalField('date', e.target.value)} /></div><div><label>Client</label><select className="input" value={modal.data.clientId} onChange={e => updateModalField('clientId', e.target.value)}><option value="">—</option>{clients.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}</select></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Début</label><input className="input" type="time" value={modal.data.start} onChange={e => updateModalField('start', e.target.value)} /></div><div><label>Fin</label><input className="input" type="time" value={modal.data.end} onChange={e => updateModalField('end', e.target.value)} /></div><div><label>Pause min</label><input className="input" type="number" value={modal.data.pauseMinutes} onChange={e => updateModalField('pauseMinutes', e.target.value)} /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Heures</label><input className="input" value={Number(modal.data.hours || 0).toFixed(2)} readOnly /></div><div><label>KM</label><input className="input" type="number" value={modal.data.km} onChange={e => updateModalField('km', e.target.value)} /></div><div><label>Déplacement (heures)</label><input className="input" type="number" step="0.25" value={modal.data.deplacement} onChange={e => updateModalField('deplacement', e.target.value)} /></div></div><div><label>Autre dépense ($)</label><input className="input" type="number" step="0.01" value={modal.data.autreDep} onChange={e => updateModalField('autreDep', e.target.value)} /></div><div><label>Lieu</label><input className="input" value={modal.data.location} onChange={e => updateModalField('location', e.target.value)} /></div><div><label>Notes</label><input className="input" value={modal.data.notes} onChange={e => updateModalField('notes', e.target.value)} /></div><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}><div>{modal.type === 'edit' && <button className="btn btn-outline btn-sm" onClick={deleteShift}><Trash2 size={14} /> Supprimer</button>}</div><div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline btn-sm" onClick={() => setModal(null)}>Annuler</button><button className="btn btn-primary btn-sm" onClick={saveShift}>Sauvegarder</button></div></div></div>}</Modal>
 
 {/* ── Import Modal ── */}
 <Modal open={importModal} onClose={() => setImportModal(false)} title="Importer des horaires (CSV / Excel)" wide>

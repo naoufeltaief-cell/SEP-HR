@@ -130,6 +130,18 @@ def _safe_parse_message_date(value: str) -> Optional[date]:
         return None
 
 
+def normalize_time_str(value: str) -> str:
+    raw = str(value or "").strip()
+    match = re.match(r"^(\d{1,2}):(\d{2})(?::\d{2})?$", raw)
+    if not match:
+        return ""
+    hours = int(match.group(1))
+    minutes = match.group(2)
+    if hours < 0 or hours > 23:
+        return ""
+    return f"{hours:02d}:{minutes}"
+
+
 def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
     month_index = (year * 12 + (month - 1)) + delta
     shifted_year, shifted_month_index = divmod(month_index, 12)
@@ -558,6 +570,141 @@ def merge_ai_attachment_analysis(analysis: dict, ai_review: dict) -> dict:
         "strong": score >= 0.65,
         "reasons": reasons,
         "ai_review": ai_review,
+    }
+
+
+def _normalize_shift_summary_item(item: dict) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    date_value = str(item.get("date") or "").strip()[:10]
+    start_value = normalize_time_str(str(item.get("start") or "").strip())
+    end_value = normalize_time_str(str(item.get("end") or "").strip())
+    try:
+        pause_minutes = int(round(float(item.get("pause_minutes", 0) or 0)))
+    except (TypeError, ValueError):
+        pause_minutes = 0
+    try:
+        hours = round(float(item.get("hours", 0) or 0), 2)
+    except (TypeError, ValueError):
+        hours = 0.0
+    shift_type = str(item.get("type") or "unknown").strip().lower()
+    if shift_type not in {"regular", "orientation", "unknown"}:
+        shift_type = "unknown"
+    if not any([date_value, start_value, end_value, hours]):
+        return None
+    return {
+        "date": date_value,
+        "start": start_value,
+        "end": end_value,
+        "pause_minutes": pause_minutes,
+        "hours": hours,
+        "type": shift_type,
+    }
+
+
+async def extract_timesheet_shift_summary(
+    document: dict,
+    employee_hint: str = "",
+    period_hint: str = "",
+    extracted_text: str = "",
+) -> dict:
+    if not OPENAI_API_KEY:
+        return {}
+
+    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
+    content = None
+    prompt_text = (
+        "Analyse cette feuille de temps de Soins Expert Plus. "
+        "Retourne uniquement un JSON compact avec les cles: "
+        "is_timesheet, employee_name, period_text, is_signed, shifts, notes. "
+        "Chaque element de shifts doit contenir: date, start, end, pause_minutes, hours, type. "
+        "Si une valeur est illisible, laisse-la vide ou a 0. "
+        "N'invente pas. Type doit etre regular, orientation ou unknown.\n\n"
+        f"Expediteur: {document.get('from', '')}\n"
+        f"Objet: {document.get('subject', '')}\n"
+        f"Apercu: {document.get('body_preview', '')}\n"
+        f"Nom du fichier: {document.get('filename', '')}\n"
+        f"Employe attendu: {employee_hint or 'inconnu'}\n"
+        f"Periode attendue si connue: {period_hint or 'inconnue'}"
+    )
+
+    if ext in _VISION_ATTACHMENT_EXTENSIONS:
+        file_data = document.get("file_data", b"") or b""
+        if not file_data:
+            return {}
+        mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
+        data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
+        content = [
+            {"type": "input_text", "text": prompt_text},
+            {"type": "input_image", "image_url": data_url},
+        ]
+    elif ext == "pdf":
+        preview_text = extracted_text or extract_document_text_preview(
+            document.get("filename", ""),
+            document.get("mime_type", ""),
+            document.get("file_data", b"") or b"",
+        )
+        if not preview_text:
+            return {}
+        content = [
+            {"type": "input_text", "text": f"{prompt_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"},
+        ]
+    else:
+        return {}
+
+    payload = {
+        "model": TIMESHEET_ATTACHMENT_MODEL,
+        "instructions": "Tu aides un commis de facturation et de paie a lire des feuilles de temps. Sois prudent, n'invente rien et extrais seulement ce qui est clairement visible ou lisible.",
+        "input": [{"role": "user", "content": content}],
+        "max_output_tokens": 900,
+    }
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            parsed = _parse_json_object(_extract_openai_text(response.json()))
+    except Exception:
+        return {}
+
+    shifts = []
+    for shift in parsed.get("shifts") or []:
+        normalized = _normalize_shift_summary_item(shift)
+        if normalized:
+            shifts.append(normalized)
+
+    is_signed = parsed.get("is_signed")
+    if isinstance(is_signed, str):
+        lowered = is_signed.strip().lower()
+        if lowered in {"true", "oui", "yes"}:
+            is_signed = True
+        elif lowered in {"false", "non", "no"}:
+            is_signed = False
+        else:
+            is_signed = None
+    elif not isinstance(is_signed, bool):
+        is_signed = None
+
+    is_timesheet = parsed.get("is_timesheet")
+    if isinstance(is_timesheet, str):
+        is_timesheet = is_timesheet.strip().lower() in {"true", "oui", "yes"}
+    elif not isinstance(is_timesheet, bool):
+        is_timesheet = None
+
+    return {
+        "is_timesheet": is_timesheet,
+        "employee_name": str(parsed.get("employee_name") or "").strip(),
+        "period_text": str(parsed.get("period_text") or "").strip(),
+        "is_signed": is_signed,
+        "shifts": shifts[:20],
+        "notes": str(parsed.get("notes") or "").strip(),
     }
 
 
@@ -1375,6 +1522,90 @@ async def build_timesheet_documents_summary(
     for item in values:
         item["hours"] = round(item["hours"], 2)
     return values
+
+
+async def summarize_recent_timesheet_documents(
+    db: AsyncSession,
+    documents: list[dict],
+    employee: Optional[Employee] = None,
+) -> list[dict]:
+    summaries = []
+    for document in documents or []:
+        extracted_text = extract_document_text_preview(
+            document.get("filename", ""),
+            document.get("mime_type", ""),
+            document.get("file_data", b"") or b"",
+        )
+        matched_employee = employee
+        match_reason = "filtre"
+        if not matched_employee:
+            matched_employee, match_reason = await match_employee_from_email(
+                db,
+                document.get("from", ""),
+                subject=document.get("subject", ""),
+                body_preview=" ".join(part for part in [document.get("body_preview", ""), extracted_text] if part),
+                attachment_names=[document.get("filename", ""), extracted_text],
+            )
+        analysis = analyze_timesheet_document(document, employee=matched_employee, extracted_text=extracted_text)
+        ai_review = {}
+        if _should_use_ai_attachment_review(document, analysis, matched_employee):
+            ai_review = await inspect_attachment_with_openai(
+                document,
+                employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+            )
+            if ai_review:
+                analysis = merge_ai_attachment_analysis(analysis, ai_review)
+
+        is_candidate = bool(analysis.get("likely") or analysis.get("strong") or ai_review.get("is_timesheet") is True)
+        if not is_candidate:
+            continue
+
+        summary = await extract_timesheet_shift_summary(
+            document,
+            employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+            extracted_text=extracted_text,
+        )
+        if summary and summary.get("is_timesheet") is False and not analysis.get("strong"):
+            continue
+
+        reference_date = _safe_parse_message_date(document.get("date", ""))
+        period_source = " ".join(
+            part
+            for part in [
+                summary.get("period_text", "") if summary else "",
+                document.get("subject", ""),
+                document.get("body_preview", ""),
+                document.get("filename", ""),
+                extracted_text,
+            ]
+            if part
+        )
+        extracted_period = extract_period_from_text(period_source, reference_date=reference_date)
+        period_start = extracted_period[0].isoformat() if extracted_period else ""
+        period_end = extracted_period[1].isoformat() if extracted_period else ""
+        shifts = list(summary.get("shifts") or [])
+        summaries.append(
+            {
+                "message_id": str(document.get("message_id") or ""),
+                "filename": str(document.get("filename") or ""),
+                "from": str(document.get("from") or ""),
+                "subject": str(document.get("subject") or ""),
+                "date": str(document.get("date") or ""),
+                "employee_name": getattr(matched_employee, "name", "") or str(summary.get("employee_name") or "").strip(),
+                "employee_id": getattr(matched_employee, "id", None),
+                "match_reason": match_reason or "",
+                "confidence_score": float(analysis.get("score") or 0),
+                "analysis_reasons": list(analysis.get("reasons") or []),
+                "period_start": period_start,
+                "period_end": period_end,
+                "is_signed": summary.get("is_signed"),
+                "shift_count": len(shifts),
+                "shifts": shifts,
+                "notes": str(summary.get("notes") or "").strip(),
+            }
+        )
+
+    return summaries
 
 
 async def build_accommodation_documents_summary(

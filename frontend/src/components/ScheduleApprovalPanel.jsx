@@ -364,12 +364,16 @@ export default function ScheduleApprovalPanel({
 
   const handleApprove = async () => {
     const ok = await saveAllDirtyShifts();
-    if (ok) onApprove?.();
+    if (ok) {
+      await onApprove?.();
+    }
   };
 
   const handleGenerateInvoice = async () => {
     const ok = await saveAllDirtyShifts();
-    if (ok) onGenerateInvoice?.();
+    if (ok) {
+      await onGenerateInvoice?.();
+    }
   };
 
   const removeShiftLine = async (shift) => {

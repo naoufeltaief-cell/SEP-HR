@@ -7,7 +7,7 @@ import { ChevronLeft, ChevronRight, Plus, Send, Calendar, Search, FileText, Tras
 
 const ApprovalPanel = ScheduleApprovalPanel;
 
-const MONTHS_FULL = ['Janvier', 'FÃ©vrier', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'AoÃ»t', 'Septembre', 'Octobre', 'Novembre', 'DÃ©cembre'];
+const MONTHS_FULL = ['Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin', 'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'];
 const TPS_RATE = 0.05;
 const TVQ_RATE = 0.09975;
 const GARDE_RATE = 86.23;
@@ -65,6 +65,42 @@ function computeAccommodationEstimate(accommodation, allEmployeeSchedules, bille
   return { days: billedWorkedDates.length, costPerDay: costPerWorkedDay, amount: billedWorkedDates.length * costPerWorkedDay };
 }
 
+function normalizeApprovalRecord(record, source = 'review') {
+  if (!record) return null;
+  return {
+    ...record,
+    employee_id: Number(record.employee_id || 0),
+    client_id: Number(record.client_id || 0),
+    week_start: record.week_start ? String(record.week_start) : '',
+    week_end: record.week_end ? String(record.week_end) : '',
+    status: record.status || 'pending',
+    notes: record.notes || '',
+    approved_hours: Number(record.approved_hours || 0),
+    approved_shift_count: Number(record.approved_shift_count || 0),
+    week_total_hours: Number(record.week_total_hours || 0),
+    attachment_count: Number(record.attachment_count || 0),
+    source,
+  };
+}
+
+function mergeApprovalLists(reviews = [], legacyApprovals = []) {
+  const merged = new Map();
+
+  for (const approval of legacyApprovals || []) {
+    const normalized = normalizeApprovalRecord(approval, 'legacy');
+    if (!normalized) continue;
+    merged.set(`${normalized.employee_id}:${normalized.client_id}:${normalized.week_start}`, normalized);
+  }
+
+  for (const review of reviews || []) {
+    const normalized = normalizeApprovalRecord(review, 'review');
+    if (!normalized) continue;
+    merged.set(`${normalized.employee_id}:${normalized.client_id}:${normalized.week_start}`, normalized);
+  }
+
+  return Array.from(merged.values()).sort((a, b) => String(b.week_start || '').localeCompare(String(a.week_start || '')));
+}
+
 export default function SchedulesPage({ toast, onNavigate }) {
   const [schedules, setSchedules] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -79,22 +115,25 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [reviewDraft, setReviewDraft] = useState({ approvedHours: 0, notes: '' });
   const [reviewAttachments, setReviewAttachments] = useState([]);
   const [currentReview, setCurrentReview] = useState(null);
+  const [currentTimesheet, setCurrentTimesheet] = useState(null);
+  const [timesheetAttachments, setTimesheetAttachments] = useState([]);
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [billingLoading, setBillingLoading] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
 
   const reload = useCallback(async () => {
     try {
-      const [scheds, emps, cls, reviews] = await Promise.all([
+      const [scheds, emps, cls, reviews, legacyApprovals] = await Promise.all([
         api.getSchedules(),
         api.getEmployees(),
         api.getClients(),
         api.getScheduleReviews().catch(() => []),
+        api.getApprovals().catch(() => []),
       ]);
       setSchedules(scheds || []);
       setEmployees(emps || []);
       setClients(cls || []);
-      setApprovals(reviews || []);
+      setApprovals(mergeApprovalLists(reviews || [], legacyApprovals || []));
     } catch (err) {
       toast?.('Erreur: ' + err.message);
     } finally {
@@ -105,28 +144,176 @@ export default function SchedulesPage({ toast, onNavigate }) {
   useEffect(() => { reload(); }, [reload]);
   const viewDates = useMemo(() => viewMode === 'week' ? getWeekDates(selectedDate, 0) : getMonthDates(selectedDate), [viewMode, selectedDate]);
   const viewISOs = useMemo(() => viewDates.map(fmtISO), [viewDates]);
+  const currentWeekStart = useMemo(() => (viewMode === 'week' && viewDates.length >= 7 ? fmtISO(viewDates[0]) : null), [viewMode, viewDates]);
+  const currentWeekEnd = useMemo(() => (viewMode === 'week' && viewDates.length >= 7 ? fmtISO(viewDates[6]) : null), [viewMode, viewDates]);
   const activeEmpIds = useMemo(() => [...new Set(schedules.filter(s => viewISOs.includes(s.date)).map(s => s.employee_id))], [schedules, viewISOs]);
   const activeEmps = useMemo(() => { let emps = employees.filter(e => activeEmpIds.includes(e.id)).sort((a, b) => a.name.localeCompare(b.name)); if (filterText) { const q = filterText.toLowerCase(); emps = emps.filter(e => (e.name.toLowerCase() + ' ' + (e.position || '').toLowerCase()).includes(q)); } return emps; }, [employees, activeEmpIds, filterText]);
   const navigate = (dir) => setSelectedDate(d => { const n = new Date(d); if (viewMode === 'week') n.setDate(n.getDate() + dir * 7); else n.setMonth(n.getMonth() + dir); return n; });
-  const periodLabel = useMemo(() => viewMode === 'week' && viewDates.length >= 7 ? `${fmtDay(viewDates[0])} â€” ${fmtDay(viewDates[viewDates.length - 1])}` : `${MONTHS_FULL[selectedDate.getMonth()]} ${selectedDate.getFullYear()}`, [viewMode, viewDates, selectedDate]);
-  const getWeekStart = () => (viewMode === 'week' && viewDates.length >= 7 ? fmtISO(viewDates[0]) : null);
-  const getWeekEnd = () => (viewMode === 'week' && viewDates.length >= 7 ? fmtISO(viewDates[6]) : null);
+  const periodLabel = useMemo(() => viewMode === 'week' && viewDates.length >= 7 ? `${fmtDay(viewDates[0])} — ${fmtDay(viewDates[viewDates.length - 1])}` : `${MONTHS_FULL[selectedDate.getMonth()]} ${selectedDate.getFullYear()}`, [viewMode, viewDates, selectedDate]);
+  const getWeekStart = () => currentWeekStart;
+  const getWeekEnd = () => currentWeekEnd;
   const getWeekApprovalStatus = (employeeId, clientId) => approvals.find(a => a.employee_id === employeeId && a.client_id === clientId && a.week_start === getWeekStart());
   const getEmployeeClientIds = (employee, periodShifts) => { const ids = [...new Set(periodShifts.map(s => s.client_id).filter(Boolean))]; if (ids.length) return ids; if (employee?.client_id) return [employee.client_id]; return []; };
   const getClientWeekShifts = (employeeId, clientId, fallbackClientId = null) => schedules.filter(s => s.employee_id === employeeId && viewISOs.includes(s.date) && (s.client_id === clientId || (!s.client_id && fallbackClientId && fallbackClientId === clientId)));
   const getClientWeekHours = (employeeId, clientId, fallbackClientId = null) => getClientWeekShifts(employeeId, clientId, fallbackClientId).reduce((sum, s) => sum + (Number(s.hours) || 0), 0);
   const getEmployeeRate = (employeeId) => Number(employees.find(emp => String(emp.id) === String(employeeId))?.rate || 0);
+  const getValidationSummary = () => null;
+  const resolveApproval = useCallback(async (employeeId, clientId, weekStart) => {
+    const [reviews, legacyApprovals] = await Promise.all([
+      api.getScheduleReviews({ employee_id: employeeId, client_id: clientId, week_start: weekStart }).catch(() => []),
+      api.getApprovals({ employee_id: employeeId, client_id: clientId, week_start: weekStart }).catch(() => []),
+    ]);
+    const merged = mergeApprovalLists(reviews || [], legacyApprovals || []);
+    return merged[0] || null;
+  }, []);
 
   const openAdd = (employeeId = '', date = fmtISO(viewDates[0] || new Date())) => setModal({ type: 'add', data: { employeeId, date, start: '07:00', end: '15:00', pause: 0.5, pauseMinutes: 30, hours: 7.5, location: '', clientId: '', km: 0, deplacement: 0, autreDep: 0, notes: '', billableRate: getEmployeeRate(employeeId) } });
   const openEdit = (shift) => setModal({ type: 'edit', data: { id: shift.id, employeeId: shift.employee_id, date: shift.date, start: normalizeTimeForInput(shift.start), end: normalizeTimeForInput(shift.end), pause: Number(shift.pause || 0), pauseMinutes: pauseHoursToMinutes(shift.pause || 0), hours: Number(shift.hours || 0), location: shift.location || '', clientId: shift.client_id || '', km: shift.km || 0, deplacement: shift.deplacement || 0, autreDep: shift.autre_dep || 0, notes: shift.notes || '', billableRate: Number(shift.billable_rate || 0) } });
   const updateModalField = (field, value) => setModal(m => { const next = { ...m, data: { ...m.data, [field]: value } }; if (field === 'employeeId' && m.type === 'add') next.data.billableRate = getEmployeeRate(value); if (field === 'start' || field === 'end' || field === 'pauseMinutes') { next.data.pause = pauseMinutesToHours(next.data.pauseMinutes); next.data.hours = calcHours(next.data.start, next.data.end, Number(next.data.pause || 0)); } return next; });
-  const saveShift = async () => { try { const d = modal.data; const payload = { employee_id: Number(d.employeeId), date: d.date, start: normalizeTimeForInput(d.start), end: normalizeTimeForInput(d.end), pause: Number(d.pause || 0), hours: Number(d.hours || 0), location: d.location || '', client_id: d.clientId ? Number(d.clientId) : null, km: Number(d.km || 0), deplacement: Number(d.deplacement || 0), autre_dep: Number(d.autreDep || 0), notes: d.notes || '', billable_rate: Number(d.billableRate || getEmployeeRate(d.employeeId) || 0), status: 'published' }; if (modal.type === 'add') await api.createSchedule(payload); else await api.updateSchedule(d.id, payload); toast?.(modal.type === 'add' ? 'Quart ajoutÃ©' : 'Quart modifiÃ©'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
-  const deleteShift = async () => { try { await api.deleteSchedule(modal.data.id); toast?.('Quart supprimÃ©'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
-  const toggleBillingPanel = async (empId, clientId, fallbackClientId = null) => { if (expandedEmp?.empId === empId && expandedEmp?.clientId === clientId) { setExpandedEmp(null); setCurrentReview(null); setCurrentInvoice(null); setReviewAttachments([]); return; } const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we || !empId || !clientId) return; setBillingLoading(true); setExpandedEmp({ empId, clientId, fallbackClientId }); setCurrentReview(null); setCurrentInvoice(null); setReviewAttachments([]); const plannedHours = Number(getClientWeekHours(empId, clientId, fallbackClientId).toFixed(2)); setReviewDraft({ approvedHours: plannedHours, notes: '' }); try { const [reviews, invoices] = await Promise.all([api.getScheduleReviews({ employee_id: empId, client_id: clientId, week_start: ws }), api.getInvoices({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we })]); const review = (reviews || [])[0] || null; const invoice = (invoices || [])[0] || null; setCurrentReview(review); setCurrentInvoice(invoice); if (review?.id) { setReviewDraft({ approvedHours: Number(review.approved_hours || plannedHours), notes: review.notes || '' }); const att = await api.getScheduleReviewAttachments(review.id).catch(() => []); setReviewAttachments(att || []); } } catch (err) { toast?.('Erreur: ' + err.message); } finally { setBillingLoading(false); } };
-  const saveReview = async (empId, clientId, fallbackClientId = null, approve = false) => { const ws = getWeekStart(); if (!ws || !empId || !clientId) return; try { setBillingLoading(true); const approvedHours = Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0); const notes = reviewDraft?.notes || ''; let review = approve ? await api.approveReviewedWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }) : await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }); if (approve && (!review || review.status !== 'approved')) review = { ...(review || {}), employee_id: empId, client_id: clientId, week_start: ws, status: 'approved' }; setCurrentReview(review || null); setApprovals(prev => { const rest = prev.filter(a => !(a.employee_id === empId && a.client_id === clientId && a.week_start === ws)); return review ? [review, ...rest] : rest; }); if (approve) await reload(); toast?.(approve ? 'Heures approuvÃ©es' : 'RÃ©vision enregistrÃ©e'); } catch (err) { toast?.('Erreur: ' + err.message); } finally { setBillingLoading(false); } };
-  const revokeWeek = async (employeeId, clientId) => { const ws = getWeekStart(); if (!ws || !employeeId || !clientId) return; try { await api.revokeReviewedWeek({ employee_id: employeeId, client_id: clientId, week_start: ws }); toast?.('Approbation rÃ©voquÃ©e'); await reload(); setCurrentReview(r => r ? { ...r, status: 'rejected' } : r); setCurrentInvoice(null); } catch (err) { toast?.('Erreur: ' + err.message); } };
-  const handleReviewAttachment = async (e, empId, clientId, fallbackClientId = null) => { const file = e.target.files?.[0]; if (!file || !empId || !clientId) return; try { let review = currentReview; if (!review?.id) { review = await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: getWeekStart(), approved_hours: Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0), notes: reviewDraft?.notes || '' }); setCurrentReview(review || null); } if (!review?.id) throw new Error('RÃ©vision introuvable'); await api.uploadScheduleReviewAttachment(review.id, file, 'justificatif', file.name); const att = await api.getScheduleReviewAttachments(review.id); setReviewAttachments(att || []); toast?.('Justificatif ajoutÃ©'); } catch (err) { toast?.('Erreur: ' + err.message); } finally { e.target.value = ''; } };
-  const deleteReviewAttachment = async (attId) => { if (!currentReview?.id || !attId) return; try { await api.deleteScheduleReviewAttachment(currentReview.id, attId); const att = await api.getScheduleReviewAttachments(currentReview.id); setReviewAttachments(att || []); toast?.('Justificatif supprimÃ©'); } catch (err) { toast?.('Erreur: ' + err.message); } };
+  const saveShift = async () => { try { const d = modal.data; const payload = { employee_id: Number(d.employeeId), date: d.date, start: normalizeTimeForInput(d.start), end: normalizeTimeForInput(d.end), pause: Number(d.pause || 0), hours: Number(d.hours || 0), location: d.location || '', client_id: d.clientId ? Number(d.clientId) : null, km: Number(d.km || 0), deplacement: Number(d.deplacement || 0), autre_dep: Number(d.autreDep || 0), notes: d.notes || '', billable_rate: Number(d.billableRate || getEmployeeRate(d.employeeId) || 0), status: 'published' }; if (modal.type === 'add') await api.createSchedule(payload); else await api.updateSchedule(d.id, payload); toast?.(modal.type === 'add' ? 'Quart ajouté' : 'Quart modifié'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
+  const deleteShift = async () => { try { await api.deleteSchedule(modal.data.id); toast?.('Quart supprimé'); setModal(null); await reload(); } catch (err) { toast?.('Erreur: ' + err.message); } };
+  const toggleBillingPanel = async (empId, clientId, fallbackClientId = null) => {
+    if (expandedEmp?.empId === empId && expandedEmp?.clientId === clientId) {
+      setExpandedEmp(null);
+      setCurrentReview(null);
+      setCurrentTimesheet(null);
+      setTimesheetAttachments([]);
+      setCurrentInvoice(null);
+      setReviewAttachments([]);
+      return;
+    }
+
+    const ws = getWeekStart();
+    const we = getWeekEnd();
+    if (!ws || !we || !empId || !clientId) return;
+
+    setBillingLoading(true);
+    setExpandedEmp({ empId, clientId, fallbackClientId });
+    setCurrentReview(null);
+    setCurrentTimesheet(null);
+    setTimesheetAttachments([]);
+    setCurrentInvoice(null);
+    setReviewAttachments([]);
+
+    const plannedHours = Number(getClientWeekHours(empId, clientId, fallbackClientId).toFixed(2));
+    setReviewDraft({ approvedHours: plannedHours, notes: '' });
+
+    try {
+      const [review, invoices, timesheets] = await Promise.all([
+        resolveApproval(empId, clientId, ws),
+        api.getInvoices({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we }),
+        api.getTimesheets({ employee_id: empId, period_start: ws, period_end: we }),
+      ]);
+      const invoice = (invoices || [])[0] || null;
+      const timesheet = (timesheets || []).find(item => item.employee_id === empId && item.period_start === ws && item.period_end === we) || null;
+      setCurrentReview(review || null);
+      setCurrentTimesheet(timesheet);
+      setCurrentInvoice(invoice);
+
+      if (review?.id) {
+        setReviewDraft({ approvedHours: Number(review.approved_hours || plannedHours), notes: review.notes || '' });
+        const att = await api.getScheduleReviewAttachments(review.id).catch(() => []);
+        setReviewAttachments(att || []);
+      }
+      if (timesheet?.id) {
+        const att = await api.getTimesheetAttachments(timesheet.id).catch(() => []);
+        setTimesheetAttachments(att || []);
+      }
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    } finally {
+      setBillingLoading(false);
+    }
+  };
+  const saveReview = async (empId, clientId, fallbackClientId = null, approve = false) => { const ws = getWeekStart(); if (!ws || !empId || !clientId) return; try { setBillingLoading(true); const approvedHours = Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0); const notes = reviewDraft?.notes || ''; let review = approve ? await api.approveReviewedWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }) : await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes }); if (approve && (!review || review.status !== 'approved')) review = { ...(review || {}), employee_id: empId, client_id: clientId, week_start: ws, status: 'approved' }; setCurrentReview(review || null); setApprovals(prev => { const rest = prev.filter(a => !(a.employee_id === empId && a.client_id === clientId && a.week_start === ws)); return review ? [review, ...rest] : rest; }); if (approve) await reload(); toast?.(approve ? 'Heures approuvées' : 'Révision enregistrée'); } catch (err) { toast?.('Erreur: ' + err.message); } finally { setBillingLoading(false); } };
+  const revokeWeek = async (employeeId, clientId) => { const ws = getWeekStart(); if (!ws || !employeeId || !clientId) return; try { await api.revokeReviewedWeek({ employee_id: employeeId, client_id: clientId, week_start: ws }); toast?.('Approbation révoquée'); await reload(); setCurrentReview(r => r ? { ...r, status: 'rejected' } : r); setCurrentInvoice(null); } catch (err) { toast?.('Erreur: ' + err.message); } };
+  const handleReviewAttachment = async (e, empId, clientId, fallbackClientId = null) => { const file = e.target.files?.[0]; if (!file || !empId || !clientId) return; try { let review = currentReview; if (!review?.id) { review = await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: getWeekStart(), approved_hours: Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0), notes: reviewDraft?.notes || '' }); setCurrentReview(review || null); } if (!review?.id) throw new Error('Révision introuvable'); await api.uploadScheduleReviewAttachment(review.id, file, 'justificatif', file.name); const att = await api.getScheduleReviewAttachments(review.id); setReviewAttachments(att || []); toast?.('Justificatif ajouté'); } catch (err) { toast?.('Erreur: ' + err.message); } finally { e.target.value = ''; } };
+  const deleteReviewAttachment = async (attId) => { if (!currentReview?.id || !attId) return; try { await api.deleteScheduleReviewAttachment(currentReview.id, attId); const att = await api.getScheduleReviewAttachments(currentReview.id); setReviewAttachments(att || []); toast?.('Justificatif supprimé'); } catch (err) { toast?.('Erreur: ' + err.message); } };
+  const saveReviewCompat = async (empId, clientId, fallbackClientId = null, approve = false) => {
+    const ws = getWeekStart();
+    if (!ws || !empId || !clientId) return;
+
+    try {
+      setBillingLoading(true);
+      const approvedHours = Number(reviewDraft?.approvedHours || getClientWeekHours(empId, clientId, fallbackClientId) || 0);
+      const notes = reviewDraft?.notes || '';
+
+      if (approve) {
+        try {
+          await api.approveReviewedWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes });
+        } catch {
+          await api.approveWeek({ employee_id: empId, client_id: clientId, week_start: ws, notes });
+        }
+      } else {
+        await api.reviewWeek({ employee_id: empId, client_id: clientId, week_start: ws, approved_hours: approvedHours, notes });
+      }
+
+      const review = await resolveApproval(empId, clientId, ws);
+      setCurrentReview(review || null);
+
+      if (review?.id) {
+        const att = await api.getScheduleReviewAttachments(review.id).catch(() => []);
+        setReviewAttachments(att || []);
+      }
+
+      setApprovals(prev => {
+        const rest = prev.filter(a => !(a.employee_id === empId && a.client_id === clientId && a.week_start === ws));
+        return review ? mergeApprovalLists([review], rest) : rest;
+      });
+
+      await reload();
+      toast?.(approve ? 'Heures approuvées' : 'Révision enregistrée');
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    } finally {
+      setBillingLoading(false);
+    }
+  };
+
+  const revokeWeekCompat = async (employeeId, clientId) => {
+    const ws = getWeekStart();
+    if (!ws || !employeeId || !clientId) return;
+
+    try {
+      try {
+        await api.revokeReviewedWeek({ employee_id: employeeId, client_id: clientId, week_start: ws });
+      } catch {
+        await api.revokeWeek({ employee_id: employeeId, client_id: clientId, week_start: ws });
+      }
+      toast?.('Approbation révoquée');
+      await reload();
+      setCurrentReview(r => r ? { ...r, status: 'rejected' } : r);
+      setCurrentInvoice(null);
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    }
+  };
+
+  const generateInvoiceCompat = async (empId, clientId) => {
+    const ws = getWeekStart();
+    const we = getWeekEnd();
+    if (!ws || !we || !empId || !clientId) return;
+
+    const approvalStatus = currentReview?.status || getWeekApprovalStatus(empId, clientId)?.status;
+    if (approvalStatus !== 'approved') {
+      toast?.('Approuve les heures avant de générer la facture');
+      return;
+    }
+
+    try {
+      setBillingLoading(true);
+      const result = await api.generateFromSchedules({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we });
+      setCurrentInvoice(result || null);
+      toast?.(`Facture ${result.number} générée`);
+    } catch (err) {
+      const msg = err.message || '';
+      const isNetworkError = msg === 'Failed to fetch' || msg === 'NetworkError when attempting to fetch resource.' || msg === 'Load failed';
+      toast?.('Erreur: ' + (isNetworkError ? 'Impossible de joindre le serveur.' : (msg || 'Erreur réseau')));
+    } finally {
+      setBillingLoading(false);
+    }
+  };
+
   const openReviewAttachment = async (attId) => {
     if (!currentReview?.id || !attId) return;
     try {
@@ -140,9 +327,9 @@ export default function SchedulesPage({ toast, onNavigate }) {
       toast?.('Erreur: ' + err.message);
     }
   };
-  const generateInvoice = async (empId, clientId) => { const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we || !empId || !clientId) return; if (currentReview?.status !== 'approved') { toast?.('Approuve les heures avant de gÃ©nÃ©rer la facture'); return; } try { setBillingLoading(true); const result = await api.generateFromSchedules({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we }); setCurrentInvoice(result || null); toast?.(`Facture ${result.number} gÃ©nÃ©rÃ©e`); } catch (err) { const msg = err.message || ''; const isNetworkError = msg === 'Failed to fetch' || msg === 'NetworkError when attempting to fetch resource.' || msg === 'Load failed'; toast?.('Erreur: ' + (isNetworkError ? 'Impossible de joindre le serveur.' : (msg || 'Erreur rÃ©seau'))); } finally { setBillingLoading(false); } };
-  const generateAllApproved = async () => { const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we) { toast?.('PÃ©riode invalide â€” sÃ©lectionnez une semaine valide'); return; } try { setBulkLoading(true); const result = await api.generateAllApprovedInvoices({ period_start: ws, period_end: we }); const skippedMsg = (result.skipped && result.skipped.length > 0) ? ` (${result.skipped.length} ignorÃ©e(s))` : ''; toast?.(`${result.count || 0} facture(s) approuvÃ©e(s) gÃ©nÃ©rÃ©e(s)${skippedMsg}`); if ((result.count || 0) > 0 && onNavigate) onNavigate('invoices'); } catch (err) { const msg = err.message || ''; const isNetworkError = msg === 'Failed to fetch' || msg === 'NetworkError when attempting to fetch resource.' || msg === 'Load failed'; toast?.('Erreur gÃ©nÃ©ration: ' + (isNetworkError ? 'Impossible de joindre le serveur. VÃ©rifiez que le backend est dÃ©marrÃ©.' : (msg || 'Erreur rÃ©seau'))); } finally { setBulkLoading(false); } };
-  // â”€â”€ Import / Export CSV/Excel â”€â”€
+  const generateInvoice = async (empId, clientId) => { const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we || !empId || !clientId) return; if (currentReview?.status !== 'approved') { toast?.('Approuve les heures avant de générer la facture'); return; } try { setBillingLoading(true); const result = await api.generateFromSchedules({ employee_id: empId, client_id: clientId, period_start: ws, period_end: we }); setCurrentInvoice(result || null); toast?.(`Facture ${result.number} générée`); } catch (err) { const msg = err.message || ''; const isNetworkError = msg === 'Failed to fetch' || msg === 'NetworkError when attempting to fetch resource.' || msg === 'Load failed'; toast?.('Erreur: ' + (isNetworkError ? 'Impossible de joindre le serveur.' : (msg || 'Erreur réseau'))); } finally { setBillingLoading(false); } };
+  const generateAllApproved = async () => { const ws = getWeekStart(), we = getWeekEnd(); if (!ws || !we) { toast?.('Période invalide — sélectionnez une semaine valide'); return; } try { setBulkLoading(true); const result = await api.generateAllApprovedInvoices({ period_start: ws, period_end: we }); const skippedMsg = (result.skipped && result.skipped.length > 0) ? ` (${result.skipped.length} ignorée(s))` : ''; toast?.(`${result.count || 0} facture(s) approuvée(s) générée(s)${skippedMsg}`); if ((result.count || 0) > 0 && onNavigate) onNavigate('invoices'); } catch (err) { const msg = err.message || ''; const isNetworkError = msg === 'Failed to fetch' || msg === 'NetworkError when attempting to fetch resource.' || msg === 'Load failed'; toast?.('Erreur génération: ' + (isNetworkError ? 'Impossible de joindre le serveur. Vérifiez que le backend est démarré.' : (msg || 'Erreur réseau'))); } finally { setBulkLoading(false); } };
+  // ── Import / Export CSV/Excel ──
   const [importModal, setImportModal] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
@@ -214,12 +401,12 @@ export default function SchedulesPage({ toast, onNavigate }) {
       const nom = nameParts.join(' ');
 
       return {
-        'PrÃ©nom': prenom,
+        'Prénom': prenom,
         'Nom': nom,
-        'EmployÃ©_ID': shift.employee_id ?? '',
+        'Employé_ID': shift.employee_id ?? '',
         'Courriel': employee?.email || '',
         'Date': shift.date || '',
-        'DÃ©but': shift.start || '',
+        'Début': shift.start || '',
         'Fin': shift.end || '',
         'Heures': Number(shift.hours || 0),
         'Pause': Number(shift.pause || 0),
@@ -228,8 +415,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
         'Client': client?.name || '',
         'Client_ID': shift.client_id || '',
         'KM': Number(shift.km || 0),
-        'DÃ©placement': Number(shift.deplacement || 0),
-        'Autre dÃ©pense': Number(shift.autre_dep || 0),
+        'Déplacement': Number(shift.deplacement || 0),
+        'Autre dépense': Number(shift.autre_dep || 0),
         'Heures garde': Number(shift.garde_hours || 0),
         'Heures rappel': Number(shift.rappel_hours || 0),
         'Statut': shift.status || '',
@@ -239,7 +426,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   };
 
   const handleImport = async () => {
-    if (!importFile) { toast?.('SÃ©lectionnez un fichier'); return; }
+    if (!importFile) { toast?.('Sélectionnez un fichier'); return; }
     setImporting(true); setImportResult(null);
     try {
       const formData = new FormData();
@@ -248,10 +435,10 @@ export default function SchedulesPage({ toast, onNavigate }) {
       setImportResult(data);
       if (data.success > 0) {
         await reload();
-        toast?.(`${data.success} quart(s) importÃ©(s)`);
+        toast?.(`${data.success} quart(s) importé(s)`);
       }
     } catch (err) {
-      const detail = formatNetworkError(err, "Impossible de joindre le serveur d'import. VÃ©rifiez le dÃ©ploiement du frontend et du backend.");
+      const detail = formatNetworkError(err, "Impossible de joindre le serveur d'import. Vérifiez le déploiement du frontend et du backend.");
       setImportResult({ success: 0, errors: 1, error_details: [{ row: 0, error: detail }], message: detail });
       toast?.('Erreur import: ' + detail);
     }
@@ -264,9 +451,9 @@ export default function SchedulesPage({ toast, onNavigate }) {
       if (exportOpts.format === 'csv') {
         const rows = buildScheduleExportRows();
         const headers = rows.length ? Object.keys(rows[0]) : [
-          'PrÃ©nom', 'Nom', 'EmployÃ©_ID', 'Courriel', 'Date', 'DÃ©but', 'Fin', 'Heures', 'Pause',
-          'Taux horaire', 'Lieu', 'Client', 'Client_ID', 'KM', 'DÃ©placement',
-          'Autre dÃ©pense', 'Heures garde', 'Heures rappel', 'Statut', 'Notes',
+          'Prénom', 'Nom', 'Employé_ID', 'Courriel', 'Date', 'Début', 'Fin', 'Heures', 'Pause',
+          'Taux horaire', 'Lieu', 'Client', 'Client_ID', 'KM', 'Déplacement',
+          'Autre dépense', 'Heures garde', 'Heures rappel', 'Statut', 'Notes',
         ];
         const csvContent = [
           headers.map(toCsvCell).join(','),
@@ -277,7 +464,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
           'horaires_export.csv',
         );
         setExportModal(false);
-        toast?.(`Export CSV tÃ©lÃ©chargÃ© (${rows.length} quart(s))`);
+        toast?.(`Export CSV téléchargé (${rows.length} quart(s))`);
         return;
       }
 
@@ -291,9 +478,9 @@ export default function SchedulesPage({ toast, onNavigate }) {
       const blob = await resp.blob();
       const fallbackName = `horaires_export.${exportOpts.format === 'xlsx' ? 'xlsx' : 'csv'}`;
       downloadBlob(blob, fileNameFromDisposition(resp.headers.get('Content-Disposition'), fallbackName));
-      setExportModal(false); toast?.('Export tÃ©lÃ©chargÃ©');
+      setExportModal(false); toast?.('Export téléchargé');
     } catch (err) {
-      toast?.('Erreur export: ' + formatNetworkError(err, "Impossible de joindre le serveur d'export. VÃ©rifiez le dÃ©ploiement du frontend et du backend."));
+      toast?.('Erreur export: ' + formatNetworkError(err, "Impossible de joindre le serveur d'export. Vérifiez le déploiement du frontend et du backend."));
     }
     finally { setExporting(false); }
   };
@@ -301,9 +488,9 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const handleDrop = (e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer?.files?.[0]; if (f) setImportFile(f); };
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text3)' }}>Chargement des horaires...</div>;
-  return <><div className="page-header"><h1 className="page-title"><Calendar size={22} style={{ marginRight: 8, verticalAlign: 'text-bottom', color: 'var(--brand)' }} />Horaires</h1><div style={{ display: 'flex', gap: 8 }}>{viewMode === 'week' && <button className="btn btn-outline btn-sm" onClick={generateAllApproved} disabled={bulkLoading || billingLoading}><FileText size={13} /> {bulkLoading ? 'GÃ©nÃ©rationâ€¦' : 'GÃ©nÃ©rer toutes les factures approuvÃ©es'}</button>}<button className="btn btn-outline btn-sm" onClick={() => api.publishAll().then(() => { toast?.('Quarts publiÃ©s'); reload(); }).catch(err => toast?.('Erreur: ' + err.message))}><Send size={13} /> Publier tout</button><button className="btn btn-outline btn-sm" onClick={() => { setImportFile(null); setImportResult(null); setImportModal(true); }}><Upload size={13} /> Importer</button><button className="btn btn-outline btn-sm" onClick={() => setExportModal(true)}><Download size={13} /> Exporter</button><button className="btn btn-primary btn-sm" onClick={() => openAdd()}><Plus size={14} /> Ajouter</button></div></div><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}><ChevronLeft size={16} /></button><span style={{ fontSize: 13, fontWeight: 600, minWidth: 230, textAlign: 'center' }}>{periodLabel}</span><button className="btn btn-outline btn-sm" onClick={() => navigate(1)}><ChevronRight size={16} /></button></div><div style={{ display: 'flex', gap: 6 }}><button className={`btn btn-sm ${viewMode === 'week' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('week')}>Semaine</button><button className={`btn btn-sm ${viewMode === 'month' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('month')}>Mois</button></div></div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ position: 'relative', maxWidth: 300 }}><Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text3)' }} /><input className="input" style={{ paddingLeft: 32, padding: '7px 12px 7px 32px', fontSize: 12 }} placeholder="Rechercher un employÃ©..." value={filterText} onChange={e => setFilterText(e.target.value)} /></div><div style={{ fontSize: 12, color: 'var(--text3)' }}>{schedules.length} quarts Â· {employees.length} employÃ©s</div></div></div><div className="schedule-grid"><table><thead><tr><th>EmployÃ©</th>{viewDates.map((d, i) => <th key={i}>{fmtDay(d)}</th>)}<th style={{ minWidth: 120, background: 'var(--brand-xl)' }}>Total</th></tr></thead><tbody>{activeEmps.map(e => { const periodShifts = schedules.filter(s => s.employee_id === e.id && viewISOs.includes(s.date)); const totalHrs = periodShifts.reduce((sum, s) => sum + Number(s.hours || 0), 0); const totalKm = periodShifts.reduce((sum, s) => sum + Number(s.km || 0), 0); const totalDep = periodShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0), 0); const totalFrais = totalDep + totalKm * RATE_KM; const empClientIds = getEmployeeClientIds(e, periodShifts); return <React.Fragment key={e.id}><tr><td><div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('employees')}><Avatar name={e.name} size={30} /><div><div style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div></div></div></td>{viewDates.map((d, i) => { const iso = fmtISO(d); const shifts = schedules.filter(s => s.employee_id === e.id && s.date === iso); return <td key={i} onDoubleClick={() => openAdd(e.id, iso)}>{shifts.map(s => <ShiftPill key={s.id} shift={s} onClick={() => openEdit(s)} />)}{shifts.length === 0 && <div onClick={() => openAdd(e.id, iso)} style={{ opacity: .25, textAlign: 'center', fontSize: 16, lineHeight: '30px', color: 'var(--brand)', cursor: 'pointer' }}>+</div>}</td>; })}<td style={{ minWidth: 160, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}><div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>{totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}{totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}{viewMode === 'week' && empClientIds.map(cid => { const appr = getWeekApprovalStatus(e.id, cid); const isApproved = appr && appr.status === 'approved'; const cl = clients.find(c => c.id === cid); return <div key={cid} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6 }}><div style={{ fontSize: 9, color: 'var(--text3)' }}>{(cl?.name || 'Client').slice(0, 18)}</div><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer', background: isApproved ? '#28A745' : '#FFC107', color: isApproved ? '#fff' : '#000' }} onClick={() => isApproved ? revokeWeek(e.id, cid) : saveReview(e.id, cid, e.client_id || null, true)}>{isApproved ? 'âœ“ ApprouvÃ©' : 'Approuver heures'}</button><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'var(--brand)' : 'var(--surface)', color: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? '#fff' : 'var(--text2)' }} onClick={() => toggleBillingPanel(e.id, cid, e.client_id || null)}>ðŸ“‹ {expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'Fermer' : 'DÃ©tails'}</button></div>; })}</td></tr>{viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} busy={billingLoading} onSave={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReview(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeek(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoice(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onOpenAttachment={openReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} toast={toast} />}</div></td></tr>}</React.Fragment>; })}</tbody></table></div><Modal open={!!modal} onClose={() => setModal(null)} title={modal?.type === 'edit' ? 'Modifier le quart' : 'Ajouter un quart'}>{modal && <div style={{ display: 'grid', gap: 10 }}><div><label>EmployÃ©</label><select className="input" value={modal.data.employeeId} onChange={e => updateModalField('employeeId', e.target.value)}><option value="">Choisir</option>{employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label>Date</label><input className="input" type="date" value={modal.data.date} onChange={e => updateModalField('date', e.target.value)} /></div><div><label>Client</label><select className="input" value={modal.data.clientId} onChange={e => updateModalField('clientId', e.target.value)}><option value="">â€”</option>{clients.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}</select></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>DÃ©but</label><input className="input" type="time" value={modal.data.start} onChange={e => updateModalField('start', e.target.value)} /></div><div><label>Fin</label><input className="input" type="time" value={modal.data.end} onChange={e => updateModalField('end', e.target.value)} /></div><div><label>Pause min</label><input className="input" type="number" value={modal.data.pauseMinutes} onChange={e => updateModalField('pauseMinutes', e.target.value)} /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Heures</label><input className="input" value={Number(modal.data.hours || 0).toFixed(2)} readOnly /></div><div><label>KM</label><input className="input" type="number" value={modal.data.km} onChange={e => updateModalField('km', e.target.value)} /></div><div><label>DÃ©placement (heures)</label><input className="input" type="number" step="0.25" value={modal.data.deplacement} onChange={e => updateModalField('deplacement', e.target.value)} /></div></div><div><label>Autre dÃ©pense ($)</label><input className="input" type="number" step="0.01" value={modal.data.autreDep} onChange={e => updateModalField('autreDep', e.target.value)} /></div><div><label>Lieu</label><input className="input" value={modal.data.location} onChange={e => updateModalField('location', e.target.value)} /></div><div><label>Notes</label><input className="input" value={modal.data.notes} onChange={e => updateModalField('notes', e.target.value)} /></div><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}><div>{modal.type === 'edit' && <button className="btn btn-outline btn-sm" onClick={deleteShift}><Trash2 size={14} /> Supprimer</button>}</div><div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline btn-sm" onClick={() => setModal(null)}>Annuler</button><button className="btn btn-primary btn-sm" onClick={saveShift}>Sauvegarder</button></div></div></div>}</Modal>
+  return <><div className="page-header"><h1 className="page-title"><Calendar size={22} style={{ marginRight: 8, verticalAlign: 'text-bottom', color: 'var(--brand)' }} />Horaires</h1><div style={{ display: 'flex', gap: 8 }}>{viewMode === 'week' && <button className="btn btn-outline btn-sm" onClick={generateAllApproved} disabled={bulkLoading || billingLoading}><FileText size={13} /> {bulkLoading ? 'Génération…' : 'Générer toutes les factures approuvées'}</button>}<button className="btn btn-outline btn-sm" onClick={() => api.publishAll().then(() => { toast?.('Quarts publiés'); reload(); }).catch(err => toast?.('Erreur: ' + err.message))}><Send size={13} /> Publier tout</button><button className="btn btn-outline btn-sm" onClick={() => { setImportFile(null); setImportResult(null); setImportModal(true); }}><Upload size={13} /> Importer</button><button className="btn btn-outline btn-sm" onClick={() => setExportModal(true)}><Download size={13} /> Exporter</button><button className="btn btn-primary btn-sm" onClick={() => openAdd()}><Plus size={14} /> Ajouter</button></div></div><div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}><ChevronLeft size={16} /></button><span style={{ fontSize: 13, fontWeight: 600, minWidth: 230, textAlign: 'center' }}>{periodLabel}</span><button className="btn btn-outline btn-sm" onClick={() => navigate(1)}><ChevronRight size={16} /></button></div><div style={{ display: 'flex', gap: 6 }}><button className={`btn btn-sm ${viewMode === 'week' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('week')}>Semaine</button><button className={`btn btn-sm ${viewMode === 'month' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('month')}>Mois</button></div></div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}><div style={{ position: 'relative', maxWidth: 300 }}><Search size={14} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text3)' }} /><input className="input" style={{ paddingLeft: 32, padding: '7px 12px 7px 32px', fontSize: 12 }} placeholder="Rechercher un employé..." value={filterText} onChange={e => setFilterText(e.target.value)} /></div><div style={{ fontSize: 12, color: 'var(--text3)' }}>{schedules.length} quarts · {employees.length} employés</div></div></div><div className="schedule-grid"><table><thead><tr><th>Employé</th>{viewDates.map((d, i) => <th key={i}>{fmtDay(d)}</th>)}<th style={{ minWidth: 120, background: 'var(--brand-xl)' }}>Total</th></tr></thead><tbody>{activeEmps.map(e => { const periodShifts = schedules.filter(s => s.employee_id === e.id && viewISOs.includes(s.date)); const totalHrs = periodShifts.reduce((sum, s) => sum + Number(s.hours || 0), 0); const totalKm = periodShifts.reduce((sum, s) => sum + Number(s.km || 0), 0); const totalDep = periodShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0), 0); const totalFrais = totalDep + totalKm * RATE_KM; const empClientIds = getEmployeeClientIds(e, periodShifts); return <React.Fragment key={e.id}><tr><td><div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }} onClick={() => onNavigate && onNavigate('employees')}><Avatar name={e.name} size={30} /><div><div style={{ fontWeight: 600, fontSize: 12 }}>{e.name}</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{(e.position || '').slice(0, 24)}</div></div></div></td>{viewDates.map((d, i) => { const iso = fmtISO(d); const shifts = schedules.filter(s => s.employee_id === e.id && s.date === iso); return <td key={i} onDoubleClick={() => openAdd(e.id, iso)}>{shifts.map(s => <ShiftPill key={s.id} shift={s} onClick={() => openEdit(s)} />)}{shifts.length === 0 && <div onClick={() => openAdd(e.id, iso)} style={{ opacity: .25, textAlign: 'center', fontSize: 16, lineHeight: '30px', color: 'var(--brand)', cursor: 'pointer' }}>+</div>}</td>; })}<td style={{ minWidth: 160, textAlign: 'center', verticalAlign: 'middle', background: 'var(--brand-xl)', borderLeft: '2px solid var(--border)' }}><div style={{ fontWeight: 700, fontSize: 13, color: 'var(--brand)' }}>{totalHrs.toFixed(1)}h</div>{totalFrais > 0 && <div style={{ fontSize: 10, color: 'var(--purple)', marginTop: 2 }}>{fmtMoney(totalFrais)} frais</div>}{totalKm > 0 && <div style={{ fontSize: 9, color: 'var(--text3)' }}>{totalKm} km</div>}{viewMode === 'week' && empClientIds.map(cid => { const appr = getWeekApprovalStatus(e.id, cid); const isApproved = appr && appr.status === 'approved'; const cl = clients.find(c => c.id === cid); return <div key={cid} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6 }}><div style={{ fontSize: 9, color: 'var(--text3)' }}>{(cl?.name || 'Client').slice(0, 18)}</div><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 600, border: 'none', borderRadius: 4, cursor: 'pointer', background: isApproved ? '#28A745' : '#FFC107', color: isApproved ? '#fff' : '#000' }} onClick={() => isApproved ? revokeWeekCompat(e.id, cid) : saveReviewCompat(e.id, cid, e.client_id || null, true)} disabled={billingLoading}>{isApproved ? '✓ Approuvé' : 'Approuver heures'}</button><button style={{ display: 'block', width: '100%', padding: '2px 6px', fontSize: 9, fontWeight: 500, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', background: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'var(--brand)' : 'var(--surface)', color: expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? '#fff' : 'var(--text2)' }} onClick={() => toggleBillingPanel(e.id, cid, e.client_id || null)} disabled={billingLoading && !(expandedEmp?.empId === e.id && expandedEmp?.clientId === cid)}>📋 {expandedEmp?.empId === e.id && expandedEmp?.clientId === cid ? 'Fermer' : 'Détails'}</button></div>; })}</td></tr>{viewMode === 'week' && expandedEmp?.empId === e.id && empClientIds.includes(expandedEmp?.clientId) && <tr><td colSpan={viewDates.length + 2} style={{ padding: 0 }}><div style={{ background: '#f0f9fa', borderTop: '2px solid var(--brand)', borderBottom: '2px solid var(--brand)', padding: '14px 18px' }}>{billingLoading ? <div style={{ textAlign: 'center', padding: 20, color: 'var(--text3)' }}>Chargement...</div> : <ApprovalPanel employee={e} client={clients.find(c => c.id === expandedEmp.clientId)} shifts={getClientWeekShifts(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} allEmployeeSchedules={schedules.filter(s => s.employee_id === e.id && s.status !== 'cancelled')} validationSummary={null} reviewDraft={reviewDraft} setReviewDraft={setReviewDraft} currentReview={currentReview} currentTimesheet={currentTimesheet} timesheetAttachments={timesheetAttachments} currentInvoice={currentInvoice} reviewAttachments={reviewAttachments} busy={billingLoading} onSave={() => saveReviewCompat(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, false)} onApprove={() => saveReviewCompat(e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null, true)} onRevoke={() => revokeWeekCompat(e.id, expandedEmp.clientId)} onGenerateInvoice={() => generateInvoiceCompat(e.id, expandedEmp.clientId)} onUpload={(ev) => handleReviewAttachment(ev, e.id, expandedEmp.clientId, expandedEmp?.fallbackClientId || e.client_id || null)} onDeleteAttachment={deleteReviewAttachment} onOpenAttachment={openReviewAttachment} onGoInvoices={() => onNavigate && onNavigate('invoices')} onRefreshParent={reload} toast={toast} />}</div></td></tr>}</React.Fragment>; })}</tbody></table></div><Modal open={!!modal} onClose={() => setModal(null)} title={modal?.type === 'edit' ? 'Modifier le quart' : 'Ajouter un quart'}>{modal && <div style={{ display: 'grid', gap: 10 }}><div><label>Employé</label><select className="input" value={modal.data.employeeId} onChange={e => updateModalField('employeeId', e.target.value)}><option value="">Choisir</option>{employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}><div><label>Date</label><input className="input" type="date" value={modal.data.date} onChange={e => updateModalField('date', e.target.value)} /></div><div><label>Client</label><select className="input" value={modal.data.clientId} onChange={e => updateModalField('clientId', e.target.value)}><option value="">—</option>{clients.map(cl => <option key={cl.id} value={cl.id}>{cl.name}</option>)}</select></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Début</label><input className="input" type="time" value={modal.data.start} onChange={e => updateModalField('start', e.target.value)} /></div><div><label>Fin</label><input className="input" type="time" value={modal.data.end} onChange={e => updateModalField('end', e.target.value)} /></div><div><label>Pause min</label><input className="input" type="number" value={modal.data.pauseMinutes} onChange={e => updateModalField('pauseMinutes', e.target.value)} /></div></div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}><div><label>Heures</label><input className="input" value={Number(modal.data.hours || 0).toFixed(2)} readOnly /></div><div><label>KM</label><input className="input" type="number" value={modal.data.km} onChange={e => updateModalField('km', e.target.value)} /></div><div><label>Déplacement (heures)</label><input className="input" type="number" step="0.25" value={modal.data.deplacement} onChange={e => updateModalField('deplacement', e.target.value)} /></div></div><div><label>Autre dépense ($)</label><input className="input" type="number" step="0.01" value={modal.data.autreDep} onChange={e => updateModalField('autreDep', e.target.value)} /></div><div><label>Lieu</label><input className="input" value={modal.data.location} onChange={e => updateModalField('location', e.target.value)} /></div><div><label>Notes</label><input className="input" value={modal.data.notes} onChange={e => updateModalField('notes', e.target.value)} /></div><div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}><div>{modal.type === 'edit' && <button className="btn btn-outline btn-sm" onClick={deleteShift}><Trash2 size={14} /> Supprimer</button>}</div><div style={{ display: 'flex', gap: 8 }}><button className="btn btn-outline btn-sm" onClick={() => setModal(null)}>Annuler</button><button className="btn btn-primary btn-sm" onClick={saveShift}>Sauvegarder</button></div></div></div>}</Modal>
 
-{/* â”€â”€ Import Modal â”€â”€ */}
+{/* ── Import Modal ── */}
 <Modal open={importModal} onClose={() => setImportModal(false)} title="Importer des horaires (CSV / Excel)" wide>
   <div style={{ display: 'grid', gap: 16 }}>
     <div
@@ -320,10 +507,10 @@ export default function SchedulesPage({ toast, onNavigate }) {
     >
       <Upload size={28} style={{ color: 'var(--brand)', marginBottom: 8 }} />
       <div style={{ fontSize: 13, fontWeight: 600 }}>
-        {importFile ? importFile.name : 'Glissez un fichier ici ou cliquez pour sÃ©lectionner'}
+        {importFile ? importFile.name : 'Glissez un fichier ici ou cliquez pour sélectionner'}
       </div>
       <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4 }}>
-        Formats acceptÃ©s: .csv, .xlsx, .xls
+        Formats acceptés: .csv, .xlsx, .xls
       </div>
       <input
         ref={fileInputRef}
@@ -345,13 +532,13 @@ export default function SchedulesPage({ toast, onNavigate }) {
         </div>
         {importResult.success > 0 && (
           <div style={{ fontSize: 12, color: '#155724' }}>
-            âœ… {importResult.success} quart(s) importÃ©(s) sur {importResult.total_rows} lignes
+            ✅ {importResult.success} quart(s) importé(s) sur {importResult.total_rows} lignes
           </div>
         )}
         {importResult.errors > 0 && (
           <div style={{ marginTop: 8 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: '#721c24', marginBottom: 4 }}>
-              âš ï¸ {importResult.errors} erreur(s):
+              ⚠️ {importResult.errors} erreur(s):
             </div>
             <div style={{ maxHeight: 150, overflowY: 'auto', fontSize: 11 }}>
               {(importResult.error_details || []).slice(0, 20).map((err, i) => (
@@ -377,18 +564,18 @@ export default function SchedulesPage({ toast, onNavigate }) {
         onClick={handleImport}
         disabled={!importFile || importing}
       >
-        {importing ? 'â³ Importation en cours...' : 'ðŸ“¥ Importer'}
+        {importing ? '⏳ Importation en cours...' : '📥 Importer'}
       </button>
     </div>
   </div>
 </Modal>
 
-{/* â”€â”€ Export Modal â”€â”€ */}
+{/* ── Export Modal ── */}
 <Modal open={exportModal} onClose={() => setExportModal(false)} title="Exporter les horaires">
   <div style={{ display: 'grid', gap: 12 }}>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
       <div>
-        <label style={{ fontSize: 12, fontWeight: 600 }}>Date dÃ©but</label>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Date début</label>
         <input className="input" type="date" value={exportOpts.date_start} onChange={e => setExportOpts(p => ({ ...p, date_start: e.target.value }))} />
       </div>
       <div>
@@ -398,7 +585,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
     </div>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
       <div>
-        <label style={{ fontSize: 12, fontWeight: 600 }}>EmployÃ©</label>
+        <label style={{ fontSize: 12, fontWeight: 600 }}>Employé</label>
         <select className="input" value={exportOpts.employee_id} onChange={e => setExportOpts(p => ({ ...p, employee_id: e.target.value }))}>
           <option value="">Tous</option>
           {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
@@ -422,7 +609,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
       <button className="btn btn-outline btn-sm" onClick={() => setExportModal(false)}>Annuler</button>
       <button className="btn btn-primary btn-sm" onClick={handleExport} disabled={exporting}>
-        {exporting ? 'â³ Exportation...' : 'ðŸ“¤ Exporter'}
+        {exporting ? '⏳ Exportation...' : '📤 Exporter'}
       </button>
     </div>
   </div>
@@ -471,11 +658,11 @@ function LegacyApprovalPanel({ employee, client, shifts, allEmployeeSchedules, r
         }
       }
       setDirtyIds(prev => { const next = new Set(prev); next.delete(shift.id); return next; });
-      toast?.(shift.is_new ? 'Quart ajoutÃ©' : 'Quart modifiÃ©');
+      toast?.(shift.is_new ? 'Quart ajouté' : 'Quart modifié');
       await onRefreshParent?.();
     } catch (err) {
       setEditableShifts(snapshot);
-      toast?.('Erreur: ' + (err.message || 'Ã‰chec de la sauvegarde'));
+      toast?.('Erreur: ' + (err.message || 'Échec de la sauvegarde'));
     } finally {
       isSavingRef.current = false;
       setSavingShiftId(null);
@@ -505,13 +692,13 @@ function LegacyApprovalPanel({ employee, client, shifts, allEmployeeSchedules, r
         setDirtyIds(prev => { const next = new Set(prev); next.delete(shift.id); return next; });
       } catch (err) {
         allOk = false;
-        toast?.(`Erreur sauvegarde ligne ${shift.date}: ` + (err.message || 'Ã‰chec'));
+        toast?.(`Erreur sauvegarde ligne ${shift.date}: ` + (err.message || 'Échec'));
       }
     }
     isSavingRef.current = false;
     setSavingAll(false);
     if (allOk && dirtyShifts.length > 0) {
-      toast?.(`${dirtyShifts.length} ligne(s) sauvegardÃ©e(s)`);
+      toast?.(`${dirtyShifts.length} ligne(s) sauvegardée(s)`);
       await onRefreshParent?.();
     }
     return allOk;
@@ -524,11 +711,11 @@ function LegacyApprovalPanel({ employee, client, shifts, allEmployeeSchedules, r
     await saveAllDirtyShifts();
     onApprove?.();
   };
-  const removeShiftLine = async (shift) => { if (shift.is_new) { setEditableShifts(prev => prev.filter(s => s.id !== shift.id)); setDirtyIds(prev => { const next = new Set(prev); next.delete(shift.id); return next; }); return; } const snapshot = editableShifts.map(s => ({ ...s })); try { setSavingShiftId(shift.id); isSavingRef.current = true; setEditableShifts(prev => prev.filter(s => s.id !== shift.id)); await api.deleteSchedule(shift.id); setDirtyIds(prev => { const next = new Set(prev); next.delete(shift.id); return next; }); toast?.('Quart supprimÃ©'); await onRefreshParent?.(); } catch (err) { setEditableShifts(snapshot); toast?.('Erreur: ' + (err.message || 'Ã‰chec de la suppression')); } finally { isSavingRef.current = false; setSavingShiftId(null); } };
-  const saveQuickAccommodation = async () => { if (!accomForm.total_cost || !accomForm.start_date || !accomForm.end_date) return; try { setSavingAccommodation(true); await api.createAccommodation({ employee_id: employee.id, total_cost: Number(accomForm.total_cost || 0), start_date: accomForm.start_date, end_date: accomForm.end_date, days_worked: 0, cost_per_day: 0, notes: accomForm.notes || '' }); setAccomForm({ total_cost: '', start_date: '', end_date: '', notes: '' }); toast?.('HÃ©bergement ajoutÃ©'); await loadAccommodations(); } catch (err) { toast?.('Erreur: ' + (err.message || 'Ã‰chec de l\'ajout')); } finally { setSavingAccommodation(false); } };
+  const removeShiftLine = async (shift) => { if (shift.is_new) { setEditableShifts(prev => prev.filter(s => s.id !== shift.id)); setDirtyIds(prev => { const next = new Set(prev); next.delete(shift.id); return next; }); return; } const snapshot = editableShifts.map(s => ({ ...s })); try { setSavingShiftId(shift.id); isSavingRef.current = true; setEditableShifts(prev => prev.filter(s => s.id !== shift.id)); await api.deleteSchedule(shift.id); setDirtyIds(prev => { const next = new Set(prev); next.delete(shift.id); return next; }); toast?.('Quart supprimé'); await onRefreshParent?.(); } catch (err) { setEditableShifts(snapshot); toast?.('Erreur: ' + (err.message || 'Échec de la suppression')); } finally { isSavingRef.current = false; setSavingShiftId(null); } };
+  const saveQuickAccommodation = async () => { if (!accomForm.total_cost || !accomForm.start_date || !accomForm.end_date) return; try { setSavingAccommodation(true); await api.createAccommodation({ employee_id: employee.id, total_cost: Number(accomForm.total_cost || 0), start_date: accomForm.start_date, end_date: accomForm.end_date, days_worked: 0, cost_per_day: 0, notes: accomForm.notes || '' }); setAccomForm({ total_cost: '', start_date: '', end_date: '', notes: '' }); toast?.('Hébergement ajouté'); await loadAccommodations(); } catch (err) { toast?.('Erreur: ' + (err.message || 'Échec de l\'ajout')); } finally { setSavingAccommodation(false); } };
   const accommodationEstimates = useMemo(() => (accommodations || []).map(a => ({ ...a, estimate: computeAccommodationEstimate(a, allEmployeeSchedules, editableShifts) })).filter(a => a.estimate.days > 0), [accommodations, allEmployeeSchedules, editableShifts]);
   const effectiveRate = Number(employee?.rate || editableShifts.find(s => Number(s.billable_rate || 0))?.billable_rate || 0);
   const totals = useMemo(() => { const service = editableShifts.reduce((sum, s) => sum + Number(s.hours || 0) * effectiveRate, 0); const km = editableShifts.reduce((sum, s) => sum + Number(s.km || 0) * RATE_KM, 0); const dep = editableShifts.reduce((sum, s) => sum + Number(s.deplacement || 0) * effectiveRate, 0); const autres = editableShifts.reduce((sum, s) => sum + Number(s.other_dep || 0), 0); const accom = accommodationEstimates.reduce((sum, a) => sum + Number(a.estimate.amount || 0), 0); const subtotal = service + km + dep + autres + accom; const includeTax = !client?.tax_exempt; const tps = includeTax ? subtotal * TPS_RATE : 0; const tvq = includeTax ? subtotal * TVQ_RATE : 0; return { service, km, dep, autres, accom, subtotal, tps, tvq, total: subtotal + tps + tvq }; }, [editableShifts, accommodationEstimates, effectiveRate, client]);
   const plannedHours = editableShifts.reduce((sum, s) => sum + (Number(s.hours) || 0), 0); const totalKm = editableShifts.reduce((sum, s) => sum + (Number(s.km) || 0), 0); const totalDep = editableShifts.reduce((sum, s) => sum + (Number(s.deplacement) || 0) + (Number(s.other_dep) || 0), 0); const canGenerateInvoice = currentReview?.status === 'approved';
-  return <><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}><div style={{ fontSize: 14, fontWeight: 700, color: 'var(--brand-d)' }}>ðŸ“‹ Validation hebdomadaire â€” {employee?.name || ''} / {client?.name || 'Client'}</div><div style={{ fontSize: 11, color: 'var(--text3)' }}>{currentReview?.status ? `Statut: ${currentReview.status}` : 'Aucune approbation enregistrÃ©e'}</div></div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Quarts</div><div style={{ fontSize: 16, fontWeight: 700, color: 'var(--brand)' }}>{editableShifts.length}</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Heures affichÃ©es</div><div style={{ fontSize: 16, fontWeight: 700 }}>{plannedHours.toFixed(2)}h</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>KilomÃ©trage</div><div style={{ fontSize: 16, fontWeight: 700 }}>{totalKm} km</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Frais</div><div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(totalDep + totalKm * RATE_KM)}</div></div></div><div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, alignItems: 'start', marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Ã‰dition rapide des quarts / frais</div><button className="btn btn-outline btn-sm" onClick={addQuickShiftRow}>+ Ajouter ligne</button></div><div style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px 88px', gap: 6, fontSize: 10, color: 'var(--text3)', marginBottom: 6 }}><div>Date</div><div>DÃ©but</div><div>Fin</div><div>Pause min</div><div>Heures</div><div>KM</div><div>DÃ©pl. (h)</div><div>Autre</div><div>Notes</div><div></div><div></div></div>{editableShifts.map(s => <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px 88px', gap: 6, marginBottom: 6, alignItems: 'center' }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={s.date} onChange={e => updateEditableShift(s.id, 'date', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.start)} onChange={e => updateEditableShift(s.id, 'start', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.end)} onChange={e => updateEditableShift(s.id, 'end', e.target.value)} /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.pause_minutes || 0} onChange={e => updateEditableShift(s.id, 'pause_minutes', e.target.value)} /><input className="input" type="number" step="0.25" style={{ padding: '6px 8px', fontSize: 12, background: '#f8f9fa' }} value={Number(s.hours || 0).toFixed(2)} readOnly /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.km || 0} onChange={e => updateEditableShift(s.id, 'km', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.deplacement || 0} onChange={e => updateEditableShift(s.id, 'deplacement', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.other_dep || 0} onChange={e => updateEditableShift(s.id, 'other_dep', e.target.value)} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} value={s.notes || ''} onChange={e => updateEditableShift(s.id, 'notes', e.target.value)} /><button className="btn btn-outline btn-sm" style={dirtyIds.has(s.id) ? { borderColor: '#FFC107', background: '#fff8e1' } : {}} onClick={() => saveShiftLine(s)} disabled={savingShiftId === s.id || savingAll}>{savingShiftId === s.id ? '...' : 'Sauver'}</button><button className="btn btn-outline btn-sm" onClick={() => removeShiftLine(s)} disabled={savingShiftId === s.id}><Trash2 size={12} /></button></div>)}</div><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>RÃ©sumÃ© estimatif</div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Services</span><strong>{fmtMoney(totals.service)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>KM</span><strong>{fmtMoney(totals.km)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>DÃ©placement (h)</span><strong>{fmtMoney(totals.dep)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Autres frais</span><strong>{fmtMoney(totals.autres)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>HÃ©bergement</span><strong>{fmtMoney(totals.accom)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '6px 0', borderTop: '1px solid #dee2e6', marginTop: 6 }}><span>Sous-total</span><strong>{fmtMoney(totals.subtotal)}</strong></div>{!client?.tax_exempt && <><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>TPS</span><strong>{fmtMoney(totals.tps)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>TVQ</span><strong>{fmtMoney(totals.tvq)}</strong></div></>}{client?.tax_exempt && <div style={{ fontSize: 11, color: '#28A745', paddingTop: 6 }}>Client exemptÃ© de taxes</div>}<div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, padding: '10px 12px', marginTop: 8, background: '#2A7B88', color: '#fff', borderRadius: 8 }}><span>Total estimÃ©</span><strong>{fmtMoney(totals.total)}</strong></div></div></div><div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>HÃ©bergement liÃ© Ã  la semaine</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargementâ€¦' : `${accommodationEstimates.length} ligne(s)`}</div></div>{accommodationEstimates.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hÃ©bergement trouvÃ© pour cette semaine.</div> : <div>{accommodationEstimates.map(a => <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .8fr', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{a.start_date} â†’ {a.end_date}</span><span>{a.estimate.days} jour(s)</span><span>{fmtMoney(a.estimate.costPerDay)}/jour</span><strong>{fmtMoney(a.estimate.amount)}</strong></div>)}</div>}<div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}><div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Ajout rapide hÃ©bergement</div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1.2fr auto', gap: 6 }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.start_date} onChange={e => setAccomForm(f => ({ ...f, start_date: e.target.value }))} /><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.end_date} onChange={e => setAccomForm(f => ({ ...f, end_date: e.target.value }))} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="CoÃ»t total" value={accomForm.total_cost} onChange={e => setAccomForm(f => ({ ...f, total_cost: e.target.value }))} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Notes" value={accomForm.notes} onChange={e => setAccomForm(f => ({ ...f, notes: e.target.value }))} /><button className="btn btn-outline btn-sm" onClick={saveQuickAccommodation} disabled={savingAccommodation}>{savingAccommodation ? '...' : 'Ajouter'}</button></div></div></div><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Approbation / justificatifs</div><div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 12 }}><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Heures approuvÃ©es</label><input className="input" type="number" step="0.25" value={reviewDraft.approvedHours} onChange={e => setReviewDraft(d => ({ ...d, approvedHours: e.target.value }))} /></div><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Notes</label><input className="input" value={reviewDraft.notes} onChange={e => setReviewDraft(d => ({ ...d, notes: e.target.value }))} placeholder="Notes de vÃ©rification" /></div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>{dirtyIds.size > 0 && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center' }}>âš ï¸ {dirtyIds.size} modification(s) non sauvegardÃ©e(s)</div>}<button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll}>{savingAll ? 'â³ Sauvegardeâ€¦' : 'Enregistrer'}</button><button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={handleApprove} disabled={!editableShifts.length || savingAll}>{savingAll ? 'â³â€¦' : 'Approuver les heures'}</button><button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>RÃ©voquer</button><button className="btn btn-primary btn-sm" onClick={onGenerateInvoice} disabled={!canGenerateInvoice}>GÃ©nÃ©rer la facture approuvÃ©e</button><label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }}>Ajouter justificatif<input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={onUpload} /></label>{currentInvoice && <button className="btn btn-outline btn-sm" onClick={onGoInvoices}>Voir dans Facturation</button>}</div>{!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de gÃ©nÃ©rer la facture approuvÃ©e.</div>}{currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture gÃ©nÃ©rÃ©e</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} â€” {fmtMoney(currentInvoice.total || 0)}</div></div>}<div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Justificatifs ({reviewAttachments.length})</div>{reviewAttachments.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)' }}>Aucune piÃ¨ce jointe</div> : reviewAttachments.map(att => <div key={att.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{att.filename}</span><div style={{ display: 'flex', gap: 6 }}><button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => onOpenAttachment(att.id)}><Eye size={12} /></button><button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => onDeleteAttachment(att.id)}><Trash2 size={12} /></button></div></div>)}</div></div></>; }
-function ShiftPill({ shift, onClick }) { return <div className="shift-pill" onClick={onClick} style={{ background: shift.status === 'draft' ? 'var(--surface2)' : 'var(--brand-l)', cursor: 'pointer' }}><div style={{ fontWeight: 600, fontSize: 10.5, whiteSpace: 'nowrap' }}>{normalizeTimeForInput(shift.start) || shift.start}â€“{normalizeTimeForInput(shift.end) || shift.end}</div><div style={{ color: 'var(--text3)', fontSize: 9 }}>{shift.hours}h{shift.pause > 0 && <span style={{ color: 'var(--amber)' }}> (âˆ’{pauseHoursToMinutes(shift.pause)} min)</span>}</div></div>; }
+  return <><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}><div style={{ fontSize: 14, fontWeight: 700, color: 'var(--brand-d)' }}>📋 Validation hebdomadaire — {employee?.name || ''} / {client?.name || 'Client'}</div><div style={{ fontSize: 11, color: 'var(--text3)' }}>{currentReview?.status ? `Statut: ${currentReview.status}` : 'Aucune approbation enregistrée'}</div></div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10, marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Quarts</div><div style={{ fontSize: 16, fontWeight: 700, color: 'var(--brand)' }}>{editableShifts.length}</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Heures affichées</div><div style={{ fontSize: 16, fontWeight: 700 }}>{plannedHours.toFixed(2)}h</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Kilométrage</div><div style={{ fontSize: 16, fontWeight: 700 }}>{totalKm} km</div></div><div style={{ background: '#fff', borderRadius: 8, padding: '10px 14px', border: '1px solid var(--border)' }}><div style={{ fontSize: 10, color: 'var(--text3)' }}>Frais</div><div style={{ fontSize: 16, fontWeight: 700 }}>{fmtMoney(totalDep + totalKm * RATE_KM)}</div></div></div><div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, alignItems: 'start', marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Édition rapide des quarts / frais</div><button className="btn btn-outline btn-sm" onClick={addQuickShiftRow}>+ Ajouter ligne</button></div><div style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px 88px', gap: 6, fontSize: 10, color: 'var(--text3)', marginBottom: 6 }}><div>Date</div><div>Début</div><div>Fin</div><div>Pause min</div><div>Heures</div><div>KM</div><div>Dépl. (h)</div><div>Autre</div><div>Notes</div><div></div><div></div></div>{editableShifts.map(s => <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '96px 88px 88px 88px 82px 72px 90px 90px 90px 88px 88px', gap: 6, marginBottom: 6, alignItems: 'center' }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={s.date} onChange={e => updateEditableShift(s.id, 'date', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.start)} onChange={e => updateEditableShift(s.id, 'start', e.target.value)} /><input className="input" type="time" style={{ padding: '6px 8px', fontSize: 12 }} value={normalizeTimeForInput(s.end)} onChange={e => updateEditableShift(s.id, 'end', e.target.value)} /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.pause_minutes || 0} onChange={e => updateEditableShift(s.id, 'pause_minutes', e.target.value)} /><input className="input" type="number" step="0.25" style={{ padding: '6px 8px', fontSize: 12, background: '#f8f9fa' }} value={Number(s.hours || 0).toFixed(2)} readOnly /><input className="input" type="number" step="1" style={{ padding: '6px 8px', fontSize: 12 }} value={s.km || 0} onChange={e => updateEditableShift(s.id, 'km', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.deplacement || 0} onChange={e => updateEditableShift(s.id, 'deplacement', e.target.value)} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} value={s.other_dep || 0} onChange={e => updateEditableShift(s.id, 'other_dep', e.target.value)} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} value={s.notes || ''} onChange={e => updateEditableShift(s.id, 'notes', e.target.value)} /><button className="btn btn-outline btn-sm" style={dirtyIds.has(s.id) ? { borderColor: '#FFC107', background: '#fff8e1' } : {}} onClick={() => saveShiftLine(s)} disabled={savingShiftId === s.id || savingAll}>{savingShiftId === s.id ? '...' : 'Sauver'}</button><button className="btn btn-outline btn-sm" onClick={() => removeShiftLine(s)} disabled={savingShiftId === s.id}><Trash2 size={12} /></button></div>)}</div><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Résumé estimatif</div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Services</span><strong>{fmtMoney(totals.service)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>KM</span><strong>{fmtMoney(totals.km)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Déplacement (h)</span><strong>{fmtMoney(totals.dep)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Autres frais</span><strong>{fmtMoney(totals.autres)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>Hébergement</span><strong>{fmtMoney(totals.accom)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '6px 0', borderTop: '1px solid #dee2e6', marginTop: 6 }}><span>Sous-total</span><strong>{fmtMoney(totals.subtotal)}</strong></div>{!client?.tax_exempt && <><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>TPS</span><strong>{fmtMoney(totals.tps)}</strong></div><div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0' }}><span>TVQ</span><strong>{fmtMoney(totals.tvq)}</strong></div></>}{client?.tax_exempt && <div style={{ fontSize: 11, color: '#28A745', paddingTop: 6 }}>Client exempté de taxes</div>}<div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, padding: '10px 12px', marginTop: 8, background: '#2A7B88', color: '#fff', borderRadius: 8 }}><span>Total estimé</span><strong>{fmtMoney(totals.total)}</strong></div></div></div><div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}><div style={{ fontSize: 12, fontWeight: 700 }}>Hébergement lié à la semaine</div><div style={{ fontSize: 10, color: 'var(--text3)' }}>{loadingAccommodations ? 'Chargement…' : `${accommodationEstimates.length} ligne(s)`}</div></div>{accommodationEstimates.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 8 }}>Aucun hébergement trouvé pour cette semaine.</div> : <div>{accommodationEstimates.map(a => <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .8fr', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{a.start_date} → {a.end_date}</span><span>{a.estimate.days} jour(s)</span><span>{fmtMoney(a.estimate.costPerDay)}/jour</span><strong>{fmtMoney(a.estimate.amount)}</strong></div>)}</div>}<div style={{ borderTop: '1px solid #f0f0f0', marginTop: 8, paddingTop: 8 }}><div style={{ fontSize: 11, fontWeight: 700, marginBottom: 6 }}>Ajout rapide hébergement</div><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1.2fr auto', gap: 6 }}><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.start_date} onChange={e => setAccomForm(f => ({ ...f, start_date: e.target.value }))} /><input className="input" type="date" style={{ padding: '6px 8px', fontSize: 12 }} value={accomForm.end_date} onChange={e => setAccomForm(f => ({ ...f, end_date: e.target.value }))} /><input className="input" type="number" step="0.01" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Coût total" value={accomForm.total_cost} onChange={e => setAccomForm(f => ({ ...f, total_cost: e.target.value }))} /><input className="input" type="text" style={{ padding: '6px 8px', fontSize: 12 }} placeholder="Notes" value={accomForm.notes} onChange={e => setAccomForm(f => ({ ...f, notes: e.target.value }))} /><button className="btn btn-outline btn-sm" onClick={saveQuickAccommodation} disabled={savingAccommodation}>{savingAccommodation ? '...' : 'Ajouter'}</button></div></div></div><div style={{ background: '#fff', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}><div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Approbation / justificatifs</div><div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 12 }}><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Heures approuvées</label><input className="input" type="number" step="0.25" value={reviewDraft.approvedHours} onChange={e => setReviewDraft(d => ({ ...d, approvedHours: e.target.value }))} /></div><div><label style={{ fontSize: 11, color: 'var(--text3)' }}>Notes</label><input className="input" value={reviewDraft.notes} onChange={e => setReviewDraft(d => ({ ...d, notes: e.target.value }))} placeholder="Notes de vérification" /></div></div><div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>{dirtyIds.size > 0 && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '4px 10px', borderRadius: 6, display: 'flex', alignItems: 'center' }}>⚠️ {dirtyIds.size} modification(s) non sauvegardée(s)</div>}<button className="btn btn-outline btn-sm" onClick={handleEnregistrer} disabled={savingAll}>{savingAll ? '⏳ Sauvegarde…' : 'Enregistrer'}</button><button className="btn btn-primary btn-sm" style={{ background: currentReview?.status === 'approved' ? '#28A745' : undefined }} onClick={handleApprove} disabled={!editableShifts.length || savingAll}>{savingAll ? '⏳…' : 'Approuver les heures'}</button><button className="btn btn-outline btn-sm" onClick={onRevoke} disabled={!currentReview}>Révoquer</button><button className="btn btn-primary btn-sm" onClick={onGenerateInvoice} disabled={!canGenerateInvoice}>Générer la facture approuvée</button><label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }}>Ajouter justificatif<input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={onUpload} /></label>{currentInvoice && <button className="btn btn-outline btn-sm" onClick={onGoInvoices}>Voir dans Facturation</button>}</div>{!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de générer la facture approuvée.</div>}{currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}<div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Justificatifs ({reviewAttachments.length})</div>{reviewAttachments.length === 0 ? <div style={{ fontSize: 11, color: 'var(--text3)' }}>Aucune pièce jointe</div> : reviewAttachments.map(att => <div key={att.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}><span>{att.filename}</span><div style={{ display: 'flex', gap: 6 }}><button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => onOpenAttachment(att.id)}><Eye size={12} /></button><button className="btn btn-outline btn-sm" style={{ padding: '2px 8px' }} onClick={() => onDeleteAttachment(att.id)}><Trash2 size={12} /></button></div></div>)}</div></div></>; }
+function ShiftPill({ shift, onClick }) { return <div className="shift-pill" onClick={onClick} style={{ background: shift.status === 'draft' ? 'var(--surface2)' : 'var(--brand-l)', cursor: 'pointer' }}><div style={{ fontWeight: 600, fontSize: 10.5, whiteSpace: 'nowrap' }}>{normalizeTimeForInput(shift.start) || shift.start}–{normalizeTimeForInput(shift.end) || shift.end}</div><div style={{ color: 'var(--text3)', fontSize: 9 }}>{shift.hours}h{shift.pause > 0 && <span style={{ color: 'var(--amber)' }}> (−{pauseHoursToMinutes(shift.pause)} min)</span>}</div></div>; }

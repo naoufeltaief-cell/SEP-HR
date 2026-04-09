@@ -171,7 +171,22 @@ async def list_employees(
             return []
     result = await db.execute(query)
     employees = result.scalars().all()
-    return [EmployeeOut.model_validate(e) for e in employees]
+    employee_ids = [employee.id for employee in employees]
+    portal_by_employee = {}
+    if employee_ids:
+        portal_result = await db.execute(select(User).where(User.employee_id.in_(employee_ids)))
+        portal_by_employee = {
+            portal_user.employee_id: portal_user
+            for portal_user in portal_result.scalars().all()
+            if portal_user.employee_id is not None
+        }
+    return [
+        {
+            **EmployeeOut.model_validate(employee).model_dump(),
+            "portal_access": _serialize_portal_access(portal_by_employee.get(employee.id)),
+        }
+        for employee in employees
+    ]
 
 
 @router.get("/{eid}")

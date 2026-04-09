@@ -4,6 +4,22 @@ import { fmtMoney } from '../utils/helpers';
 import { Avatar, Modal } from '../components/UI';
 import { Plus, Search, Edit3, Users, Building, Mail } from 'lucide-react';
 
+function portalAccessLabel(portalAccess) {
+  if (!portalAccess?.enabled) return 'Aucun acces';
+  if (portalAccess?.invitation_pending) return 'Invitation envoyee';
+  return 'Acces actif';
+}
+
+function portalAccessStyle(portalAccess) {
+  if (!portalAccess?.enabled) {
+    return { background: 'var(--surface2)', color: 'var(--text3)' };
+  }
+  if (portalAccess?.invitation_pending) {
+    return { background: 'var(--amber-l)', color: 'var(--amber)' };
+  }
+  return { background: 'var(--green-l)', color: 'var(--green)' };
+}
+
 export default function EmployeesPage({ toast }) {
   const [employees, setEmployees] = useState([]);
   const [clients, setClients] = useState([]);
@@ -141,6 +157,20 @@ export default function EmployeesPage({ toast }) {
                   {linkedClient ? (
                     <div style={{ fontSize: 10, color: 'var(--teal)', marginTop: 2 }}>{linkedClient}</div>
                   ) : null}
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      marginTop: 6,
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      ...portalAccessStyle(employee.portal_access),
+                    }}
+                  >
+                    {portalAccessLabel(employee.portal_access)}
+                  </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontWeight: 700, color: 'var(--brand)', fontSize: 14 }}>{hours.toFixed(1)}h</div>
@@ -188,10 +218,21 @@ export default function EmployeesPage({ toast }) {
             </div>
             <div style={{ gridColumn: '1/-1' }}>
               <span style={{ fontSize: 11, color: 'var(--text3)' }}>Acces portail</span>
-              <div style={{ fontWeight: 600 }}>
-                {detail.portal_access?.enabled
-                  ? `Actif - ${detail.portal_access.email || detail.email}`
-                  : 'Aucun compte portail'}
+              <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span>{detail.portal_access?.enabled ? `Actif - ${detail.portal_access.email || detail.email}` : 'Aucun compte portail'}</span>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '2px 8px',
+                    borderRadius: 999,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    ...portalAccessStyle(detail.portal_access),
+                  }}
+                >
+                  {portalAccessLabel(detail.portal_access)}
+                </span>
               </div>
             </div>
           </div>

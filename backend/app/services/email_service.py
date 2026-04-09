@@ -17,6 +17,9 @@ SMTP_PASS = os.getenv("SMTP_PASS") or os.getenv("SMTP_PASS_PAIE") or ""
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", os.getenv("GMAIL_SENDER_EMAIL", SMTP_USER))
 BILLING_EMAIL_TRANSPORT = os.getenv("BILLING_EMAIL_TRANSPORT", "auto").lower()
+AUTH_SENDER_EMAIL = os.getenv("AUTH_SENDER_EMAIL", "rh@soins-expert-plus.com").strip()
+AUTH_SMTP_USER = os.getenv("AUTH_SMTP_USER") or SMTP_USER
+AUTH_SMTP_PASS = os.getenv("AUTH_SMTP_PASS") or SMTP_PASS
 
 
 async def send_magic_link(email: str, token: str, name: str = ""):
@@ -59,7 +62,14 @@ async def send_welcome_email(email: str, name: str):
         <p style="font-size:13px;color:#6b7280">Si vous avez des questions, contactez-nous à rh@soins-expert-plus.com</p>
     </div>
     """
-    await _send_email(email, subject, html)
+    await _send_email(
+        email,
+        subject,
+        html,
+        sender_email=AUTH_SENDER_EMAIL,
+        smtp_user=AUTH_SMTP_USER,
+        smtp_pass=AUTH_SMTP_PASS,
+    )
 
 
 async def send_employee_portal_invitation(
@@ -94,18 +104,36 @@ async def send_employee_portal_invitation(
         <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus — 9437-7827 Quebec Inc.</p>
     </div>
     """
-    await _send_email(email, subject, html)
+    await _send_email(
+        email,
+        subject,
+        html,
+        sender_email=AUTH_SENDER_EMAIL,
+        smtp_user=AUTH_SMTP_USER,
+        smtp_pass=AUTH_SMTP_PASS,
+    )
 
 
-async def _send_email(to: str, subject: str, html: str, bcc_emails=None):
+async def _send_email(
+    to: str,
+    subject: str,
+    html: str,
+    bcc_emails=None,
+    sender_email: str | None = None,
+    smtp_user: str | None = None,
+    smtp_pass: str | None = None,
+):
     """Send an email via SMTP"""
-    if not SMTP_PASS:
+    sender = (sender_email or BILLING_SENDER_EMAIL or SMTP_USER).strip()
+    login_user = (smtp_user or SMTP_USER).strip()
+    login_pass = smtp_pass if smtp_pass is not None else SMTP_PASS
+    if not login_pass:
         print(f"[EMAIL SKIP] No SMTP_PASS set. Would send to {to}: {subject}")
         return
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = f"Soins Expert Plus <{SMTP_USER}>"
+    msg["From"] = f"Soins Expert Plus <{sender}>"
     msg["To"] = to
     msg.attach(MIMEText(html, "html"))
     recipients = [to]
@@ -115,7 +143,7 @@ async def _send_email(to: str, subject: str, html: str, bcc_emails=None):
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
+            server.login(login_user, login_pass)
             server.send_message(msg, to_addrs=recipients)
         print(f"[EMAIL OK] Sent to {to}: {subject}")
     except Exception as e:

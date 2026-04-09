@@ -3,7 +3,7 @@ import { useAuth } from '../hooks/useAuth';
 import api from '../utils/api';
 
 export default function LoginPage() {
-  const { login, loginMagic } = useAuth();
+  const { login, loginMagic, loginWithToken } = useAuth();
   const [mode, setMode] = useState('password'); // password | magic
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -11,11 +11,36 @@ export default function LoginPage() {
   const [magicSent, setMagicSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [magicVerifying, setMagicVerifying] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleConfigured, setGoogleConfigured] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token');
+    const googleToken = params.get('google_token');
+    const googleUser = params.get('google_user');
+    const googleError = params.get('google_error');
     const isMagicPath = window.location.pathname === '/auth/magic';
+    if (googleError) {
+      setError(googleError);
+      window.history.replaceState({}, '', '/login');
+      return;
+    }
+    if (googleToken && googleUser) {
+      try {
+        const parsedUser = JSON.parse(googleUser);
+        loginWithToken(googleToken, parsedUser)
+          .then(() => {
+            window.history.replaceState({}, '', '/');
+          })
+          .catch((err) => {
+            setError(err.message || 'Connexion Google echouee');
+          });
+      } catch (err) {
+        setError('Connexion Google echouee');
+      }
+      return;
+    }
     if (!token || !isMagicPath) return;
 
     let active = true;
@@ -38,7 +63,41 @@ export default function LoginPage() {
     return () => {
       active = false;
     };
-  }, [loginMagic]);
+  }, [loginMagic, loginWithToken]);
+
+  useEffect(() => {
+    let active = true;
+    api.getGoogleLoginStatus()
+      .then((data) => {
+        if (active) setGoogleConfigured(Boolean(data?.configured));
+      })
+      .catch(() => {
+        if (active) setGoogleConfigured(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleMessage = async (event) => {
+      const payload = event?.data;
+      if (!payload || payload.type !== 'sep-auth-google') return;
+      setGoogleLoading(false);
+      if (!payload.ok) {
+        setError(payload.message || 'Connexion Google echouee');
+        return;
+      }
+      try {
+        await loginWithToken(payload.access_token, payload.user);
+      } catch (err) {
+        setError(err.message || 'Connexion Google echouee');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [loginWithToken]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -55,6 +114,25 @@ export default function LoginPage() {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setError('');
+    setGoogleLoading(true);
+    try {
+      const data = await api.startGoogleLogin();
+      const popup = window.open(
+        data?.url,
+        'sep-google-login',
+        'width=520,height=720,noopener,noreferrer',
+      );
+      if (!popup) {
+        window.location.href = data?.url;
+      }
+    } catch (err) {
+      setGoogleLoading(false);
+      setError(err.message || 'Connexion Google indisponible');
     }
   };
 
@@ -119,6 +197,18 @@ export default function LoginPage() {
               style={{ width: '100%', justifyContent: 'center', padding: '12px 0', fontSize: 14, marginTop: 4 }}>
               {loading ? 'Connexion...' : mode === 'password' ? 'Se connecter' : 'Envoyer le lien'}
             </button>
+
+            {googleConfigured && (
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={handleGoogleLogin}
+                disabled={googleLoading || loading || magicVerifying}
+                style={{ width: '100%', justifyContent: 'center', padding: '12px 0', fontSize: 14, marginTop: 10 }}
+              >
+                {googleLoading ? 'Connexion Google...' : 'Continuer avec Google'}
+              </button>
+            )}
           </form>
         )}
 

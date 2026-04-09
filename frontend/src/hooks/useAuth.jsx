@@ -32,13 +32,19 @@ export function AuthProvider({ children }) {
     return res.user;
   };
 
+  const loginWithToken = async (accessToken, userData) => {
+    api.setAuth(accessToken, userData);
+    setUser(userData);
+    return userData;
+  };
+
   const logout = () => {
     api.clearAuth();
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, loginMagic, logout, isAdmin: user?.role === 'admin' }}>
+    <AuthContext.Provider value={{ user, loading, login, loginMagic, loginWithToken, logout, isAdmin: user?.role === 'admin' }}>
       {children}
     </AuthContext.Provider>
   );

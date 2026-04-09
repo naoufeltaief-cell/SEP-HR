@@ -131,6 +131,7 @@ export default function ScheduleApprovalPanel({
   currentReview,
   currentTimesheet,
   timesheetAttachments,
+  timesheetStatus,
   currentInvoice,
   reviewAttachments,
   busy = false,
@@ -156,6 +157,21 @@ export default function ScheduleApprovalPanel({
   const editableShiftsRef = React.useRef([]);
   const dirtyIdsRef = React.useRef(new Set());
   const approvedHoursManualRef = React.useRef(false);
+  const effectiveTimesheetStatus = timesheetStatus || (currentTimesheet?.id
+    ? {
+        key: 'entered',
+        label: 'FDT employe saisie',
+        background: '#fffaeb',
+        color: '#b54708',
+        border: '#fedf89',
+      }
+    : {
+        key: 'missing',
+        label: 'FDT non recue',
+        background: '#fff1f3',
+        color: '#b42318',
+        border: '#fecdd3',
+      });
 
   useEffect(() => {
     editableShiftsRef.current = editableShifts;
@@ -876,10 +892,30 @@ export default function ScheduleApprovalPanel({
           {!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de générer la facture approuvée.</div>}
           {currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}
 
-          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Saisie employe (FDT)</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700 }}>Saisie employe (FDT)</div>
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '3px 8px',
+                borderRadius: 999,
+                border: `1px solid ${effectiveTimesheetStatus.border}`,
+                background: effectiveTimesheetStatus.background,
+                color: effectiveTimesheetStatus.color,
+                fontSize: 10,
+                fontWeight: 700,
+              }}
+            >
+              {effectiveTimesheetStatus.label}
+            </div>
+          </div>
           {employeeTimesheetRows.length === 0 ? (
             <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>
-              Aucune saisie employe disponible pour cette periode.
+              {effectiveTimesheetStatus.key === 'missing'
+                ? 'Aucune FDT employe recue pour cette periode.'
+                : 'Aucune saisie employe detaillee disponible pour cette periode.'}
             </div>
           ) : (
             <div style={{ marginBottom: 14 }}>

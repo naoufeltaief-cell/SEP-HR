@@ -45,6 +45,39 @@ const MONTHS_FULL = [
 const TPS_RATE = 0.05;
 const TVQ_RATE = 0.09975;
 const GARDE_RATE = 86.23;
+const TIMESHEET_STATUS_MISSING = {
+  key: "missing",
+  label: "FDT non recue",
+  shortLabel: "FDT non recue",
+  background: "#fff1f3",
+  color: "#b42318",
+  border: "#fecdd3",
+  rank: 0,
+};
+
+function buildTimesheetStatus(timesheet) {
+  if (!timesheet?.id) return TIMESHEET_STATUS_MISSING;
+  if (Number(timesheet.attachment_count || 0) > 0) {
+    return {
+      key: "received",
+      label: "FDT employe recue",
+      shortLabel: "FDT recue",
+      background: "#ecfdf3",
+      color: "#027a48",
+      border: "#abefc6",
+      rank: 2,
+    };
+  }
+  return {
+    key: "entered",
+    label: "FDT employe saisie",
+    shortLabel: "FDT saisie",
+    background: "#fffaeb",
+    color: "#b54708",
+    border: "#fedf89",
+    rank: 1,
+  };
+}
 
 function calcHours(start, end, pause = 0) {
   if (!start || !end) return 0;
@@ -212,6 +245,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [currentReview, setCurrentReview] = useState(null);
   const [currentTimesheet, setCurrentTimesheet] = useState(null);
   const [timesheetAttachments, setTimesheetAttachments] = useState([]);
+  const [weekTimesheets, setWeekTimesheets] = useState([]);
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [billingLoading, setBillingLoading] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -305,6 +339,53 @@ export default function SchedulesPage({ toast, onNavigate }) {
   );
   const getWeekStart = () => currentWeekStart;
   const getWeekEnd = () => currentWeekEnd;
+  useEffect(() => {
+    if (viewMode !== "week" || !currentWeekStart || !currentWeekEnd) {
+      setWeekTimesheets([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getTimesheets({
+        period_start: currentWeekStart,
+        period_end: currentWeekEnd,
+      })
+      .then((items) => {
+        if (cancelled) return;
+        setWeekTimesheets(
+          (items || []).filter(
+            (item) =>
+              String(item.period_start || "") === String(currentWeekStart) &&
+              String(item.period_end || "") === String(currentWeekEnd),
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setWeekTimesheets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, currentWeekStart, currentWeekEnd]);
+  const weekTimesheetStatusByEmployee = useMemo(() => {
+    const map = new Map();
+    for (const timesheet of weekTimesheets || []) {
+      const employeeKey = String(timesheet.employee_id || "");
+      if (!employeeKey) continue;
+      const nextStatus = buildTimesheetStatus(timesheet);
+      const existingStatus = map.get(employeeKey);
+      if (!existingStatus || nextStatus.rank > existingStatus.rank) {
+        map.set(employeeKey, nextStatus);
+      }
+    }
+    return map;
+  }, [weekTimesheets]);
+  const getEmployeeTimesheetStatus = useCallback(
+    (employeeId) =>
+      weekTimesheetStatusByEmployee.get(String(employeeId)) ||
+      TIMESHEET_STATUS_MISSING,
+    [weekTimesheetStatusByEmployee],
+  );
   const getWeekApprovalStatus = (employeeId, clientId) =>
     approvals.find(
       (a) =>
@@ -1508,6 +1589,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
               );
               const totalFrais = totalDep + totalKm * RATE_KM;
               const empClientIds = getEmployeeClientIds(e, periodShifts);
+              const timesheetStatus = getEmployeeTimesheetStatus(e.id);
               return (
                 <React.Fragment key={e.id}>
                   <tr>
@@ -1596,6 +1678,25 @@ export default function SchedulesPage({ toast, onNavigate }) {
                       {totalKm > 0 && (
                         <div style={{ fontSize: 9, color: "var(--text3)" }}>
                           {totalKm} km
+                        </div>
+                      )}
+                      {viewMode === "week" && (
+                        <div
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            marginTop: 6,
+                            padding: "3px 8px",
+                            borderRadius: 999,
+                            border: `1px solid ${timesheetStatus.border}`,
+                            background: timesheetStatus.background,
+                            color: timesheetStatus.color,
+                            fontSize: 10,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {timesheetStatus.shortLabel}
                         </div>
                       )}
                       {viewMode === "week" &&
@@ -1744,6 +1845,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                                 currentReview={currentReview}
                                 currentTimesheet={currentTimesheet}
                                 timesheetAttachments={timesheetAttachments}
+                                timesheetStatus={timesheetStatus}
                                 currentInvoice={currentInvoice}
                                 reviewAttachments={reviewAttachments}
                                 busy={billingLoading}

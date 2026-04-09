@@ -6,6 +6,7 @@ import { fmtISO, fmtMoney, RATE_KM } from '../utils/helpers';
 const TPS_RATE = 0.05;
 const TVQ_RATE = 0.09975;
 const GARDE_RATE = 86.23;
+const ORIENTATION_NOTE_TAG = "[[orientation]]";
 
 function calcHours(start, end, pause = 0) {
   if (!start || !end) return 0;
@@ -34,6 +35,37 @@ function pauseMinutesToHours(value) {
   return Math.round((Number(value || 0) / 60) * 100) / 100;
 }
 
+function stripOrientationTag(value) {
+  return String(value || "")
+    .replaceAll(ORIENTATION_NOTE_TAG, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasOrientationFlag(shift) {
+  const notes = String(shift?.notes || "").toLowerCase();
+  const location = String(shift?.location || "").toLowerCase();
+  return (
+    notes.includes(ORIENTATION_NOTE_TAG) ||
+    notes.includes("orientation") ||
+    notes.includes("formation") ||
+    location.includes("orientation") ||
+    location.includes("formation") ||
+    Boolean(shift?.is_orientation)
+  );
+}
+
+function buildShiftNotes(notes, isOrientation) {
+  const clean = stripOrientationTag(notes);
+  return isOrientation ? `${ORIENTATION_NOTE_TAG} ${clean}`.trim() : clean;
+}
+
+function getEffectiveShiftRate(shift, employeeRate = 0) {
+  if (shift?.is_orientation) return 0;
+  const rate = Number(shift?.billable_rate || 0);
+  return rate > 0 ? rate : Number(employeeRate || 0);
+}
+
 function normalizeEditableShift(shift) {
   return {
     ...shift,
@@ -47,7 +79,8 @@ function normalizeEditableShift(shift) {
     deplacement: Number(shift.deplacement || 0),
     garde_hours: Number(shift.garde_hours || 0),
     rappel_hours: Number(shift.rappel_hours || 0),
-    notes: shift.notes || '',
+    notes: stripOrientationTag(shift.notes || ''),
+    is_orientation: hasOrientationFlag(shift),
     location: shift.location || '',
     client_id: shift.client_id || null,
     other_dep: shift.autre_dep ?? shift.other_dep ?? 0,
@@ -109,6 +142,7 @@ export default function ScheduleApprovalPanel({
   const isSavingRef = React.useRef(false);
   const editableShiftsRef = React.useRef([]);
   const dirtyIdsRef = React.useRef(new Set());
+  const approvedHoursManualRef = React.useRef(false);
 
   useEffect(() => {
     editableShiftsRef.current = editableShifts;
@@ -121,7 +155,14 @@ export default function ScheduleApprovalPanel({
   useEffect(() => {
     if (isSavingRef.current) return;
 
-    const normalizedIncoming = (shifts || []).map(normalizeEditableShift);
+    const employeeOrientationHint = /orientation|formation/i.test(String(employee?.position || ''));
+    const normalizedIncoming = (shifts || []).map((shift) => {
+      const normalized = normalizeEditableShift(shift);
+      if (!normalized.is_orientation && employeeOrientationHint && Number(normalized.billable_rate || 0) <= 0) {
+        normalized.is_orientation = true;
+      }
+      return normalized;
+    });
     const currentEditableShifts = editableShiftsRef.current;
     const currentDirtyIds = dirtyIdsRef.current;
 
@@ -141,7 +182,7 @@ export default function ScheduleApprovalPanel({
     });
 
     setEditableShifts(mergedShifts);
-  }, [shifts]);
+  }, [employee?.position, shifts]);
 
   const loadAccommodations = useCallback(async () => {
     if (!employee?.id) {
@@ -176,6 +217,9 @@ export default function ScheduleApprovalPanel({
     setEditableShifts(prev => prev.map(shift => {
       if (shift.id !== id) return shift;
       const next = { ...shift, [field]: value };
+      if (field === 'is_orientation' && !value && Number(next.billable_rate || 0) <= 0) {
+        next.billable_rate = Number(employee?.rate || 0);
+      }
       if (field === 'start' || field === 'end' || field === 'pause_minutes') {
         next.pause = pauseMinutesToHours(next.pause_minutes);
         next.hours = calcHours(next.start, next.end, Number(next.pause || 0));
@@ -205,6 +249,7 @@ export default function ScheduleApprovalPanel({
         deplacement: 0,
         other_dep: 0,
         notes: '',
+        is_orientation: false,
         billable_rate: Number(employee?.rate || 0),
         garde_hours: 0,
         rappel_hours: 0,
@@ -233,7 +278,7 @@ export default function ScheduleApprovalPanel({
       km: Number(shift.km || 0),
       deplacement: Number(shift.deplacement || 0),
       autre_dep: Number(shift.other_dep || 0),
-      notes: shift.notes || '',
+      notes: buildShiftNotes(shift.notes || '', Boolean(shift.is_orientation)),
     };
   };
 
@@ -442,7 +487,7 @@ export default function ScheduleApprovalPanel({
 
   const totals = useMemo(() => {
     const summary = editableShifts.reduce((acc, shift) => {
-      const rate = Number(shift.billable_rate || employee?.rate || 0);
+      const rate = getEffectiveShiftRate(shift, employee?.rate || 0);
       acc.service += Number(shift.hours || 0) * rate;
       acc.garde += (Number(shift.garde_hours || 0) / 8) * GARDE_RATE;
       acc.rappel += Number(shift.rappel_hours || 0) * rate;
@@ -473,6 +518,29 @@ export default function ScheduleApprovalPanel({
   const totalFrais = totals.km + totals.dep + totals.autres;
   const canGenerateInvoice = currentReview?.status === 'approved';
   const actionBusy = busy || savingAll;
+
+  useEffect(() => {
+    approvedHoursManualRef.current = Boolean(
+      currentReview?.id &&
+      Math.abs(Number(reviewDraft?.approvedHours || 0) - Number(plannedHours || 0)) > 0.009
+    );
+  }, [client?.id, currentReview?.id, employee?.id, plannedHours, reviewDraft?.approvedHours]);
+
+  useEffect(() => {
+    const currentApprovedHours = Number(reviewDraft?.approvedHours || 0);
+    const shouldSync =
+      !approvedHoursManualRef.current ||
+      reviewDraft?.approvedHours === '' ||
+      reviewDraft?.approvedHours == null;
+
+    if (shouldSync && Math.abs(currentApprovedHours - Number(plannedHours || 0)) > 0.009) {
+      setReviewDraft((draft) => ({
+        ...draft,
+        approvedHours: Number(Number(plannedHours || 0).toFixed(2)),
+      }));
+    }
+  }, [plannedHours, reviewDraft?.approvedHours, setReviewDraft]);
+
   const openTimesheetDocument = async (attId) => {
     if (!currentTimesheet?.id || !attId) return;
     try {
@@ -490,7 +558,7 @@ export default function ScheduleApprovalPanel({
   const sectionCard = { background: '#fff', borderRadius: 12, padding: 16, border: '1px solid #dfe7ea', boxShadow: '0 2px 12px rgba(16, 24, 40, 0.04)' };
   const editorCard = { background: '#f8fbfc', borderRadius: 12, padding: 16, border: '1px solid #e2ecef' };
   const tableWrap = { overflowX: 'auto' };
-  const tableStyle = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 11, minWidth: 860 };
+  const tableStyle = { width: '100%', borderCollapse: 'separate', borderSpacing: 0, fontSize: 11, minWidth: 960 };
   const thStyle = { background: '#3f8391', color: '#fff', padding: '10px 6px', textAlign: 'left', fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap' };
   const tdStyle = { padding: '8px 4px', borderBottom: '1px solid #e8eef1', verticalAlign: 'middle', background: '#fff' };
   const inputStyle = { width: '100%', padding: '7px 10px', borderRadius: 10, border: '1px solid #d3dce2', fontSize: 12, background: '#fff', boxSizing: 'border-box' };
@@ -591,7 +659,7 @@ export default function ScheduleApprovalPanel({
                 <table style={tableStyle}>
                   <thead>
                     <tr>
-                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
+                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'ORIENTATION', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
                         <th key={header} style={thStyle}>{header}</th>
                       ))}
                     </tr>
@@ -606,7 +674,17 @@ export default function ScheduleApprovalPanel({
                           <td style={tdStyle}><input className="input" type="time" step="60" lang="fr-CA" style={getDirtyInputStyle(rowDirty)} value={shift.end || ''} onChange={e => updateEditableShift(shift.id, 'end', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="1" style={getDirtyInputStyle(rowDirty)} value={shift.pause_minutes || 0} onChange={e => updateEditableShift(shift.id, 'pause_minutes', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.25" style={getDirtyInputStyle(rowDirty, true)} value={Number(shift.hours || 0).toFixed(2)} readOnly /></td>
-                          <td style={tdStyle}><input className="input" type="number" step="0.01" style={getDirtyInputStyle(rowDirty)} value={shift.billable_rate || 0} onChange={e => updateEditableShift(shift.id, 'billable_rate', e.target.value)} /></td>
+                          <td style={tdStyle}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600 }}>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(shift.is_orientation)}
+                                onChange={e => updateEditableShift(shift.id, 'is_orientation', e.target.checked)}
+                              />
+                              Orientation
+                            </label>
+                          </td>
+                          <td style={tdStyle}><input className="input" type="number" step="0.01" style={getDirtyInputStyle(rowDirty, Boolean(shift.is_orientation))} value={shift.is_orientation ? 0 : (shift.billable_rate || 0)} readOnly={Boolean(shift.is_orientation)} onChange={e => updateEditableShift(shift.id, 'billable_rate', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.garde_hours || 0} onChange={e => updateEditableShift(shift.id, 'garde_hours', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.rappel_hours || 0} onChange={e => updateEditableShift(shift.id, 'rappel_hours', e.target.value)} /></td>
                           <td style={{ ...tdStyle, width: 54, textAlign: 'center' }}>
@@ -720,7 +798,15 @@ export default function ScheduleApprovalPanel({
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 12 }}>
             <div>
               <label style={{ fontSize: 11, color: 'var(--text3)' }}>Heures approuvées</label>
-              <input className="input" type="number" step="0.25" value={reviewDraft.approvedHours} onChange={e => setReviewDraft(d => ({ ...d, approvedHours: e.target.value }))} />
+              <input className="input" type="number" step="0.25" value={reviewDraft.approvedHours} onChange={e => {
+                const nextValue = e.target.value;
+                const numericValue = Number(nextValue || 0);
+                approvedHoursManualRef.current = nextValue !== '' && Math.abs(numericValue - Number(plannedHours || 0)) > 0.009;
+                setReviewDraft(d => ({ ...d, approvedHours: nextValue }));
+              }} />
+              <div style={{ fontSize: 10, color: 'var(--text3)', marginTop: 4 }}>
+                Laisser la meme valeur que les heures affichees si aucun ajustement manuel n'est requis.
+              </div>
             </div>
             <div>
               <label style={{ fontSize: 11, color: 'var(--text3)' }}>Notes</label>

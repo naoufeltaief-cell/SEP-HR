@@ -760,8 +760,6 @@ async def update_schedule(sid: str, data: ScheduleUpdate, db: AsyncSession = Dep
     if not sched:
         raise HTTPException(status_code=404, detail="Quart introuvable")
     updates = data.model_dump(exclude_unset=True)
-    if "billable_rate" in updates and not updates["billable_rate"] and getattr(sched, "billable_rate", 0):
-        updates.pop("billable_rate")
     for k, v in updates.items():
         setattr(sched, k, v)
     await db.commit()

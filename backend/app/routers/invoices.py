@@ -34,7 +34,7 @@ from ..services.invoice_service import (
     add_payment, delete_payment, detect_anomalies,
     duplicate_invoice, get_client_invoice_summary,
     schedule_pause_to_invoice_minutes, invoice_pause_to_schedule_hours,
-    build_shift_expense_description,
+    build_shift_expense_description, get_schedule_billable_rate,
     COMPANY_INFO
 )
 from ..services.invoice_delivery import email_invoice_and_mark_sent
@@ -862,6 +862,7 @@ async def generate_invoice_from_schedules(
     # Build service lines
     service_lines = []
     for s in scheds:
+        rate = get_schedule_billable_rate(s, employee.position or "")
         hours = getattr(s, "hours", 0) or 0
         garde_h = getattr(s, "garde_hours", 0) or 0
         rappel_h = getattr(s, "rappel_hours", 0) or 0
@@ -903,6 +904,7 @@ async def generate_invoice_from_schedules(
     expense_lines = []
     for s in scheds:
         shift_notes = getattr(s, "notes", "") or ""
+        rate = get_schedule_billable_rate(s, employee.position or "")
         km_val = getattr(s, "km", 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)

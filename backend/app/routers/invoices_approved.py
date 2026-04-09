@@ -9,7 +9,7 @@ from ..services.auth_service import require_admin
 from ..models.models import Client, Employee, InvoiceAttachment, Schedule, Accommodation, ScheduleApproval, AccommodationAttachment
 from ..models.models_schedule_review import ScheduleApprovalMeta, ScheduleApprovalAttachment
 from ..models.models_invoice import Invoice, InvoiceAuditLog
-from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
+from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, get_schedule_billable_rate, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -96,6 +96,7 @@ async def _create_invoice_from_approved(data: dict, db: AsyncSession, user, auto
     service_lines = []
     raw_total_hours = 0.0
     for s in scheds:
+        rate = get_schedule_billable_rate(s, employee.position or '')
         hours = round((getattr(s, 'hours', 0) or 0), 2)
         raw_total_hours += hours
         garde_h = getattr(s, 'garde_hours', 0) or 0
@@ -124,6 +125,7 @@ async def _create_invoice_from_approved(data: dict, db: AsyncSession, user, auto
     expense_lines = []
     for s in scheds:
         shift_notes = getattr(s, 'notes', '') or ''
+        rate = get_schedule_billable_rate(s, employee.position or '')
         km_val = getattr(s, 'km', 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)
@@ -150,7 +152,11 @@ async def _create_invoice_from_approved(data: dict, db: AsyncSession, user, auto
     extra_lines = []
     if abs(approved_hours - raw_total_hours) > 0.009:
         delta_hours = round(approved_hours - raw_total_hours, 2)
-        extra_lines.append({'description': f"Ajustement heures approuvées ({approved_hours:.2f}h approuvées vs {raw_total_hours:.2f}h planifiées)", 'amount': round(delta_hours * rate, 2), 'hours_delta': delta_hours, 'rate': rate, 'type': 'approved_hours_adjustment'})
+        adjustment_rate = round(
+            (sum(float(line.get('service_amount', 0) or 0) for line in service_lines) / raw_total_hours),
+            2,
+        ) if raw_total_hours > 0 else get_rate_for_title(employee.position or '')
+        extra_lines.append({'description': f"Ajustement heures approuvées ({approved_hours:.2f}h approuvées vs {raw_total_hours:.2f}h planifiées)", 'quantity': delta_hours, 'amount': round(delta_hours * adjustment_rate, 2), 'hours_delta': delta_hours, 'rate': adjustment_rate, 'type': 'approved_hours_adjustment'})
 
     invoice = Invoice(id=str(uuid.uuid4()), number=await generate_invoice_number(db), date=date.today(), period_start=ps, period_end=pe, client_id=client.id if client else effective_client_id, client_name=client_name, client_address=client.address if client else '', client_email=getattr(client, 'email', '') if client else '', client_phone=getattr(client, 'phone', '') if client else '', employee_id=employee_id, employee_name=employee.name or '', employee_title=employee.position or '', include_tax=include_tax, status='validated', validated_at=datetime.utcnow(), lines=service_lines, accommodation_lines=accom_lines, expense_lines=expense_lines, extra_lines=extra_lines, notes=f"Facture approuvée générée depuis l'horaire validé. Heures approuvées: {approved_hours:.2f}h. Heures planifiées: {raw_total_hours:.2f}h.")
     invoice = recalculate_invoice(invoice)

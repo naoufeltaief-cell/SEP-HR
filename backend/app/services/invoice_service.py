@@ -5,6 +5,8 @@ Business logic for invoice generation, calculations, anomalies, workflow.
 
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple, Dict, Any
+import re
+import unicodedata
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, Integer
 from sqlalchemy.orm import selectinload
@@ -43,6 +45,8 @@ COMPANY_INFO = {
     "tps_number": TPS_NUMBER,
     "tvq_number": TVQ_NUMBER,
 }
+ORIENTATION_NOTE_TAG = "[[orientation]]"
+ORIENTATION_KEYWORDS = ("orientation", "formation")
 
 async def generate_invoice_number(db: AsyncSession) -> str:
     """Generate next invoice number using MAX sequence to avoid duplicates after deletions.
@@ -117,6 +121,52 @@ def get_rate_for_title(title: str) -> float:
         if key.lower() in (title or "").lower(): return rate
     return RATES["Infirmier(ère)"]
 
+def _normalize_hint_text(*values: Any) -> str:
+    raw = " ".join(str(value or "") for value in values).lower()
+    raw = unicodedata.normalize("NFKD", raw)
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = re.sub(r"[^a-z0-9]+", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+def strip_system_note_tags(notes: Any) -> str:
+    text = str(notes or "")
+    text = text.replace(ORIENTATION_NOTE_TAG, " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+def is_orientation_shift(schedule: Any = None, employee_title: str = "") -> bool:
+    notes = getattr(schedule, "notes", "") if schedule is not None else ""
+    location = getattr(schedule, "location", "") if schedule is not None else ""
+    billable_rate = getattr(schedule, "billable_rate", None) if schedule is not None else None
+
+    if ORIENTATION_NOTE_TAG in str(notes or "").lower():
+        return True
+
+    hints = _normalize_hint_text(notes, location)
+    if any(keyword in hints for keyword in ORIENTATION_KEYWORDS):
+        return True
+
+    try:
+        stored_rate = float(billable_rate or 0)
+    except (TypeError, ValueError):
+        stored_rate = 0.0
+
+    title_hints = _normalize_hint_text(employee_title)
+    return stored_rate <= 0 and any(keyword in title_hints for keyword in ORIENTATION_KEYWORDS)
+
+def get_schedule_billable_rate(schedule: Any, employee_title: str = "") -> float:
+    if is_orientation_shift(schedule=schedule, employee_title=employee_title):
+        return 0.0
+
+    try:
+        stored_rate = float(getattr(schedule, "billable_rate", 0) or 0)
+    except (TypeError, ValueError):
+        stored_rate = 0.0
+
+    if stored_rate > 0:
+        return round(stored_rate, 2)
+
+    return get_rate_for_title(employee_title)
+
 def schedule_pause_to_invoice_minutes(pause_value: Any) -> float:
     try:
         pause = float(pause_value or 0)
@@ -145,7 +195,7 @@ def build_shift_expense_description(expense_type: str, shift_date: Any = None, s
         "deplacement": "Déplacement",
         "autre": "Autres frais",
     }.get((expense_type or "").strip().lower(), "Frais")
-    note = " ".join(str(schedule_notes or "").strip().split())
+    note = " ".join(strip_system_note_tags(schedule_notes).split())
     date_text = shift_date.isoformat() if hasattr(shift_date, "isoformat") else str(shift_date or "").strip()
     description = f"{base} - {note}" if note else base
     return f"{description} ({date_text})" if date_text else description
@@ -210,6 +260,7 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
             rate = get_rate_for_title(employee.position or "Infirmier(ère)")
             service_lines = []
             for s in sorted(scheds, key=lambda x: x.date):
+                rate = get_schedule_billable_rate(s, employee.position or "")
                 hours = getattr(s, "hours", 0) or 0; pause = getattr(s, "pause", 0) or 0; garde_h = getattr(s, "garde_hours", 0) or 0; rappel_h = getattr(s, "rappel_hours", 0) or 0
                 garde_billable = garde_h / 8.0 if garde_h else 0
                 service_lines.append({"schedule_id": s.id, "date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date), "employee": employee.name or f"Emp #{emp_id}", "location": client_name, "start": getattr(s, "start", "") or "", "end": getattr(s, "end", "") or "", "pause_min": schedule_pause_to_invoice_minutes(pause), "hours": round(hours, 2), "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
@@ -242,6 +293,7 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
             expense_lines = []
             for s in scheds:
                 shift_notes = getattr(s, "notes", "") or ""
+                rate = get_schedule_billable_rate(s, employee.position or "")
                 km_val = getattr(s, "km", 0) or 0
                 if km_val:
                     capped_km = min(float(km_val), MAX_KM)

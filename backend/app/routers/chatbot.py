@@ -33,7 +33,7 @@ from ..services.automation_service import (
     send_weekly_timesheet_reminder,
 )
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
-from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
+from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, get_schedule_billable_rate, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
 from ..services.timesheet_service import (
     build_accommodation_documents_summary,
     build_timesheet_documents_summary,
@@ -555,6 +555,7 @@ async def _build_invoice_from_schedules(
     include_tax = not is_tax_exempt(effective_client.name)
     lines, expense_lines = [], []
     for s in scheds:
+        rate = get_schedule_billable_rate(s, employee.position or '')
         hours = round((getattr(s, 'hours', 0) or 0), 2)
         garde_h = getattr(s, 'garde_hours', 0) or 0
         rappel_h = getattr(s, 'rappel_hours', 0) or 0
@@ -574,6 +575,7 @@ async def _build_invoice_from_schedules(
     expense_lines = []
     for s in scheds:
         shift_notes = getattr(s, 'notes', '') or ''
+        rate = get_schedule_billable_rate(s, employee.position or '')
         km_val = getattr(s, 'km', 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)

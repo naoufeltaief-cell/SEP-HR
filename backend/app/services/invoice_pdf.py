@@ -724,9 +724,10 @@ def _legacy_generate_invoice_pdf(invoice) -> BytesIO:
                 fmt(e.get("amount", 0)),
             ])
         for e in extra_lines:
+            quantity = e.get("quantity", e.get("hours_delta", 1))
             exp_data.append([
                 e.get("description", "Ligne additionnelle"),
-                fmt_num(e.get("quantity", 1)),
+                fmt_num(quantity),
                 fmt(e.get("rate", 0)),
                 fmt(e.get("amount", 0)),
             ])
@@ -1154,9 +1155,10 @@ def generate_invoice_pdf(invoice) -> BytesIO:
             })
 
         for line in extra_lines:
+            quantity = line.get("quantity", line.get("hours_delta", 1))
             expense_rows.append({
                 "description": _safe_text(line.get("description"), "Ligne additionnelle"),
-                "quantity": fmt_num(line.get("quantity", 1)),
+                "quantity": fmt_num(quantity),
                 "rate": fmt(line.get("rate", 0)),
                 "amount": fmt(line.get("amount", 0)),
             })

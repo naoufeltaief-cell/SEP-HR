@@ -86,7 +86,11 @@ export default function EmployeesPage({ toast }) {
         });
       }
       const label = modal.type === 'add' ? 'Employe cree' : 'Employe mis a jour';
-      toast?.(result?.portal_invited ? `${label} - invitation portail envoyee` : label);
+      if (result?.portal_invite_error) {
+        toast?.(`${label} - invitation portail non envoyee: ${result.portal_invite_error}`);
+      } else {
+        toast?.(result?.portal_invited ? `${label} - invitation portail envoyee` : label);
+      }
       setModal(null);
       await reload();
     } catch (err) {

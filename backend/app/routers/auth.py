@@ -207,7 +207,13 @@ async def request_magic_link(req: MagicLinkRequest, db: AsyncSession = Depends(g
     user.magic_token = token
     user.magic_token_expires = datetime.utcnow() + timedelta(minutes=MAGIC_LINK_EXPIRE_MINUTES)
     await db.commit()
-    await send_magic_link(user.email, token, user.name)
+    try:
+        await send_magic_link(user.email, token, user.name)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Impossible d'envoyer le lien de connexion: {exc}",
+        ) from exc
     return {"message": "Si ce courriel existe, un lien de connexion a été envoyé."}
 
 

@@ -18,8 +18,10 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", os.getenv("GMAIL_SENDER_EMAIL", SMTP_USER))
 BILLING_EMAIL_TRANSPORT = os.getenv("BILLING_EMAIL_TRANSPORT", "auto").lower()
 AUTH_SENDER_EMAIL = os.getenv("AUTH_SENDER_EMAIL", "rh@soins-expert-plus.com").strip()
-AUTH_SMTP_USER = os.getenv("AUTH_SMTP_USER") or SMTP_USER
-AUTH_SMTP_PASS = os.getenv("AUTH_SMTP_PASS") or SMTP_PASS
+AUTH_SMTP_USER_RAW = os.getenv("AUTH_SMTP_USER")
+AUTH_SMTP_PASS_RAW = os.getenv("AUTH_SMTP_PASS")
+AUTH_SMTP_USER = AUTH_SMTP_USER_RAW or SMTP_USER
+AUTH_SMTP_PASS = AUTH_SMTP_PASS_RAW or SMTP_PASS
 
 
 async def send_magic_link(email: str, token: str, name: str = ""):
@@ -43,7 +45,14 @@ async def send_magic_link(email: str, token: str, name: str = ""):
         <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus — 9437-7827 Québec Inc.</p>
     </div>
     """
-    await _send_email(email, subject, html)
+    await _send_email(
+        email,
+        subject,
+        html,
+        sender_email=AUTH_SENDER_EMAIL,
+        smtp_user=AUTH_SMTP_USER,
+        smtp_pass=AUTH_SMTP_PASS,
+    )
 
 
 async def send_welcome_email(email: str, name: str):
@@ -127,9 +136,19 @@ async def _send_email(
     sender = (sender_email or BILLING_SENDER_EMAIL or SMTP_USER).strip()
     login_user = (smtp_user or SMTP_USER).strip()
     login_pass = smtp_pass if smtp_pass is not None else SMTP_PASS
+    auth_sender_requested = bool(sender_email) and sender.lower() == AUTH_SENDER_EMAIL.lower()
+
+    if auth_sender_requested and sender.lower() != login_user.lower() and not (AUTH_SMTP_USER_RAW and AUTH_SMTP_PASS_RAW):
+        raise RuntimeError(
+            f"Configuration SMTP manquante pour envoyer depuis {sender}. "
+            f"Ajoutez AUTH_SMTP_USER et AUTH_SMTP_PASS pour cette boite courriel."
+        )
+
     if not login_pass:
-        print(f"[EMAIL SKIP] No SMTP_PASS set. Would send to {to}: {subject}")
-        return
+        raise RuntimeError(
+            f"Aucun mot de passe SMTP configure pour l'envoi des courriels. "
+            f"Expediteur: {sender}. Compte SMTP: {login_user or 'non configure'}."
+        )
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -148,6 +167,10 @@ async def _send_email(
         print(f"[EMAIL OK] Sent to {to}: {subject}")
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send to {to}: {e}")
+        raise RuntimeError(
+            f"Echec de l'envoi du courriel vers {to}. "
+            f"Expediteur: {sender}. Compte SMTP: {login_user}. Erreur: {e}"
+        ) from e
 
 
 async def send_email_with_attachment(

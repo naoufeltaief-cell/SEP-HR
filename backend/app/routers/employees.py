@@ -158,6 +158,25 @@ def _ensure_employee_access(user, employee: Employee):
     raise HTTPException(status_code=403, detail="Acces refuse a ce dossier employe")
 
 
+async def _send_portal_invite_or_capture_error(
+    email: str,
+    invite_token: str | None,
+    name: str,
+) -> str | None:
+    if not invite_token:
+        return None
+    try:
+        await send_employee_portal_invitation(
+            email,
+            invite_token,
+            name,
+            expires_hours=PORTAL_INVITE_EXPIRE_HOURS,
+        )
+        return None
+    except Exception as exc:
+        return str(exc)
+
+
 @router.get("")
 @router.get("/")
 async def list_employees(
@@ -234,18 +253,17 @@ async def create_employee(
     )
     await db.commit()
     await db.refresh(emp)
-    if provision["invite_token"]:
-        await send_employee_portal_invitation(
-            emp.email,
-            provision["invite_token"],
-            emp.name,
-            expires_hours=PORTAL_INVITE_EXPIRE_HOURS,
-        )
+    portal_invite_error = await _send_portal_invite_or_capture_error(
+        emp.email,
+        provision["invite_token"],
+        emp.name,
+    )
     return {
         **EmployeeOut.model_validate(emp).model_dump(),
         "portal_access": _serialize_portal_access(provision["portal_user"]),
         "portal_user_created": provision["created"],
-        "portal_invited": provision["invited"],
+        "portal_invited": bool(provision["invited"] and not portal_invite_error),
+        "portal_invite_error": portal_invite_error,
     }
 
 
@@ -272,18 +290,17 @@ async def update_employee(
     )
     await db.commit()
     await db.refresh(emp)
-    if provision["invite_token"]:
-        await send_employee_portal_invitation(
-            emp.email,
-            provision["invite_token"],
-            emp.name,
-            expires_hours=PORTAL_INVITE_EXPIRE_HOURS,
-        )
+    portal_invite_error = await _send_portal_invite_or_capture_error(
+        emp.email,
+        provision["invite_token"],
+        emp.name,
+    )
     return {
         **EmployeeOut.model_validate(emp).model_dump(),
         "portal_access": _serialize_portal_access(provision["portal_user"]),
         "portal_user_created": provision["created"],
-        "portal_invited": provision["invited"],
+        "portal_invited": bool(provision["invited"] and not portal_invite_error),
+        "portal_invite_error": portal_invite_error,
     }
 
 
@@ -337,13 +354,13 @@ async def invite_employee_access(
 
     provision = await _provision_employee_portal_access(db, emp, invite=True)
     await db.commit()
-    if provision["invite_token"]:
-        await send_employee_portal_invitation(
-            emp.email,
-            provision["invite_token"],
-            emp.name,
-            expires_hours=PORTAL_INVITE_EXPIRE_HOURS,
-        )
+    portal_invite_error = await _send_portal_invite_or_capture_error(
+        emp.email,
+        provision["invite_token"],
+        emp.name,
+    )
+    if portal_invite_error:
+        raise HTTPException(status_code=502, detail=portal_invite_error)
     return {
         "message": "Invitation employee envoyee",
         "portal_access": _serialize_portal_access(provision["portal_user"]),

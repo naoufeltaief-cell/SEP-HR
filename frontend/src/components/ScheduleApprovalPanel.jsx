@@ -217,6 +217,45 @@ export default function ScheduleApprovalPanel({
     [shifts]
   );
 
+  const employeeTimesheetRows = useMemo(() => {
+    const editableMap = new Map((editableShifts || []).map((shift) => [String(shift.id), shift]));
+    return (currentTimesheet?.shifts || [])
+      .map((shift) => {
+        const linkedShift = editableMap.get(String(shift.schedule_id)) || originalShiftMap.get(String(shift.schedule_id));
+        return {
+          id: shift.id,
+          schedule_id: shift.schedule_id,
+          date: shift.date || linkedShift?.date || '',
+          start_actual: shift.start_actual || '',
+          end_actual: shift.end_actual || '',
+          hours_worked: Number(shift.hours_worked || 0),
+          pause: Number(shift.pause || 0),
+          garde_hours: Number(shift.garde_hours || 0),
+          rappel_hours: Number(shift.rappel_hours || 0),
+          km: Number(shift.km || 0),
+          deplacement: Number(shift.deplacement || 0),
+          autre_dep: Number(shift.autre_dep || 0),
+          location: linkedShift?.location || '',
+        };
+      })
+      .sort((a, b) => `${a.date} ${a.start_actual}`.localeCompare(`${b.date} ${b.start_actual}`));
+  }, [currentTimesheet?.shifts, editableShifts, originalShiftMap]);
+
+  const employeeTimesheetTotals = useMemo(
+    () =>
+      employeeTimesheetRows.reduce(
+        (acc, shift) => {
+          acc.hours += Number(shift.hours_worked || 0);
+          acc.km += Number(shift.km || 0);
+          acc.deplacement += Number(shift.deplacement || 0);
+          acc.autre_dep += Number(shift.autre_dep || 0);
+          return acc;
+        },
+        { hours: 0, km: 0, deplacement: 0, autre_dep: 0 }
+      ),
+    [employeeTimesheetRows]
+  );
+
   const updateEditableShift = (id, field, value) => {
     setDirtyIds(prev => new Set(prev).add(id));
     setEditableShifts(prev => prev.map(shift => {
@@ -836,6 +875,65 @@ export default function ScheduleApprovalPanel({
 
           {!canGenerateInvoice && <div style={{ fontSize: 11, color: '#856404', background: '#fff3cd', border: '1px solid #ffe69c', padding: '8px 10px', borderRadius: 8, marginBottom: 10 }}>Approuve la semaine avant de générer la facture approuvée.</div>}
           {currentInvoice && <div style={{ background: '#eef7ff', border: '1px solid #c7e1ff', borderRadius: 8, padding: 10, marginBottom: 12 }}><div style={{ fontSize: 11, color: 'var(--text3)' }}>Facture générée</div><div style={{ fontWeight: 700 }}>{currentInvoice.number} — {fmtMoney(currentInvoice.total || 0)}</div></div>}
+
+          <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Saisie employe (FDT)</div>
+          {employeeTimesheetRows.length === 0 ? (
+            <div style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>
+              Aucune saisie employe disponible pour cette periode.
+            </div>
+          ) : (
+            <div style={{ marginBottom: 14 }}>
+              {!!String(currentTimesheet?.notes || '').trim() && (
+                <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px', fontSize: 12, marginBottom: 10 }}>
+                  <div style={{ color: 'var(--text3)', fontSize: 11, marginBottom: 4 }}>Notes de l'employe</div>
+                  <strong style={{ whiteSpace: 'pre-wrap' }}>{String(currentTimesheet?.notes || '').trim()}</strong>
+                </div>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8, marginBottom: 10 }}>
+                <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
+                  <div style={{ color: 'var(--text3)', fontSize: 11 }}>Heures declarees</div>
+                  <strong>{employeeTimesheetTotals.hours.toFixed(2)} h</strong>
+                </div>
+                <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
+                  <div style={{ color: 'var(--text3)', fontSize: 11 }}>Kilometrage</div>
+                  <strong>{employeeTimesheetTotals.km.toFixed(0)} km</strong>
+                </div>
+                <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
+                  <div style={{ color: 'var(--text3)', fontSize: 11 }}>Deplacement</div>
+                  <strong>{employeeTimesheetTotals.deplacement.toFixed(2)} h</strong>
+                </div>
+                <div style={{ background: '#f7fafb', borderRadius: 10, padding: '8px 10px' }}>
+                  <div style={{ color: 'var(--text3)', fontSize: 11 }}>Autres depenses</div>
+                  <strong>{fmtMoney(employeeTimesheetTotals.autre_dep)}</strong>
+                </div>
+              </div>
+              <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #edf1f3', borderRadius: 10 }}>
+                {employeeTimesheetRows.map((shift) => (
+                  <div key={`employee-timesheet-${shift.id}`} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{shift.date || '-'}</div>
+                      <div style={{ color: 'var(--text3)', marginTop: 2 }}>
+                        {shift.start_actual || '--:--'} - {shift.end_actual || '--:--'} • pause {Math.round(Number(shift.pause || 0) * 60)} min
+                      </div>
+                      {shift.location && <div style={{ color: 'var(--text3)', marginTop: 2 }}>{shift.location}</div>}
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 700 }}>{shift.hours_worked.toFixed(2)} h</div>
+                      <div style={{ color: 'var(--text3)' }}>{shift.km.toFixed(0)} km</div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 700 }}>{shift.deplacement.toFixed(2)} h</div>
+                      <div style={{ color: 'var(--text3)' }}>depl.</div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 700 }}>{fmtMoney(shift.autre_dep)}</div>
+                      <div style={{ color: 'var(--text3)' }}>autre</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>FDT indexee ({timesheetAttachments.length})</div>
           {timesheetAttachments.length === 0 ? (

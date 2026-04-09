@@ -729,7 +729,7 @@ async def list_approvals(
     client_id: int = None,
     week_start: str = None,
     db: AsyncSession = Depends(get_db),
-    user=Depends(get_current_user),
+    user=Depends(require_admin),
 ):
     q = select(ScheduleApproval)
     if employee_id:

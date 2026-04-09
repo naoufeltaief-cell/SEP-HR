@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models.models import Schedule, ScheduleApproval, Timesheet
 from ..models.models_schedule_review import ScheduleApprovalMeta, ScheduleApprovalAttachment
-from ..services.auth_service import require_admin, get_current_user
+from ..services.auth_service import require_admin
 from ..services.timesheet_service import build_weekly_validation_queue, sync_timesheet_attachments_to_reviews
 router = APIRouter()
 ALLOWED_MIME = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}
@@ -50,7 +50,7 @@ async def _serialize_approval(db: AsyncSession, approval: ScheduleApproval):
     return {"id": approval.id, "employee_id": approval.employee_id, "client_id": approval.client_id, "week_start": str(approval.week_start), "week_end": str(approval.week_end), "status": approval.status, "approved_by": approval.approved_by, "approved_at": approval.approved_at.isoformat() if approval.approved_at else None, "notes": approval.notes, "approved_hours": round((meta.approved_hours if meta else 0) or 0, 2), "approved_shift_count": (meta.approved_shift_count if meta else 0) or 0, "week_total_hours": round((meta.week_total_hours if meta else 0) or 0, 2), "attachment_count": att_count.scalar() or 0}
 
 @router.get("/")
-async def list_reviews(employee_id: int = None, client_id: int = None, week_start: str = None, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+async def list_reviews(employee_id: int = None, client_id: int = None, week_start: str = None, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     q = select(ScheduleApproval)
     if employee_id:
         q = q.where(ScheduleApproval.employee_id == employee_id)

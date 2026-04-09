@@ -197,6 +197,9 @@ class TimesheetShiftCreate(BaseModel):
     pause: float = 0
     garde_hours: float = 0
     rappel_hours: float = 0
+    km: float = 0
+    deplacement: float = 0
+    autre_dep: float = 0
     start_actual: Optional[str] = None
     end_actual: Optional[str] = None
 

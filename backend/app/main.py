@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
+from sqlalchemy import text
 
 from .database import engine, Base
 from .services.automation_service import automation_loop, cancel_automation_task
@@ -16,6 +17,12 @@ from .routers import auth, employees, schedules, schedule_reviews, schedule_cata
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS km DOUBLE PRECISION DEFAULT 0"))
+        await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS deplacement DOUBLE PRECISION DEFAULT 0"))
+        await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS autre_dep DOUBLE PRECISION DEFAULT 0"))
+        await conn.execute(text("UPDATE timesheet_shifts SET km = 0 WHERE km IS NULL"))
+        await conn.execute(text("UPDATE timesheet_shifts SET deplacement = 0 WHERE deplacement IS NULL"))
+        await conn.execute(text("UPDATE timesheet_shifts SET autre_dep = 0 WHERE autre_dep IS NULL"))
     task = asyncio.create_task(automation_loop())
     try:
         yield

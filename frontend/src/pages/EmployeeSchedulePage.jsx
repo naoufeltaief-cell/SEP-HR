@@ -59,6 +59,9 @@ function buildDraftRow(schedule, existingShift = null) {
     hoursWorked: Number(existingShift?.hours_worked || recalcHours(startActual, endActual, pauseMin)),
     gardeHours: Number(existingShift?.garde_hours || 0),
     rappelHours: Number(existingShift?.rappel_hours || 0),
+    km: Number(existingShift?.km || 0),
+    deplacement: Number(existingShift?.deplacement || 0),
+    autreDep: Number(existingShift?.autre_dep || 0),
   };
 }
 
@@ -203,6 +206,9 @@ export default function EmployeeSchedulePage({ user, toast }) {
           pause: Number(shift.pauseMin || 0) / 60,
           garde_hours: Number(shift.gardeHours || 0),
           rappel_hours: Number(shift.rappelHours || 0),
+          km: Number(shift.km || 0),
+          deplacement: Number(shift.deplacement || 0),
+          autre_dep: Number(shift.autreDep || 0),
           start_actual: normalizeTime(shift.startActual),
           end_actual: normalizeTime(shift.endActual),
         })),
@@ -272,6 +278,18 @@ export default function EmployeeSchedulePage({ user, toast }) {
     () => draftRows.reduce((sum, shift) => sum + Number(shift.hoursWorked || 0), 0),
     [draftRows],
   );
+  const weekDeclaredKm = useMemo(
+    () => draftRows.reduce((sum, shift) => sum + Number(shift.km || 0), 0),
+    [draftRows],
+  );
+  const weekDeclaredDeplacement = useMemo(
+    () => draftRows.reduce((sum, shift) => sum + Number(shift.deplacement || 0), 0),
+    [draftRows],
+  );
+  const weekDeclaredOtherExpenses = useMemo(
+    () => draftRows.reduce((sum, shift) => sum + Number(shift.autreDep || 0), 0),
+    [draftRows],
+  );
   const weekSignedDocuments = weekTimesheet?.id
     ? attachmentsByTimesheet[weekTimesheet.id] || []
     : [];
@@ -309,7 +327,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
         </h1>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 18 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 18 }}>
         <div className="card">
           <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>Ressource</div>
           <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>{employee?.name || user?.name || '-'}</div>
@@ -328,6 +346,13 @@ export default function EmployeeSchedulePage({ user, toast }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {weekTimesheet ? <Badge status={weekTimesheet.status} /> : <span className="badge" style={{ background: 'var(--brand-xl)', color: 'var(--brand)' }}>Aucune FDT</span>}
             <span style={{ fontSize: 12, color: 'var(--text3)' }}>{weekSignedDocuments.length} document(s)</span>
+          </div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>Frais saisis cette semaine</div>
+          <div style={{ fontWeight: 700, color: 'var(--brand-d)', fontSize: 20 }}>{weekDeclaredKm.toFixed(0)} km</div>
+          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
+            {weekDeclaredDeplacement.toFixed(2)} h dep. • {weekDeclaredOtherExpenses.toFixed(2)} $
           </div>
         </div>
       </div>
@@ -444,6 +469,37 @@ export default function EmployeeSchedulePage({ user, toast }) {
               </table>
             </div>
 
+            <div style={{ marginTop: 14, overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 760 }}>
+                <thead>
+                  <tr>
+                    {['Date', 'Kilometrage', 'Deplacement h', 'Autre depense $', 'Lieu'].map((label) => (
+                      <th key={label} style={{ background: '#3f8391', color: '#fff', padding: '10px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700 }}>
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {draftRows.map((row, index) => (
+                    <tr key={`${row.scheduleId || `${row.date}-${index}`}-expenses`}>
+                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{row.date}</td>
+                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                        <input className="input" type="number" min="0" step="1" value={row.km} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'km', Number(event.target.value || 0))} />
+                      </td>
+                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                        <input className="input" type="number" min="0" step="0.25" value={row.deplacement} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'deplacement', Number(event.target.value || 0))} />
+                      </td>
+                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                        <input className="input" type="number" min="0" step="0.01" value={row.autreDep} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'autreDep', Number(event.target.value || 0))} />
+                      </td>
+                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: 12 }}>{row.location || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
             <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>Notes pour cette semaine</label>
@@ -530,7 +586,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 14 }}>
               <div style={{ fontSize: 12, color: 'var(--text3)' }}>
-                {draftRows.length} quart(s) • {weekDeclaredHours.toFixed(2)} h saisies
+                {draftRows.length} quart(s) • {weekDeclaredHours.toFixed(2)} h • {weekDeclaredKm.toFixed(0)} km • {weekDeclaredDeplacement.toFixed(2)} h dep. • {weekDeclaredOtherExpenses.toFixed(2)} $
               </div>
               <button className="btn btn-primary" disabled={!canEditWeekTimesheet || !draftRows.length || submitting} onClick={submitCurrentWeekTimesheet}>
                 <Send size={16} /> {submitting ? 'Envoi...' : weekTimesheet ? 'Mettre a jour ma FDT' : 'Soumettre ma FDT'}
@@ -596,7 +652,12 @@ export default function EmployeeSchedulePage({ user, toast }) {
                       {(timesheet.shifts || []).map((shift) => (
                         <div key={shift.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: '1px solid rgba(0,0,0,.06)', fontSize: 12 }}>
                           <span>{shift.date}</span>
-                          <span>{Number(shift.hours_worked || 0).toFixed(2)} h</span>
+                          <span style={{ textAlign: 'right' }}>
+                            {Number(shift.hours_worked || 0).toFixed(2)} h
+                            <span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>
+                              {Number(shift.km || 0).toFixed(0)} km • {Number(shift.deplacement || 0).toFixed(2)} h • {Number(shift.autre_dep || 0).toFixed(2)} $
+                            </span>
+                          </span>
                         </div>
                       ))}
                     </div>

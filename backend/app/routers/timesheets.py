@@ -44,6 +44,9 @@ async def _serialize_timesheet(db: AsyncSession, ts: Timesheet) -> dict:
             "pause": shift.pause,
             "garde_hours": shift.garde_hours,
             "rappel_hours": shift.rappel_hours,
+            "km": shift.km,
+            "deplacement": shift.deplacement,
+            "autre_dep": shift.autre_dep,
             "start_actual": shift.start_actual,
             "end_actual": shift.end_actual,
         }
@@ -238,8 +241,6 @@ async def get_timesheet_attachment(
     if not ts:
         raise HTTPException(status_code=404, detail="FDT introuvable")
     _ensure_timesheet_access(user, ts)
-    if getattr(user, "role", "") == "employee" and ts.status == "approved":
-        raise HTTPException(status_code=409, detail="Cette FDT est deja approuvee et ne peut plus etre modifiee")
 
     result = await db.execute(
         select(TimesheetAttachment).where(
@@ -278,6 +279,8 @@ async def delete_timesheet_attachment(
     if not ts:
         raise HTTPException(status_code=404, detail="FDT introuvable")
     _ensure_timesheet_access(user, ts)
+    if getattr(user, "role", "") == "employee" and ts.status == "approved":
+        raise HTTPException(status_code=409, detail="Cette FDT est deja approuvee et ne peut plus etre modifiee")
 
     result = await db.execute(
         select(TimesheetAttachment).where(

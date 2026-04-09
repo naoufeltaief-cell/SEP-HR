@@ -637,10 +637,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
     const plannedHours = Number(
       getClientWeekHours(empId, clientId, fallbackClientId).toFixed(2),
     );
-    setReviewDraft({ approvedHours: plannedHours, notes: "" });
+    const existingApproval = getWeekApprovalStatus(empId, clientId) || null;
+    setCurrentReview(existingApproval);
+    setReviewDraft({
+      approvedHours: Number(existingApproval?.approved_hours || plannedHours),
+      notes: existingApproval?.notes || "",
+    });
 
     try {
-      const [review, invoices, timesheets] = await Promise.all([
+      const [reviewResult, invoicesResult, timesheetsResult] = await Promise.allSettled([
         resolveApproval(empId, clientId, ws),
         api.getInvoices({
           employee_id: empId,
@@ -654,6 +659,14 @@ export default function SchedulesPage({ toast, onNavigate }) {
           period_end: we,
         }),
       ]);
+      const review =
+        reviewResult.status === "fulfilled"
+          ? reviewResult.value
+          : existingApproval;
+      const invoices =
+        invoicesResult.status === "fulfilled" ? invoicesResult.value : [];
+      const timesheets =
+        timesheetsResult.status === "fulfilled" ? timesheetsResult.value : [];
       const invoice = (invoices || [])[0] || null;
       const timesheet =
         (timesheets || []).find(
@@ -681,6 +694,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
           .getTimesheetAttachments(timesheet.id)
           .catch(() => []);
         setTimesheetAttachments(att || []);
+      }
+      const loadErrors = [];
+      if (reviewResult.status === "rejected") loadErrors.push("approbation");
+      if (invoicesResult.status === "rejected") loadErrors.push("facture");
+      if (timesheetsResult.status === "rejected") loadErrors.push("FDT");
+      if (loadErrors.length) {
+        toast?.(
+          `Détails ouverts, mais certaines données n'ont pas pu être chargées: ${loadErrors.join(", ")}.`,
+        );
       }
     } catch (err) {
       toast?.("Erreur: " + err.message);

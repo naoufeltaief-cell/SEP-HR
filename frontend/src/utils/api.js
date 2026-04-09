@@ -165,7 +165,7 @@ class ApiClient {
     formData.append('file', file);
     formData.append('category', category);
     formData.append('description', description);
-    formData.append('uploaded_by', 'admin');
+    formData.append('uploaded_by', this.user?.email || 'system');
     return this.postForm(`/timesheets/${timesheetId}/attachments`, formData);
   }
   getTimesheetAttachments(timesheetId) { return this.get(`/timesheets/${timesheetId}/attachments`); }

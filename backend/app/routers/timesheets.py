@@ -10,6 +10,7 @@ from ..models.schemas import TimesheetCreate
 from ..services.auth_service import get_current_user, require_admin
 from ..services.timesheet_service import (
     add_timesheet_attachment,
+    find_timesheet,
     get_attachment_count_map,
     serialize_timesheet_attachment,
     sync_timesheet_attachments_to_reviews,
@@ -18,7 +19,7 @@ from ..services.timesheet_service import (
 
 router = APIRouter()
 
-ALLOWED_MIME = {"application/pdf", "image/jpeg", "image/png", "image/gif"}
+ALLOWED_MIME = {"application/pdf", "image/jpeg", "image/png", "image/gif", "image/heic", "image/heif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 
@@ -100,6 +101,9 @@ async def submit_timesheet(
     if getattr(user, "role", "") == "employee":
         if not getattr(user, "employee_id", None) or user.employee_id != data.employee_id:
             raise HTTPException(status_code=403, detail="Acces refuse a cette FDT")
+        existing = await find_timesheet(db, data.employee_id, data.period_start, data.period_end)
+        if existing and existing.status == "approved":
+            raise HTTPException(status_code=409, detail="Cette FDT est deja approuvee et ne peut plus etre modifiee")
     target, created = await upsert_submitted_timesheet(db, data)
     await sync_timesheet_attachments_to_reviews(db, target)
     await db.commit()
@@ -194,6 +198,8 @@ async def upload_timesheet_attachment(
     if not ts:
         raise HTTPException(status_code=404, detail="FDT introuvable")
     _ensure_timesheet_access(user, ts)
+    if getattr(user, "role", "") == "employee" and ts.status == "approved":
+        raise HTTPException(status_code=409, detail="Cette FDT est deja approuvee et ne peut plus etre modifiee")
 
     content_type = file.content_type or ""
     if content_type and content_type not in ALLOWED_MIME:
@@ -232,6 +238,8 @@ async def get_timesheet_attachment(
     if not ts:
         raise HTTPException(status_code=404, detail="FDT introuvable")
     _ensure_timesheet_access(user, ts)
+    if getattr(user, "role", "") == "employee" and ts.status == "approved":
+        raise HTTPException(status_code=409, detail="Cette FDT est deja approuvee et ne peut plus etre modifiee")
 
     result = await db.execute(
         select(TimesheetAttachment).where(

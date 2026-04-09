@@ -46,7 +46,6 @@ COMPANY_INFO = {
     "tvq_number": TVQ_NUMBER,
 }
 ORIENTATION_NOTE_TAG = "[[orientation]]"
-ORIENTATION_KEYWORDS = ("orientation", "formation")
 
 async def generate_invoice_number(db: AsyncSession) -> str:
     """Generate next invoice number using MAX sequence to avoid duplicates after deletions.
@@ -135,23 +134,15 @@ def strip_system_note_tags(notes: Any) -> str:
 
 def is_orientation_shift(schedule: Any = None, employee_title: str = "") -> bool:
     notes = getattr(schedule, "notes", "") if schedule is not None else ""
-    location = getattr(schedule, "location", "") if schedule is not None else ""
-    billable_rate = getattr(schedule, "billable_rate", None) if schedule is not None else None
 
     if ORIENTATION_NOTE_TAG in str(notes or "").lower():
         return True
 
-    hints = _normalize_hint_text(notes, location)
-    if any(keyword in hints for keyword in ORIENTATION_KEYWORDS):
-        return True
+    explicit_flag = getattr(schedule, "is_orientation", None) if schedule is not None else None
+    if explicit_flag is not None:
+        return bool(explicit_flag)
 
-    try:
-        stored_rate = float(billable_rate or 0)
-    except (TypeError, ValueError):
-        stored_rate = 0.0
-
-    title_hints = _normalize_hint_text(employee_title)
-    return stored_rate <= 0 and any(keyword in title_hints for keyword in ORIENTATION_KEYWORDS)
+    return False
 
 def get_schedule_billable_rate(schedule: Any, employee_title: str = "") -> float:
     if is_orientation_shift(schedule=schedule, employee_title=employee_title):

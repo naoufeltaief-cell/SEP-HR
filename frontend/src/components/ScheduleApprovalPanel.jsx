@@ -7,6 +7,11 @@ const TPS_RATE = 0.05;
 const TVQ_RATE = 0.09975;
 const GARDE_RATE = 86.23;
 const ORIENTATION_NOTE_TAG = "[[orientation]]";
+const POSITION_RATE_HINTS = [
+  { match: /auxiliaire/, rate: 57.18 },
+  { match: /prepose|beneficiaire|pab/, rate: 50.35 },
+  { match: /clinicienne|clinicien|infirmier|infirmiere/, rate: 86.23 },
+];
 
 function calcHours(start, end, pause = 0) {
   if (!start || !end) return 0;
@@ -42,17 +47,15 @@ function stripOrientationTag(value) {
     .trim();
 }
 
+function estimateRateFromPosition(label, fallbackRate = 0) {
+  const raw = String(label || "").toLowerCase();
+  const match = POSITION_RATE_HINTS.find((item) => item.match.test(raw));
+  return match ? match.rate : Number(fallbackRate || 0);
+}
+
 function hasOrientationFlag(shift) {
-  const notes = String(shift?.notes || "").toLowerCase();
-  const location = String(shift?.location || "").toLowerCase();
-  return (
-    notes.includes(ORIENTATION_NOTE_TAG) ||
-    notes.includes("orientation") ||
-    notes.includes("formation") ||
-    location.includes("orientation") ||
-    location.includes("formation") ||
-    Boolean(shift?.is_orientation)
-  );
+  const notes = String(shift?.notes || "");
+  return notes.includes(ORIENTATION_NOTE_TAG) || Boolean(shift?.is_orientation);
 }
 
 function buildShiftNotes(notes, isOrientation) {
@@ -87,6 +90,16 @@ function normalizeEditableShift(shift) {
     pause_minutes: pauseHoursToMinutes(shift.pause),
     is_new: false,
   };
+}
+
+function getFallbackRegularRate(shift, originalShift = null, employee = null) {
+  const candidates = [
+    Number(shift?.billable_rate || 0),
+    Number(originalShift?.billable_rate || 0),
+    Number(employee?.rate || 0),
+    estimateRateFromPosition(employee?.position || '', 0),
+  ];
+  return candidates.find((value) => Number.isFinite(value) && value > 0) || 0;
 }
 
 function computeAccommodationEstimate(accommodation, allEmployeeSchedules, billedShifts) {
@@ -154,15 +167,7 @@ export default function ScheduleApprovalPanel({
 
   useEffect(() => {
     if (isSavingRef.current) return;
-
-    const employeeOrientationHint = /orientation|formation/i.test(String(employee?.position || ''));
-    const normalizedIncoming = (shifts || []).map((shift) => {
-      const normalized = normalizeEditableShift(shift);
-      if (!normalized.is_orientation && employeeOrientationHint && Number(normalized.billable_rate || 0) <= 0) {
-        normalized.is_orientation = true;
-      }
-      return normalized;
-    });
+    const normalizedIncoming = (shifts || []).map((shift) => normalizeEditableShift(shift));
     const currentEditableShifts = editableShiftsRef.current;
     const currentDirtyIds = dirtyIdsRef.current;
 
@@ -217,8 +222,12 @@ export default function ScheduleApprovalPanel({
     setEditableShifts(prev => prev.map(shift => {
       if (shift.id !== id) return shift;
       const next = { ...shift, [field]: value };
-      if (field === 'is_orientation' && !value && Number(next.billable_rate || 0) <= 0) {
-        next.billable_rate = Number(employee?.rate || 0);
+      if (field === 'is_orientation') {
+        if (value) {
+          next.billable_rate = 0;
+        } else {
+          next.billable_rate = getFallbackRegularRate(next, originalShiftMap.get(id), employee);
+        }
       }
       if (field === 'start' || field === 'end' || field === 'pause_minutes') {
         next.pause = pauseMinutesToHours(next.pause_minutes);
@@ -287,7 +296,7 @@ export default function ScheduleApprovalPanel({
     client_id: client?.id || shift.client_id || null,
     date: shift.date,
     ...buildBaseShiftPayload(shift),
-    billable_rate: Number(shift.billable_rate || employee?.rate || 0),
+    billable_rate: shift.is_orientation ? 0 : getFallbackRegularRate(shift, null, employee),
     garde_hours: Number(shift.garde_hours || 0),
     rappel_hours: Number(shift.rappel_hours || 0),
     status: 'published',
@@ -315,8 +324,9 @@ export default function ScheduleApprovalPanel({
     if ((shift.location || '') !== (original.location || '')) {
       payload.location = shift.location || '';
     }
-    if (Number(shift.billable_rate || 0) !== Number(original.billable_rate || 0)) {
-      payload.billable_rate = Number(shift.billable_rate || employee?.rate || 0);
+    const nextBillableRate = shift.is_orientation ? 0 : getFallbackRegularRate(shift, original, employee);
+    if (Number(nextBillableRate || 0) !== Number(original.billable_rate || 0)) {
+      payload.billable_rate = Number(nextBillableRate || 0);
     }
     if (Number(shift.garde_hours || 0) !== Number(original.garde_hours || 0)) {
       payload.garde_hours = Number(shift.garde_hours || 0);

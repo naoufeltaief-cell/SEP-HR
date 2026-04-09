@@ -16,7 +16,7 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: FRONTEND_URL
-        value: https://soins-expert-plus.com
+        value: https://soins-expert-frontend.onrender.com
       - key: AUTH_SENDER_EMAIL
         value: rh@soins-expert-plus.com
       - key: AUTH_SMTP_USER

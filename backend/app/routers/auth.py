@@ -160,7 +160,7 @@ def _google_popup_html(ok: bool, message: str, access_token: str = "", user: dic
           }} else {{
             params.set("google_error", payload.message || "");
           }}
-          window.location.href = {json.dumps(f"{frontend_url}/login")} + "?" + params.toString();
+          window.location.href = {json.dumps(frontend_url or "/")} + "?" + params.toString();
           return;
         }}
         setTimeout(function() {{

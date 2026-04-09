@@ -24,7 +24,7 @@ AUTH_SMTP_PASS = os.getenv("AUTH_SMTP_PASS") or SMTP_PASS
 
 async def send_magic_link(email: str, token: str, name: str = ""):
     """Send magic link email for passwordless login"""
-    link = f"{FRONTEND_URL}/auth/magic?token={token}"
+    link = f"{FRONTEND_URL}?magic_token={token}"
     subject = "Connexion — Soins Expert Plus"
     html = f"""
     <div style="font-family:system-ui;max-width:500px;margin:auto;padding:30px">
@@ -79,7 +79,7 @@ async def send_employee_portal_invitation(
     expires_hours: int = 72,
 ):
     """Send employee portal invitation with a magic sign-in link."""
-    link = f"{FRONTEND_URL}/auth/magic?token={token}"
+    link = f"{FRONTEND_URL}?magic_token={token}"
     subject = "Acces au portail employe — Soins Expert Plus"
     html = f"""
     <div style="font-family:system-ui;max-width:560px;margin:auto;padding:30px">

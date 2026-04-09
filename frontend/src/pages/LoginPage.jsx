@@ -16,14 +16,15 @@ export default function LoginPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const token = params.get('token');
+    const token = params.get('token') || params.get('magic_token');
     const googleToken = params.get('google_token');
     const googleUser = params.get('google_user');
     const googleError = params.get('google_error');
     const isMagicPath = window.location.pathname === '/auth/magic';
+    const isRootPath = window.location.pathname === '/';
     if (googleError) {
       setError(googleError);
-      window.history.replaceState({}, '', '/login');
+      window.history.replaceState({}, '', '/');
       return;
     }
     if (googleToken && googleUser) {
@@ -41,7 +42,7 @@ export default function LoginPage() {
       }
       return;
     }
-    if (!token || !isMagicPath) return;
+    if (!token || (!isMagicPath && !isRootPath)) return;
 
     let active = true;
     setMagicVerifying(true);
@@ -125,7 +126,7 @@ export default function LoginPage() {
       const popup = window.open(
         data?.url,
         'sep-google-login',
-        'width=520,height=720,noopener,noreferrer',
+        'width=520,height=720',
       );
       if (!popup) {
         window.location.href = data?.url;

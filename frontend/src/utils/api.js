@@ -29,7 +29,7 @@ class ApiClient {
     const resp = await fetch(`${API_BASE}${path}`, { ...options, headers });
     if (resp.status === 401) {
       this.clearAuth();
-      window.location.href = '/login';
+      window.location.href = '/';
       throw new Error('Session expirée');
     }
     if (!resp.ok) {

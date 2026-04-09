@@ -261,6 +261,7 @@ def _build_raw_message(
     attachment_name: str = "",
     in_reply_to: str = "",
     references: str = "",
+    reply_to_email: str = "",
     cc_emails: Optional[list[str]] = None,
     bcc_emails: Optional[list[str]] = None,
 ) -> str:
@@ -276,6 +277,8 @@ def _build_raw_message(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
+    if reply_to_email:
+        msg["Reply-To"] = reply_to_email.strip()
 
     text_value = (body_text or "").strip()
     html_value = (body_html or "").strip()
@@ -556,6 +559,7 @@ async def send_via_connected_billing_gmail(
     thread_id: str = "",
     in_reply_to: str = "",
     references: str = "",
+    reply_to_email: str = "",
     cc_emails: Optional[list[str]] = None,
     bcc_emails: Optional[list[str]] = None,
 ) -> Optional[dict]:
@@ -573,6 +577,7 @@ async def send_via_connected_billing_gmail(
         attachment_name=attachment_name,
         in_reply_to=in_reply_to,
         references=references,
+        reply_to_email=reply_to_email,
         cc_emails=cc_emails,
         bcc_emails=bcc_emails,
     )
@@ -629,6 +634,7 @@ async def create_billing_gmail_draft(
     thread_id: str = "",
     in_reply_to: str = "",
     references: str = "",
+    reply_to_email: str = "",
     cc_emails: Optional[list[str]] = None,
     bcc_emails: Optional[list[str]] = None,
 ) -> Optional[dict]:
@@ -644,6 +650,7 @@ async def create_billing_gmail_draft(
         body_html=body_html,
         in_reply_to=in_reply_to,
         references=references,
+        reply_to_email=reply_to_email,
         cc_emails=cc_emails,
         bcc_emails=bcc_emails,
     )

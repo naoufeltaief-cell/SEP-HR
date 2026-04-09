@@ -5,6 +5,9 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .billing_gmail_oauth import get_billing_gmail_connection, send_via_connected_billing_gmail
 
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -24,7 +27,38 @@ AUTH_SMTP_USER = AUTH_SMTP_USER_RAW or SMTP_USER
 AUTH_SMTP_PASS = AUTH_SMTP_PASS_RAW or SMTP_PASS
 
 
-async def send_magic_link(email: str, token: str, name: str = ""):
+async def _send_auth_email(
+    db: AsyncSession | None,
+    to: str,
+    subject: str,
+    html: str,
+):
+    if db is not None:
+        try:
+            connection = await get_billing_gmail_connection(db)
+            if connection and connection.is_active and connection.refresh_token:
+                return await send_via_connected_billing_gmail(
+                    db=db,
+                    to_email=to,
+                    subject=subject,
+                    body_html=html,
+                    reply_to_email=AUTH_SENDER_EMAIL,
+                )
+        except Exception as gmail_exc:
+            print(f"[AUTH EMAIL WARN] Gmail OAuth fallback to SMTP: {gmail_exc}")
+
+    return await _send_email(
+        to,
+        subject,
+        html,
+        sender_email=AUTH_SENDER_EMAIL,
+        smtp_user=AUTH_SMTP_USER,
+        smtp_pass=AUTH_SMTP_PASS,
+        reply_to_email=AUTH_SENDER_EMAIL,
+    )
+
+
+async def send_magic_link(email: str, token: str, name: str = "", db: AsyncSession | None = None):
     """Send magic link email for passwordless login"""
     link = f"{FRONTEND_URL}?magic_token={token}"
     subject = "Connexion — Soins Expert Plus"
@@ -45,17 +79,10 @@ async def send_magic_link(email: str, token: str, name: str = ""):
         <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus — 9437-7827 Québec Inc.</p>
     </div>
     """
-    await _send_email(
-        email,
-        subject,
-        html,
-        sender_email=AUTH_SENDER_EMAIL,
-        smtp_user=AUTH_SMTP_USER,
-        smtp_pass=AUTH_SMTP_PASS,
-    )
+    await _send_auth_email(db, email, subject, html)
 
 
-async def send_welcome_email(email: str, name: str):
+async def send_welcome_email(email: str, name: str, db: AsyncSession | None = None):
     """Send welcome/onboarding email to new employee"""
     subject = "Bienvenue — Soins Expert Plus"
     html = f"""
@@ -71,14 +98,7 @@ async def send_welcome_email(email: str, name: str):
         <p style="font-size:13px;color:#6b7280">Si vous avez des questions, contactez-nous à rh@soins-expert-plus.com</p>
     </div>
     """
-    await _send_email(
-        email,
-        subject,
-        html,
-        sender_email=AUTH_SENDER_EMAIL,
-        smtp_user=AUTH_SMTP_USER,
-        smtp_pass=AUTH_SMTP_PASS,
-    )
+    await _send_auth_email(db, email, subject, html)
 
 
 async def send_employee_portal_invitation(
@@ -86,6 +106,7 @@ async def send_employee_portal_invitation(
     token: str,
     name: str = "",
     expires_hours: int = 72,
+    db: AsyncSession | None = None,
 ):
     """Send employee portal invitation with a magic sign-in link."""
     link = f"{FRONTEND_URL}?magic_token={token}"
@@ -113,14 +134,7 @@ async def send_employee_portal_invitation(
         <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus — 9437-7827 Quebec Inc.</p>
     </div>
     """
-    await _send_email(
-        email,
-        subject,
-        html,
-        sender_email=AUTH_SENDER_EMAIL,
-        smtp_user=AUTH_SMTP_USER,
-        smtp_pass=AUTH_SMTP_PASS,
-    )
+    await _send_auth_email(db, email, subject, html)
 
 
 async def _send_email(
@@ -131,6 +145,7 @@ async def _send_email(
     sender_email: str | None = None,
     smtp_user: str | None = None,
     smtp_pass: str | None = None,
+    reply_to_email: str | None = None,
 ):
     """Send an email via SMTP"""
     sender = (sender_email or BILLING_SENDER_EMAIL or SMTP_USER).strip()
@@ -154,6 +169,8 @@ async def _send_email(
     msg["Subject"] = subject
     msg["From"] = f"Soins Expert Plus <{sender}>"
     msg["To"] = to
+    if reply_to_email:
+        msg["Reply-To"] = reply_to_email.strip()
     msg.attach(MIMEText(html, "html"))
     recipients = [to]
     if bcc_emails:

@@ -208,7 +208,7 @@ async def request_magic_link(req: MagicLinkRequest, db: AsyncSession = Depends(g
     user.magic_token_expires = datetime.utcnow() + timedelta(minutes=MAGIC_LINK_EXPIRE_MINUTES)
     await db.commit()
     try:
-        await send_magic_link(user.email, token, user.name)
+        await send_magic_link(user.email, token, user.name, db=db)
     except Exception as exc:
         raise HTTPException(
             status_code=502,

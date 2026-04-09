@@ -159,6 +159,7 @@ def _ensure_employee_access(user, employee: Employee):
 
 
 async def _send_portal_invite_or_capture_error(
+    db: AsyncSession,
     email: str,
     invite_token: str | None,
     name: str,
@@ -171,6 +172,7 @@ async def _send_portal_invite_or_capture_error(
             invite_token,
             name,
             expires_hours=PORTAL_INVITE_EXPIRE_HOURS,
+            db=db,
         )
         return None
     except Exception as exc:
@@ -254,6 +256,7 @@ async def create_employee(
     await db.commit()
     await db.refresh(emp)
     portal_invite_error = await _send_portal_invite_or_capture_error(
+        db,
         emp.email,
         provision["invite_token"],
         emp.name,
@@ -291,6 +294,7 @@ async def update_employee(
     await db.commit()
     await db.refresh(emp)
     portal_invite_error = await _send_portal_invite_or_capture_error(
+        db,
         emp.email,
         provision["invite_token"],
         emp.name,
@@ -355,6 +359,7 @@ async def invite_employee_access(
     provision = await _provision_employee_portal_access(db, emp, invite=True)
     await db.commit()
     portal_invite_error = await _send_portal_invite_or_capture_error(
+        db,
         emp.email,
         provision["invite_token"],
         emp.name,

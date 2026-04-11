@@ -1,8 +1,11 @@
 import base64
+import mimetypes
 import os
 import re
 from datetime import datetime, timedelta
+from email import encoders
 from email.mime.application import MIMEApplication
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import getaddresses
@@ -264,6 +267,7 @@ def _build_raw_message(
     reply_to_email: str = "",
     cc_emails: Optional[list[str]] = None,
     bcc_emails: Optional[list[str]] = None,
+    attachments: Optional[list[dict]] = None,
 ) -> str:
     msg = MIMEMultipart("mixed")
     msg["From"] = f"Soins Expert Plus <{BILLING_SENDER_EMAIL}>"
@@ -291,13 +295,25 @@ def _build_raw_message(
     if html_value:
         body_part.attach(MIMEText(html_value, "html", "utf-8"))
     msg.attach(body_part)
+    normalized_attachments = list(attachments or [])
     if attachment_bytes:
-        part = MIMEApplication(attachment_bytes, _subtype="pdf")
-        part.add_header(
-            "Content-Disposition",
-            "attachment",
-            filename=attachment_name or "document.pdf",
+        normalized_attachments.append(
+            {
+                "filename": attachment_name or "document.pdf",
+                "mime_type": "application/pdf",
+                "content": attachment_bytes,
+            }
         )
+    for attachment in normalized_attachments:
+        filename = (attachment.get("filename") or "document.bin").strip() or "document.bin"
+        mime_type = (attachment.get("mime_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream").strip()
+        maintype, _, subtype = mime_type.partition("/")
+        maintype = maintype or "application"
+        subtype = subtype or "octet-stream"
+        part = MIMEBase(maintype, subtype)
+        part.set_payload(attachment.get("content") or b"")
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(part)
     return base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
 
@@ -562,6 +578,7 @@ async def send_via_connected_billing_gmail(
     reply_to_email: str = "",
     cc_emails: Optional[list[str]] = None,
     bcc_emails: Optional[list[str]] = None,
+    attachments: Optional[list[dict]] = None,
 ) -> Optional[dict]:
     conn = await get_billing_gmail_connection(db)
     if not conn or not conn.is_active or not conn.refresh_token:
@@ -580,6 +597,7 @@ async def send_via_connected_billing_gmail(
         reply_to_email=reply_to_email,
         cc_emails=cc_emails,
         bcc_emails=bcc_emails,
+        attachments=attachments,
     )
     payload = {"raw": raw}
     if thread_id:
@@ -637,6 +655,7 @@ async def create_billing_gmail_draft(
     reply_to_email: str = "",
     cc_emails: Optional[list[str]] = None,
     bcc_emails: Optional[list[str]] = None,
+    attachments: Optional[list[dict]] = None,
 ) -> Optional[dict]:
     conn = await get_billing_gmail_connection(db)
     if not conn or not conn.is_active or not conn.refresh_token:
@@ -653,6 +672,7 @@ async def create_billing_gmail_draft(
         reply_to_email=reply_to_email,
         cc_emails=cc_emails,
         bcc_emails=bcc_emails,
+        attachments=attachments,
     )
     payload = {"message": {"raw": raw}}
     if thread_id:

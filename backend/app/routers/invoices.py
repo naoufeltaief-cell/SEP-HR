@@ -1456,6 +1456,14 @@ ALLOWED_MIME = {
     "image/jpeg": "jpg",
     "image/png": "png",
     "image/gif": "gif",
+    "image/heic": "heic",
+    "image/heif": "heif",
+    "text/plain": "txt",
+    "text/csv": "csv",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel": "xls",
 }
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -1550,7 +1558,20 @@ async def download_attachment(
     if not att:
         raise HTTPException(404, "Pièce jointe non trouvée")
 
-    mime_map = {"pdf": "application/pdf", "jpg": "image/jpeg", "png": "image/png", "gif": "image/gif"}
+    mime_map = {
+        "pdf": "application/pdf",
+        "jpg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
+        "txt": "text/plain",
+        "csv": "text/csv",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc": "application/msword",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls": "application/vnd.ms-excel",
+    }
     media = mime_map.get(att.file_type, "application/octet-stream")
     return Response(
         content=att.file_data,

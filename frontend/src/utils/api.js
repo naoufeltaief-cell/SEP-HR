@@ -223,7 +223,26 @@ class ApiClient {
   createClient(data) { return this.post('/clients/', data); }
   updateClient(id, data) { return this.put(`/clients/${id}`, data); }
 
-  chat(message, history = []) { return this.post('/chatbot/chat', { message, history }); }
+  chat(message, history = [], sessionId = '') {
+    return this.post('/chatbot/chat', { message, history, session_id: sessionId });
+  }
+  async uploadChatbotDocuments(sessionId, files, description = '') {
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    formData.append('description', description);
+    Array.from(files || []).forEach(file => formData.append('files', file));
+    return this.postForm('/chatbot/uploads', formData);
+  }
+  getChatbotDocuments(sessionId) {
+    const qs = new URLSearchParams({ session_id: sessionId }).toString();
+    return this.get(`/chatbot/uploads?${qs}`);
+  }
+  deleteChatbotDocument(uploadId) {
+    return this.del(`/chatbot/uploads/${uploadId}`);
+  }
+  openChatbotDocument(uploadId, fallbackFilename = 'document') {
+    return this.openProtectedFile(`/chatbot/uploads/${uploadId}`, fallbackFilename);
+  }
 }
 
 export const api = new ApiClient();

@@ -314,3 +314,4 @@ class AccommodationOut(BaseModel):
 class ChatMessage(BaseModel):
     message: str
     history: List[dict] = []
+    session_id: str = ""

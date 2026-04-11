@@ -12,11 +12,12 @@ import email as email_lib
 from email.header import decode_header
 from email.utils import getaddresses
 from datetime import datetime, date, timedelta
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, desc
 from ..database import get_db
-from ..models.models import Employee, Schedule, Client, Accommodation, new_id
+from ..models.models import ChatbotUpload, Client, Employee, Schedule, Accommodation, InvoiceAttachment, new_id
 from ..models.models_invoice import AuditAction, Invoice, InvoiceAuditLog, InvoiceStatus
 from ..models.schemas import ChatMessage
 from ..services.auth_service import require_admin
@@ -66,6 +67,22 @@ IMAP_PASS = (
     or ""
 )
 
+CHATBOT_ALLOWED_MIME = {
+    "application/pdf": "pdf",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/heic": "heic",
+    "image/heif": "heif",
+    "text/plain": "txt",
+    "text/csv": "csv",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel": "xls",
+}
+CHATBOT_MAX_FILE_SIZE = 15 * 1024 * 1024
+
 BUSINESS_KNOWLEDGE = """
 TAUX DE FACTURATION PAR TITRE D'EMPLOI:
 - Infirmier(ère) / Infirmier(ère) Clinicien(ne): 86.23 $/h
@@ -99,8 +116,11 @@ RAW_TOOLS = [
     {"name": "delete_invoice_expense_line", "description": "Supprimer un frais d'une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "description": {"type": "string"}, "type": {"type": "string"}}, "required": ["description"]}},
     {"name": "add_invoice_accommodation_per_worked_day", "description": "Ajouter un frais d'hebergement par journee travaillee directement dans une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "cost_per_day": {"type": "number"}, "replace_existing": {"type": "boolean", "default": False}}, "required": ["cost_per_day"]}},
     {"name": "delete_invoice_accommodation_line", "description": "Supprimer une ligne d'hebergement d'une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "period": {"type": "string"}}, "required": ["period"]}},
-    {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Peut aussi servir pour un brouillon de masse avec CC ou CCI. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}, "cc": {"type": "string"}, "bcc": {"type": "string"}, "cc_list": {"type": "array", "items": {"type": "string"}}, "bcc_list": {"type": "array", "items": {"type": "string"}}}, "required": ["to", "subject", "body_text"]}},
-    {"name": "send_email", "description": "Envoyer immediatement un courriel. Ne jamais utiliser pour un brouillon Gmail ou si l'utilisateur veut revoir le message avant envoi.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}}, "required": ["to", "subject", "body_html"]}},
+    {"name": "list_chat_session_documents", "description": "Lister les documents joints dans cette conversation chatbot pour pouvoir les rattacher ensuite a une facture ou a un courriel.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "attach_chat_documents_to_invoice", "description": "Joindre un ou plusieurs documents televerses dans cette conversation a une facture existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "document_ids": {"type": "array", "items": {"type": "string"}}, "filename_query": {"type": "string"}, "attach_all_session_documents": {"type": "boolean", "default": False}, "category": {"type": "string"}, "description": {"type": "string"}}, "required": []}},
+    {"name": "resolve_contact_email", "description": "Retrouver une adresse courriel a partir du nom d'un employe ou d'un client avant d'envoyer un courriel.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Peut aussi servir pour un brouillon de masse avec CC ou CCI. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}, "cc": {"type": "string"}, "bcc": {"type": "string"}, "cc_list": {"type": "array", "items": {"type": "string"}}, "bcc_list": {"type": "array", "items": {"type": "string"}}, "document_ids": {"type": "array", "items": {"type": "string"}}, "filename_query": {"type": "string"}, "attach_all_session_documents": {"type": "boolean", "default": False}}, "required": ["to", "subject", "body_text"]}},
+    {"name": "send_email", "description": "Envoyer immediatement un courriel. Ne jamais utiliser pour un brouillon Gmail ou si l'utilisateur veut revoir le message avant envoi.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}, "document_ids": {"type": "array", "items": {"type": "string"}}, "filename_query": {"type": "string"}, "attach_all_session_documents": {"type": "boolean", "default": False}}, "required": ["to", "subject", "body_html"]}},
     {"name": "create_schedule_shift", "description": "Creer un quart dans l'horaire. Les heures doivent etre en format 24 h HH:MM.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": ["date", "start", "end"]}},
     {"name": "update_schedule_shift", "description": "Modifier un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": []}},
     {"name": "delete_schedule_shift", "description": "Supprimer un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}}, "required": []}},
@@ -768,7 +788,79 @@ async def _save_chatbot_invoice_update(db: AsyncSession, invoice: Invoice, user_
     await db.refresh(invoice)
     return _serialize_invoice_for_chat(invoice)
 
-async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "") -> str:
+
+def _serialize_chat_upload(upload: ChatbotUpload) -> dict:
+    return {
+        "id": upload.id,
+        "session_id": upload.session_id,
+        "filename": upload.original_filename,
+        "file_type": upload.file_type,
+        "mime_type": upload.mime_type,
+        "file_size": upload.file_size,
+        "description": upload.description or "",
+        "uploaded_by": upload.uploaded_by or "",
+        "created_at": upload.created_at.isoformat() if upload.created_at else None,
+    }
+
+
+async def _get_chat_session_uploads(db: AsyncSession, session_id: str) -> list[ChatbotUpload]:
+    if not (session_id or "").strip():
+        return []
+    result = await db.execute(
+        select(ChatbotUpload)
+        .where(ChatbotUpload.session_id == session_id.strip())
+        .order_by(ChatbotUpload.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+def _chat_upload_to_attachment_payload(upload: ChatbotUpload) -> dict:
+    return {
+        "filename": upload.original_filename or upload.filename,
+        "mime_type": upload.mime_type or "application/octet-stream",
+        "content": upload.file_data or b"",
+    }
+
+
+async def _select_chat_uploads_for_action(
+    db: AsyncSession,
+    session_id: str,
+    document_ids=None,
+    filename_query: str = "",
+    attach_all: bool = False,
+) -> list[ChatbotUpload]:
+    uploads = await _get_chat_session_uploads(db, session_id)
+    if not uploads:
+        return []
+    if attach_all:
+        return uploads
+
+    normalized_ids = {str(item).strip() for item in (document_ids or []) if str(item).strip()}
+    if normalized_ids:
+        return [item for item in uploads if str(item.id) in normalized_ids]
+
+    query = _norm(filename_query or "")
+    if query:
+        return [item for item in uploads if query in _norm(item.original_filename or item.filename or "")]
+    return []
+
+
+def _chat_upload_context_text(uploads: list[ChatbotUpload]) -> str:
+    if not uploads:
+        return ""
+    lines = []
+    for item in uploads[:10]:
+        label = item.original_filename or item.filename or "document"
+        size_label = f"{round((item.file_size or 0) / 1024.0, 1)} Ko" if item.file_size else "taille inconnue"
+        lines.append(f"- {label} [id={item.id}] ({item.mime_type or item.file_type}, {size_label})")
+    return (
+        "\n\nDocuments actuellement joints dans cette conversation:\n"
+        + "\n".join(lines)
+        + "\nQuand l'utilisateur veut joindre un document a une facture ou a un courriel, utilise list_chat_session_documents, "
+          "attach_chat_documents_to_invoice ou les options de pieces jointes des outils send_email/create_email_draft."
+    )
+
+async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "", chat_session_id: str = "") -> str:
     try:
         input_data = _apply_schedule_date_guard(name, input_data, user_message)
         input_data = _apply_schedule_time_guard(name, input_data, user_message)
@@ -791,6 +883,36 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                         if all(token in set(_match_tokens(c.name)) for token in query_tokens)
                     ]
             return json.dumps([{"id": c.id, "name": c.name, "email": getattr(c, 'email', ''), "address": getattr(c, 'address', ''), "tax_exempt": getattr(c, 'tax_exempt', False)} for c in matches[:20]], ensure_ascii=False)
+        if name == 'resolve_contact_email':
+            q = _norm(input_data.get('query', ''))
+            matches = []
+            if q:
+                employee_result = await db.execute(select(Employee).where(Employee.is_active == True))
+                for employee in employee_result.scalars().all():
+                    if not (employee.email or "").strip():
+                        continue
+                    if q in _norm(employee.name or "") or q in _norm(employee.email or ""):
+                        matches.append({
+                            "kind": "employee",
+                            "id": employee.id,
+                            "name": employee.name,
+                            "email": employee.email,
+                            "phone": employee.phone,
+                            "position": employee.position,
+                        })
+                client_result = await db.execute(select(Client))
+                for client in client_result.scalars().all():
+                    if not (getattr(client, 'email', '') or "").strip():
+                        continue
+                    if q in _norm(client.name or "") or q in _norm(getattr(client, 'email', '') or ""):
+                        matches.append({
+                            "kind": "client",
+                            "id": client.id,
+                            "name": client.name,
+                            "email": getattr(client, 'email', ''),
+                            "phone": getattr(client, 'phone', ''),
+                        })
+            return json.dumps(matches[:20], ensure_ascii=False)
         if name == 'get_employee_schedule':
             emp = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
             if not emp:
@@ -1067,6 +1189,62 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 f"Hebergement supprime depuis chatbot ({removed.get('period', '')})",
             )
             return json.dumps({"message": "Ligne d'hebergement supprimee", "invoice": saved, "removed": removed}, ensure_ascii=False)
+        if name == 'list_chat_session_documents':
+            uploads = await _get_chat_session_uploads(db, chat_session_id)
+            return json.dumps([_serialize_chat_upload(item) for item in uploads], ensure_ascii=False)
+        if name == 'attach_chat_documents_to_invoice':
+            invoice, error = await _find_invoice(
+                db,
+                invoice_id=input_data.get('invoice_id'),
+                invoice_number=input_data.get('invoice_number'),
+                employee_id=input_data.get('employee_id'),
+                employee_name=input_data.get('employee_name'),
+                period_start=input_data.get('period_start'),
+                period_end=input_data.get('period_end'),
+                client_id=input_data.get('client_id'),
+                client_name=input_data.get('client_name'),
+                draft_only=False,
+            )
+            if not invoice:
+                return error or "Facture introuvable"
+            uploads = await _select_chat_uploads_for_action(
+                db,
+                chat_session_id,
+                document_ids=input_data.get('document_ids'),
+                filename_query=input_data.get('filename_query', ''),
+                attach_all=bool(input_data.get('attach_all_session_documents')),
+            )
+            if not uploads:
+                return "Aucun document de cette conversation ne correspond a la demande."
+            created = []
+            category = str(input_data.get('category') or 'autre').strip() or 'autre'
+            base_description = str(input_data.get('description') or '').strip()
+            for upload in uploads:
+                attachment = InvoiceAttachment(
+                    invoice_id=invoice.id,
+                    filename=upload.filename,
+                    original_filename=upload.original_filename,
+                    file_type=upload.file_type,
+                    file_size=upload.file_size,
+                    file_data=upload.file_data,
+                    category=category,
+                    description=base_description or upload.description or "Document joint depuis le chatbot",
+                    uploaded_by="chatbot",
+                )
+                db.add(attachment)
+                created.append({
+                    "filename": upload.original_filename,
+                    "category": category,
+                })
+            await db.commit()
+            return json.dumps(
+                {
+                    "message": f"{len(created)} document(s) joint(s) a la facture",
+                    "invoice": _invoice_identity_payload(invoice),
+                    "attachments": created,
+                },
+                ensure_ascii=False,
+            )
         if name == 'read_recent_emails':
             gmail_connection = await get_billing_gmail_connection(db)
             try:
@@ -1125,6 +1303,75 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 return json.dumps({"mailbox": IMAP_USER, "folder": folder, "items": emails}, ensure_ascii=False)
             except Exception as e:
                 return f"Erreur lecture emails: {str(e)}"
+        if name == 'create_email_draft':
+            cc_emails = _parse_recipient_input(input_data.get('cc'), input_data.get('cc_list'))
+            bcc_emails = _parse_recipient_input(input_data.get('bcc'), input_data.get('bcc_list'))
+            selected_uploads = await _select_chat_uploads_for_action(
+                db,
+                chat_session_id,
+                document_ids=input_data.get('document_ids'),
+                filename_query=input_data.get('filename_query', ''),
+                attach_all=bool(input_data.get('attach_all_session_documents')),
+            )
+            attachments = [_chat_upload_to_attachment_payload(item) for item in selected_uploads]
+            draft = await create_billing_gmail_draft(
+                db,
+                to_email=input_data['to'],
+                subject=input_data['subject'],
+                body_text=input_data.get('body_text', ''),
+                body_html=input_data.get('body_html', ''),
+                thread_id=input_data.get('thread_id', ''),
+                in_reply_to=input_data.get('in_reply_to', ''),
+                references=input_data.get('references', ''),
+                cc_emails=cc_emails,
+                bcc_emails=bcc_emails,
+                attachments=attachments,
+            )
+            if not draft:
+                return "Le compte Gmail de facturation n'est pas connecte. Clique 'Reconnecter Gmail' dans Facturation pour brancher paie@soins-expert-plus.com."
+            return json.dumps(
+                {
+                    "message": "Brouillon Gmail cree",
+                    "draft": draft,
+                    "attachments": [_serialize_chat_upload(item) for item in selected_uploads],
+                },
+                ensure_ascii=False,
+            )
+        if name == 'send_email':
+            selected_uploads = await _select_chat_uploads_for_action(
+                db,
+                chat_session_id,
+                document_ids=input_data.get('document_ids'),
+                filename_query=input_data.get('filename_query', ''),
+                attach_all=bool(input_data.get('attach_all_session_documents')),
+            )
+            attachments = [_chat_upload_to_attachment_payload(item) for item in selected_uploads]
+            gmail_error = None
+            try:
+                delivery = await send_via_connected_billing_gmail(
+                    db,
+                    to_email=input_data['to'],
+                    subject=input_data['subject'],
+                    body_html=input_data['body_html'],
+                    attachments=attachments,
+                )
+                if not delivery:
+                    raise RuntimeError("Le compte Gmail de facturation n'est pas connecte")
+            except Exception as exc:
+                gmail_error = exc
+                try:
+                    await _send_email(
+                        input_data['to'],
+                        input_data['subject'],
+                        input_data['body_html'],
+                        attachments=attachments,
+                    )
+                except Exception as smtp_exc:
+                    raise RuntimeError(
+                        f"Envoi Gmail impossible: {gmail_error}. Secours SMTP echoue aussi: {smtp_exc}"
+                    ) from smtp_exc
+            attachment_note = f" ({len(attachments)} piece(s) jointe(s))" if attachments else ""
+            return f"Courriel envoye a {input_data['to']}: {input_data['subject']}{attachment_note}"
         if name == 'send_email':
             gmail_error = None
             try:
@@ -1556,6 +1803,8 @@ def _detect_prompt(message: str):
 
 AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter ou surveiller les courriels entrants et preparer les brouillons, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements, horaires et FDT. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie, l'indexation de FDT recues, le traitement automatique des courriels entrants, la generation d'une facture, une conciliation FDT-facture ou l'envoi du rappel hebdomadaire de FDT, execute l'action demandee puis resume le resultat. Agis comme un commis de facturation prudent: ignore les pieces jointes qui ne sont pas pertinentes et dis clairement quand une verification visuelle reste necessaire. Pour lister les dernieres vraies FDT recues ou analyser les quarts, pauses et signatures visibles, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Quand l'utilisateur demande un niveau de confiance, utilise reconcile_timesheet_invoice et cite clairement le niveau eleve, moyen ou faible. Quand l'utilisateur demande de traiter ou surveiller les courriels entrants, utilise process_incoming_timesheet_emails. Quand l'utilisateur demande un rappel hebdomadaire en brouillon Gmail ou un test d'envoi de masse en brouillon, utilise draft_weekly_timesheet_reminder. Quand l'utilisateur demande le jour, l'heure, le fuseau horaire ou les destinataires du rappel du dimanche, utilise get_automation_config. Quand l'utilisateur demande un resume documentaire par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT += "\nQuand l'utilisateur joint des documents dans cette conversation, liste-les au besoin avec list_chat_session_documents. Tu peux les rattacher a une facture avec attach_chat_documents_to_invoice, ou les joindre a un courriel ou brouillon Gmail avec document_ids, filename_query ou attach_all_session_documents dans send_email et create_email_draft. Si l'utilisateur donne seulement un nom de personne sans adresse courriel, utilise resolve_contact_email avant l'envoi."
+GENERAL_PROMPT += "\nSi des documents sont joints dans cette conversation, tu peux les reutiliser pour une facture ou un courriel. Utilise list_chat_session_documents pour les voir, attach_chat_documents_to_invoice pour les rattacher a une facture et resolve_contact_email si l'utilisateur donne seulement un nom."
 
 
 def _detect_prompt(message: str):
@@ -1652,11 +1901,132 @@ def _build_openai_request_payload(system_prompt, inputs):
         payload['reasoning'] = {'effort': _normalized_reasoning_effort()}
     return payload
 
+
+def _infer_chatbot_upload_type(filename: str, mime_type: str = ""):
+    normalized_mime = (mime_type or "").strip().lower()
+    if normalized_mime in CHATBOT_ALLOWED_MIME:
+        return CHATBOT_ALLOWED_MIME[normalized_mime], normalized_mime
+
+    lower_name = (filename or "").strip().lower()
+    extension_map = {
+        ".pdf": "application/pdf",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+        ".txt": "text/plain",
+        ".csv": "text/csv",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+    }
+    for suffix, mapped_mime in extension_map.items():
+        if lower_name.endswith(suffix):
+            return CHATBOT_ALLOWED_MIME[mapped_mime], mapped_mime
+    raise HTTPException(
+        status_code=400,
+        detail="Type de document non supporte dans le chatbot. Formats acceptes: PDF, JPG, PNG, GIF, HEIC, TXT, CSV, DOCX, XLSX.",
+    )
+
+
+@router.get('/uploads')
+async def list_chatbot_uploads(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    uploads = await _get_chat_session_uploads(db, session_id)
+    return [_serialize_chat_upload(item) for item in uploads]
+
+
+@router.post('/uploads')
+async def upload_chatbot_documents(
+    session_id: str = Form(...),
+    description: str = Form(""),
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    normalized_session_id = (session_id or "").strip()
+    if not normalized_session_id:
+        raise HTTPException(status_code=400, detail="session_id manquant")
+    if not files:
+        raise HTTPException(status_code=400, detail="Aucun fichier a televerser")
+
+    created = []
+    for upload in files:
+        original_filename = (upload.filename or "document").strip() or "document"
+        content = await upload.read()
+        if not content:
+            raise HTTPException(status_code=400, detail=f"Le fichier {original_filename} est vide")
+        if len(content) > CHATBOT_MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Le fichier {original_filename} depasse la limite de 15 Mo",
+            )
+        file_type, normalized_mime = _infer_chatbot_upload_type(original_filename, upload.content_type or "")
+        stored = ChatbotUpload(
+            session_id=normalized_session_id,
+            filename=f"{new_id()}.{file_type}",
+            original_filename=original_filename,
+            file_type=file_type,
+            mime_type=normalized_mime,
+            file_size=len(content),
+            file_data=content,
+            description=(description or "").strip(),
+            uploaded_by=getattr(user, 'email', '') or 'admin',
+        )
+        db.add(stored)
+        created.append(stored)
+
+    await db.commit()
+    for item in created:
+        await db.refresh(item)
+    return [_serialize_chat_upload(item) for item in created]
+
+
+@router.get('/uploads/{upload_id}')
+async def download_chatbot_upload(
+    upload_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(select(ChatbotUpload).where(ChatbotUpload.id == upload_id))
+    upload = result.scalar_one_or_none()
+    if not upload:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    safe_name = upload.original_filename or upload.filename or "document"
+    return Response(
+        content=upload.file_data,
+        media_type=upload.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+    )
+
+
+@router.delete('/uploads/{upload_id}')
+async def delete_chatbot_upload(
+    upload_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(select(ChatbotUpload).where(ChatbotUpload.id == upload_id))
+    upload = result.scalar_one_or_none()
+    if not upload:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    await db.delete(upload)
+    await db.commit()
+    return {"ok": True}
+
 @router.post('/chat')
 async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     if not OPENAI_API_KEY:
         raise HTTPException(status_code=500, detail='Clé API OpenAI non configurée. Ajouter OPENAI_API_KEY dans les variables d\'environnement Render.')
     system_prompt, agent_name = _detect_prompt(msg.message)
+    session_uploads = await _get_chat_session_uploads(db, msg.session_id)
+    system_prompt = f"{system_prompt}{_chat_upload_context_text(session_uploads)}"
     inputs = _history_to_input(msg.history, msg.message)
     headers = {'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'}
     async with httpx.AsyncClient(timeout=120) as client:
@@ -1679,7 +2049,7 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                         args = json.loads(call.get('arguments') or '{}')
                     except Exception:
                         args = {}
-                    result = await execute_tool(call.get('name', ''), args, db, msg.message)
+                    result = await execute_tool(call.get('name', ''), args, db, msg.message, msg.session_id)
                     inputs.append({'type': 'function_call_output', 'call_id': call.get('call_id'), 'output': result})
             return {
                 'reply': _extract_text(data or {}) or _extract_last_tool_output(inputs) or "Je n'ai pas pu générer de réponse.",

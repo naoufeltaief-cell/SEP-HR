@@ -2,6 +2,8 @@
 import os
 import smtplib
 from datetime import datetime
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
@@ -146,6 +148,7 @@ async def _send_email(
     smtp_user: str | None = None,
     smtp_pass: str | None = None,
     reply_to_email: str | None = None,
+    attachments: list[dict] | None = None,
 ):
     """Send an email via SMTP"""
     sender = (sender_email or BILLING_SENDER_EMAIL or SMTP_USER).strip()
@@ -165,13 +168,26 @@ async def _send_email(
             f"Expediteur: {sender}. Compte SMTP: {login_user or 'non configure'}."
         )
 
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"] = f"Soins Expert Plus <{sender}>"
     msg["To"] = to
     if reply_to_email:
         msg["Reply-To"] = reply_to_email.strip()
-    msg.attach(MIMEText(html, "html"))
+    body_part = MIMEMultipart("alternative")
+    body_part.attach(MIMEText(html, "html"))
+    msg.attach(body_part)
+    for attachment in attachments or []:
+        filename = (attachment.get("filename") or "document.bin").strip() or "document.bin"
+        mime_type = (attachment.get("mime_type") or "application/octet-stream").strip()
+        maintype, _, subtype = mime_type.partition("/")
+        maintype = maintype or "application"
+        subtype = subtype or "octet-stream"
+        part = MIMEBase(maintype, subtype)
+        part.set_payload(attachment.get("content") or b"")
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", "attachment", filename=filename)
+        msg.attach(part)
     recipients = [to]
     if bcc_emails:
         recipients.extend([email for email in bcc_emails if email])

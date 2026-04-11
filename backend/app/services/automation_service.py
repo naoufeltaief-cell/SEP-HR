@@ -82,7 +82,10 @@ async def _maybe_auto_draft_invoices(db, indexing_result: dict) -> list[dict]:
 
     drafted = []
     seen_periods = set()
-    for item in indexing_result.get("items") or []:
+    source_items = indexing_result.get("timesheet_items") or indexing_result.get("items") or []
+    for item in source_items:
+        if str(item.get("document_type") or "fdt").strip().lower() != "fdt":
+            continue
         employee_id = item.get("employee_id")
         period_start = item.get("period_start")
         period_end = item.get("period_end")
@@ -256,7 +259,13 @@ async def process_incoming_timesheet_emails(
                     job_key="incoming_timesheet_emails",
                     period_key=datetime.now(AUTOMATION_TIMEZONE).strftime("%Y%m%d%H%M"),
                     status="processed",
-                    details=f"indexed={indexing_result.get('indexed_count', 0)} drafted={len(drafted)} ignored={len(indexing_result.get('ignored', []))} unmatched={len(indexing_result.get('unmatched', []))}",
+                    details=(
+                        f"indexed={indexing_result.get('indexed_count', 0)} "
+                        f"fdt={indexing_result.get('created_timesheets', 0)} "
+                        f"hebergement={indexing_result.get('created_accommodations', 0)} "
+                        f"drafted={len(drafted)} ignored={len(indexing_result.get('ignored', []))} "
+                        f"unmatched={len(indexing_result.get('unmatched', []))}"
+                    ),
                     triggered_by=triggered_by or "system",
                 )
             )
@@ -267,11 +276,15 @@ async def process_incoming_timesheet_emails(
             "indexed_count": indexing_result.get("indexed_count", 0),
             "created_timesheets": indexing_result.get("created_timesheets", 0),
             "created_attachments": indexing_result.get("created_attachments", 0),
+            "created_accommodations": indexing_result.get("created_accommodations", 0),
+            "created_accommodation_attachments": indexing_result.get("created_accommodation_attachments", 0),
             "mirrored_review_attachments": indexing_result.get("mirrored_review_attachments", 0),
             "ignored_count": len(indexing_result.get("ignored", [])),
             "unmatched_count": len(indexing_result.get("unmatched", [])),
             "drafted_count": len([item for item in drafted if item.get("status") == "created"]),
             "items": indexing_result.get("items", []),
+            "timesheet_items": indexing_result.get("timesheet_items", []),
+            "accommodation_items": indexing_result.get("accommodation_items", []),
             "ignored": indexing_result.get("ignored", []),
             "unmatched": indexing_result.get("unmatched", []),
             "drafted": drafted,

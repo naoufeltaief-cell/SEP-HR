@@ -156,6 +156,14 @@ async def get_accommodation_attachment(aid: str, att_id: int, db: AsyncSession =
         "jpeg": "image/jpeg",
         "png": "image/png",
         "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
+        "txt": "text/plain",
+        "csv": "text/csv",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc": "application/msword",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls": "application/vnd.ms-excel",
     }.get(str(att.file_type).lower(), "application/octet-stream")
     return Response(
         content=att.file_data,

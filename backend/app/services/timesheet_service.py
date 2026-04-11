@@ -85,6 +85,32 @@ _TIMESHEET_NEGATIVE_FILENAME_KEYWORDS = (
     "instagram",
 )
 _GENERIC_CAMERA_NAME_RE = re.compile(r"^(?:img|image|photo|scan)[\-_ ]?\d+", flags=re.IGNORECASE)
+_ACCOMMODATION_KEYWORDS = (
+    "hebergement",
+    "hébergement",
+    "hotel",
+    "hôtel",
+    "motel",
+    "auberge",
+    "airbnb",
+    "booking",
+    "logement",
+    "accommodation",
+    "reservation",
+    "réservation",
+    "facture hotel",
+    "facture hébergement",
+)
+_ACCOMMODATION_NEGATIVE_FILENAME_KEYWORDS = (
+    "logo",
+    "signature",
+    "outlook",
+    "header",
+    "footer",
+    "banner",
+    "facebook",
+    "instagram",
+)
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 TIMESHEET_ATTACHMENT_MODEL = (
     os.getenv("TIMESHEET_ATTACHMENT_MODEL")
@@ -346,6 +372,131 @@ def analyze_timesheet_document(
     }
 
 
+def _extract_currency_amount(text: str) -> float:
+    raw = str(text or "")
+    if not raw:
+        return 0.0
+
+    candidates = []
+    labeled_patterns = [
+        r"(?:grand\s+total|total|montant|amount\s+due|balance\s+due|total\s+due)[^0-9]{0,20}(\d[\d\s,.]{1,18})\s*\$?",
+        r"\$\s*(\d[\d\s,.]{1,18})",
+        r"(\d[\d\s,.]{1,18})\s*\$",
+    ]
+    for pattern in labeled_patterns:
+        for value in re.findall(pattern, raw, flags=re.IGNORECASE):
+            cleaned = str(value).replace(" ", "").replace(",", ".")
+            if cleaned.count(".") > 1:
+                head, tail = cleaned.rsplit(".", 1)
+                cleaned = head.replace(".", "") + "." + tail
+            try:
+                amount = float(cleaned)
+            except ValueError:
+                continue
+            if 0 < amount <= 10000:
+                candidates.append(amount)
+    return round(max(candidates), 2) if candidates else 0.0
+
+
+def analyze_accommodation_document(
+    document: dict,
+    employee: Optional[Employee] = None,
+    extracted_text: str = "",
+) -> dict:
+    filename = str(document.get("filename") or "").strip()
+    subject = str(document.get("subject") or "").strip()
+    body_preview = str(document.get("body_preview") or "").strip()
+    mime_type = str(document.get("mime_type") or "").strip().lower()
+    file_size = int(document.get("file_size") or 0)
+    normalized_filename = _norm(filename)
+    normalized_subject = _norm(subject)
+    normalized_body = _norm(body_preview)
+    normalized_text = _norm(extracted_text)
+    combined = " ".join(
+        value for value in [normalized_filename, normalized_subject, normalized_body, normalized_text] if value
+    )
+    ext = _attachment_extension(filename, mime_type)
+
+    score = 0.0
+    reasons = []
+
+    if any(keyword in normalized_filename for keyword in _ACCOMMODATION_KEYWORDS):
+        score += 0.48
+        reasons.append("nom de fichier hebergement")
+    if any(keyword in normalized_subject for keyword in _ACCOMMODATION_KEYWORDS):
+        score += 0.26
+        reasons.append("objet hebergement")
+    if any(keyword in normalized_body for keyword in _ACCOMMODATION_KEYWORDS):
+        score += 0.14
+        reasons.append("contenu courriel hebergement")
+    if any(keyword in normalized_text for keyword in _ACCOMMODATION_KEYWORDS):
+        score += 0.22
+        reasons.append("texte document hebergement")
+
+    if any(keyword in combined for keyword in _TIMESHEET_KEYWORDS):
+        score -= 0.22
+        reasons.append("ressemble davantage a une FDT")
+
+    if employee:
+        employee_name = _norm(getattr(employee, "name", "") or "")
+        employee_tokens = [token for token in employee_name.split() if token]
+        if employee_name and employee_name in combined:
+            score += 0.14
+            reasons.append("nom employe detecte")
+        elif employee_tokens:
+            overlap = sum(1 for token in employee_tokens if token in combined)
+            if overlap >= 2:
+                score += 0.11
+                reasons.append("prenom/nom employe detectes")
+            elif overlap == 1:
+                score += 0.04
+
+    amount_detected = _extract_currency_amount(" ".join(part for part in [subject, body_preview, extracted_text, filename] if part))
+    if amount_detected > 0:
+        score += 0.10
+        reasons.append("montant detecte")
+
+    has_period = extract_period_from_text(
+        " ".join(part for part in [subject, body_preview, filename, extracted_text] if part),
+        reference_date=_safe_parse_message_date(document.get("date", "")),
+    )
+    if has_period:
+        score += 0.08
+        reasons.append("periode detectee")
+
+    if ext == "pdf":
+        score += 0.08
+    elif ext in {"jpg", "jpeg", "heic", "heif"} and file_size >= 120_000:
+        score += 0.06
+    elif ext == "png" and file_size >= 150_000:
+        score += 0.04
+
+    lowered_filename = filename.strip().lower()
+    if any(keyword in lowered_filename for keyword in _ACCOMMODATION_NEGATIVE_FILENAME_KEYWORDS):
+        score -= 0.22
+        reasons.append("piece jointe decor ou signature")
+    if ext in {"png", "gif"} and file_size < 120_000 and not any(
+        keyword in normalized_filename for keyword in _ACCOMMODATION_KEYWORDS
+    ):
+        score -= 0.20
+    if file_size and file_size < 20_000:
+        score -= 0.18
+
+    score = round(max(0.0, min(score, 1.0)), 2)
+    likely = score >= 0.38
+    strong = score >= 0.62
+
+    return {
+        "score": score,
+        "likely": likely,
+        "strong": strong,
+        "reasons": reasons,
+        "period_detected": bool(has_period),
+        "amount_detected": amount_detected,
+        "document_text_preview": extracted_text[:500].strip(),
+    }
+
+
 def completed_billing_period(reference_date: Optional[date] = None) -> tuple[date, date]:
     ref = reference_date or date.today()
     completed_day = ref - timedelta(days=1)
@@ -467,6 +618,28 @@ def _should_use_ai_attachment_review(
     return 0.18 <= score <= 0.82
 
 
+def _should_use_ai_accommodation_review(
+    document: dict,
+    analysis: dict,
+    employee: Optional[Employee],
+    extracted_text: str = "",
+) -> bool:
+    if not OPENAI_API_KEY:
+        return False
+    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
+    if ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf":
+        return False
+    if ext == "pdf" and not extracted_text.strip():
+        return False
+    file_size = int(document.get("file_size") or len(document.get("file_data", b"") or b"") or 0)
+    if file_size <= 0 or file_size > 8_000_000:
+        return False
+    score = float(analysis.get("score") or 0)
+    if analysis.get("strong") and employee:
+        return False
+    return 0.12 <= score <= 0.86
+
+
 async def inspect_attachment_with_openai(document: dict, employee_hint: str = "") -> dict:
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
     if ext not in _VISION_ATTACHMENT_EXTENSIONS or not OPENAI_API_KEY:
@@ -557,6 +730,104 @@ async def inspect_attachment_with_openai(document: dict, employee_hint: str = ""
     }
 
 
+async def inspect_accommodation_document_with_openai(
+    document: dict,
+    employee_hint: str = "",
+    extracted_text: str = "",
+) -> dict:
+    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
+    if not OPENAI_API_KEY or (ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf"):
+        return {}
+
+    file_data = document.get("file_data", b"") or b""
+    if not file_data:
+        return {}
+
+    context_text = (
+        "Courriel de facturation a examiner.\n"
+        f"Expediteur: {document.get('from', '')}\n"
+        f"Objet: {document.get('subject', '')}\n"
+        f"Apercu du message: {document.get('body_preview', '')}\n"
+        f"Nom du fichier: {document.get('filename', '')}\n"
+        f"Employe attendu si connu: {employee_hint or 'inconnu'}\n\n"
+        "Determine si cette piece jointe est une facture d'hebergement, une facture d'hotel ou un justificatif d'hebergement. "
+        "Ignore les FDT, logos, signatures isolees et documents administratifs sans rapport. "
+        "Reponds en JSON compact uniquement avec les cles: "
+        "is_accommodation, confidence, employee_name_seen, period_text_seen, total_cost, vendor_name, notes."
+    )
+    if ext in _VISION_ATTACHMENT_EXTENSIONS:
+        mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
+        data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
+        content = [
+            {"type": "input_text", "text": context_text},
+            {"type": "input_image", "image_url": data_url},
+        ]
+    else:
+        preview_text = extracted_text or extract_document_text_preview(
+            document.get("filename", ""),
+            document.get("mime_type", ""),
+            file_data,
+        )
+        if not preview_text:
+            return {}
+        content = [
+            {"type": "input_text", "text": f"{context_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"},
+        ]
+
+    payload = {
+        "model": TIMESHEET_ATTACHMENT_MODEL,
+        "instructions": "Tu aides un commis de facturation a trier les pieces jointes recues par courriel. Sois prudent et n'identifie comme hebergement que les vrais justificatifs ou factures de logement.",
+        "input": [{"role": "user", "content": content}],
+        "max_output_tokens": 280,
+    }
+    if _supports_reasoning(TIMESHEET_ATTACHMENT_MODEL):
+        payload["reasoning"] = {"effort": _normalized_reasoning_effort()}
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            parsed = _parse_json_object(_extract_openai_text(response.json()))
+    except Exception:
+        return {}
+
+    confidence_raw = parsed.get("confidence", 0)
+    try:
+        confidence = max(0.0, min(float(confidence_raw), 1.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    is_accommodation = parsed.get("is_accommodation")
+    if isinstance(is_accommodation, str):
+        is_accommodation = is_accommodation.strip().lower() in {"true", "oui", "yes"}
+    elif not isinstance(is_accommodation, bool):
+        is_accommodation = None
+
+    total_cost_raw = parsed.get("total_cost", 0)
+    try:
+        total_cost = round(max(float(total_cost_raw or 0), 0.0), 2)
+    except (TypeError, ValueError):
+        total_cost = 0.0
+
+    return {
+        "used": True,
+        "is_accommodation": is_accommodation,
+        "confidence": round(confidence, 2),
+        "employee_name_seen": str(parsed.get("employee_name_seen") or "").strip(),
+        "period_text_seen": str(parsed.get("period_text_seen") or "").strip(),
+        "total_cost": total_cost,
+        "vendor_name": str(parsed.get("vendor_name") or "").strip(),
+        "notes": str(parsed.get("notes") or "").strip(),
+    }
+
+
 def merge_ai_attachment_analysis(analysis: dict, ai_review: dict) -> dict:
     if not ai_review:
         return analysis
@@ -590,6 +861,41 @@ def merge_ai_attachment_analysis(analysis: dict, ai_review: dict) -> dict:
     }
 
 
+def merge_ai_accommodation_analysis(analysis: dict, ai_review: dict) -> dict:
+    if not ai_review:
+        return analysis
+
+    score = float(analysis.get("score") or 0)
+    reasons = list(analysis.get("reasons") or [])
+    confidence = float(ai_review.get("confidence") or 0)
+    if ai_review.get("is_accommodation") is True:
+        score += 0.18 + min(0.14, confidence * 0.14)
+        reasons.append("lecture confirme un document d'hebergement")
+    elif ai_review.get("is_accommodation") is False:
+        score -= 0.26 + min(0.18, confidence * 0.18)
+        reasons.append("lecture ecarte ce document d'hebergement")
+    if ai_review.get("employee_name_seen"):
+        reasons.append("nom lu sur document")
+        score += 0.05
+    if ai_review.get("period_text_seen"):
+        reasons.append("periode lue sur document")
+        score += 0.05
+    if float(ai_review.get("total_cost") or 0) > 0:
+        reasons.append("montant lu sur document")
+        score += 0.05
+
+    score = round(max(0.0, min(score, 1.0)), 2)
+    return {
+        **analysis,
+        "score": score,
+        "likely": score >= 0.38,
+        "strong": score >= 0.62,
+        "reasons": reasons,
+        "amount_detected": round(float(ai_review.get("total_cost") or analysis.get("amount_detected") or 0), 2),
+        "ai_review": ai_review,
+    }
+
+
 def _document_has_explicit_timesheet_hint(item: dict) -> bool:
     document = item.get("document") or {}
     analysis = item.get("analysis") or {}
@@ -611,6 +917,31 @@ def _document_has_explicit_timesheet_hint(item: dict) -> bool:
         any(keyword in combined for keyword in _TIMESHEET_KEYWORDS)
         or analysis.get("period_detected")
         or ai_review.get("period_text_seen")
+    )
+
+
+def _document_has_explicit_accommodation_hint(item: dict) -> bool:
+    document = item.get("document") or {}
+    analysis = item.get("accommodation_analysis") or {}
+    ai_review = item.get("accommodation_ai_review") or {}
+    combined = " ".join(
+        _norm(value)
+        for value in [
+            document.get("filename", ""),
+            document.get("subject", ""),
+            document.get("body_preview", ""),
+            item.get("extracted_text", ""),
+            ai_review.get("employee_name_seen", ""),
+            ai_review.get("period_text_seen", ""),
+            ai_review.get("notes", ""),
+        ]
+        if value
+    )
+    return bool(
+        any(keyword in combined for keyword in _ACCOMMODATION_KEYWORDS)
+        or analysis.get("period_detected")
+        or ai_review.get("period_text_seen")
+        or float(analysis.get("amount_detected") or 0) > 0
     )
 
 
@@ -654,6 +985,50 @@ def _select_timesheet_candidates(analyzed_docs: list[dict]) -> list[dict]:
         reverse=True,
     )
     return ranked[:1]
+
+
+def _select_accommodation_candidates(analyzed_docs: list[dict]) -> list[dict]:
+    if not analyzed_docs:
+        return []
+
+    filtered = [
+        item
+        for item in analyzed_docs
+        if (item.get("accommodation_ai_review") or {}).get("is_accommodation") is not False
+        and (
+            (item.get("accommodation_analysis") or {}).get("likely")
+            or (item.get("accommodation_analysis") or {}).get("strong")
+            or (item.get("accommodation_ai_review") or {}).get("is_accommodation") is True
+        )
+    ]
+    if not filtered:
+        return []
+
+    confirmed = [item for item in filtered if (item.get("accommodation_ai_review") or {}).get("is_accommodation") is True]
+    if confirmed:
+        return confirmed
+
+    strong_with_hint = [
+        item
+        for item in filtered
+        if (item.get("accommodation_analysis") or {}).get("strong") and _document_has_explicit_accommodation_hint(item)
+    ]
+    if strong_with_hint:
+        return strong_with_hint
+
+    hinted = [item for item in filtered if _document_has_explicit_accommodation_hint(item)]
+    pool = hinted or filtered
+    ranked = sorted(
+        pool,
+        key=lambda item: (
+            float((item.get("accommodation_analysis") or {}).get("score") or 0),
+            1 if item.get("employee") else 0,
+            1 if (item.get("accommodation_analysis") or {}).get("period_detected") else 0,
+            float((item.get("accommodation_analysis") or {}).get("amount_detected") or 0),
+        ),
+        reverse=True,
+    )
+    return ranked[:2]
 
 
 def _normalize_shift_summary_item(item: dict) -> Optional[dict]:
@@ -871,6 +1246,67 @@ async def ensure_timesheet_for_period(
     return timesheet, True
 
 
+async def find_accommodation_for_period(
+    db: AsyncSession,
+    employee_id: int,
+    start_date: date,
+    end_date: date,
+) -> Optional[Accommodation]:
+    result = await db.execute(
+        select(Accommodation).where(
+            Accommodation.employee_id == employee_id,
+            Accommodation.start_date == start_date,
+            Accommodation.end_date == end_date,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def ensure_accommodation_for_period(
+    db: AsyncSession,
+    employee_id: int,
+    start_date: date,
+    end_date: date,
+    total_cost: float = 0.0,
+    notes: str = "",
+    pdf_name: str = "",
+) -> tuple[Accommodation, bool]:
+    existing = await find_accommodation_for_period(db, employee_id, start_date, end_date)
+    span_days = max((end_date - start_date).days + 1, 1)
+    rounded_total = round(float(total_cost or 0), 2)
+    cost_per_day = round(rounded_total / span_days, 2) if rounded_total > 0 else 0.0
+    if existing:
+        if notes:
+            current = (existing.notes or "").strip()
+            cleaned = notes.strip()
+            if cleaned and cleaned not in current:
+                existing.notes = f"{current}\n{cleaned}".strip() if current else cleaned
+        if rounded_total > 0 and float(existing.total_cost or 0) <= 0:
+            existing.total_cost = rounded_total
+        if cost_per_day > 0 and float(existing.cost_per_day or 0) <= 0:
+            existing.cost_per_day = cost_per_day
+        if int(existing.days_worked or 0) <= 0:
+            existing.days_worked = span_days
+        if pdf_name and not (existing.pdf_name or "").strip():
+            existing.pdf_name = pdf_name.strip()
+        return existing, False
+
+    accommodation = Accommodation(
+        id=new_id(),
+        employee_id=employee_id,
+        total_cost=rounded_total,
+        start_date=start_date,
+        end_date=end_date,
+        days_worked=span_days,
+        cost_per_day=cost_per_day,
+        pdf_name=(pdf_name or "").strip(),
+        notes=(notes or "").strip(),
+    )
+    db.add(accommodation)
+    await db.flush()
+    return accommodation, True
+
+
 async def upsert_submitted_timesheet(db: AsyncSession, data) -> tuple[Timesheet, bool]:
     existing = await find_timesheet(db, data.employee_id, data.period_start, data.period_end)
     created = existing is None
@@ -959,6 +1395,44 @@ async def add_timesheet_attachment(
         uploaded_by=(uploaded_by or "admin").strip() or "admin",
         source=(source or "manual").strip() or "manual",
         source_message_id=(source_message_id or "").strip(),
+    )
+    db.add(attachment)
+    await db.flush()
+    return attachment, True
+
+
+async def add_accommodation_attachment(
+    db: AsyncSession,
+    accommodation_id: str,
+    filename: str,
+    file_data: bytes,
+    content_type: str = "",
+    category: str = "hebergement",
+    description: str = "",
+    uploaded_by: str = "admin",
+) -> tuple[AccommodationAttachment, bool]:
+    original_filename = filename or "document"
+    result = await db.execute(
+        select(AccommodationAttachment).where(
+            AccommodationAttachment.accommodation_id == accommodation_id
+        )
+    )
+    duplicates = result.scalars().all()
+    for existing in duplicates:
+        if existing.original_filename == original_filename and int(existing.file_size or 0) == len(file_data or b""):
+            return existing, False
+
+    ext = _attachment_extension(original_filename, content_type)
+    attachment = AccommodationAttachment(
+        accommodation_id=accommodation_id,
+        filename=original_filename,
+        original_filename=original_filename,
+        file_type=ext,
+        file_size=len(file_data or b""),
+        file_data=file_data,
+        category=(category or "hebergement").strip() or "hebergement",
+        description=(description or "").strip(),
+        uploaded_by=(uploaded_by or "admin").strip() or "admin",
     )
     db.add(attachment)
     await db.flush()
@@ -1161,11 +1635,15 @@ async def index_recent_timesheet_email_documents(
         grouped_documents[str(document.get("message_id") or new_id())].append(document)
 
     indexed_items = []
+    timesheet_items = []
+    accommodation_items = []
     ignored_items = []
     unmatched_items = []
     created_timesheets = 0
     created_attachments = 0
     mirrored_review_attachments = 0
+    created_accommodations = 0
+    created_accommodation_attachments = 0
 
     for message_id, docs in grouped_documents.items():
         analyzed_docs = []
@@ -1240,6 +1718,70 @@ async def index_recent_timesheet_email_documents(
                         extracted_text=" ".join(part for part in augmented_text_parts if part),
                     )
                     analysis = merge_ai_attachment_analysis(analysis, ai_review)
+            accommodation_analysis = analyze_accommodation_document(
+                document,
+                employee=employee,
+                extracted_text=extracted_text,
+            )
+            accommodation_ai_review = {}
+            if _should_use_ai_accommodation_review(document, accommodation_analysis, employee, extracted_text):
+                accommodation_ai_review = await inspect_accommodation_document_with_openai(
+                    document,
+                    employee_hint=getattr(employee, "name", "") if employee else "",
+                    extracted_text=extracted_text,
+                )
+                if accommodation_ai_review:
+                    accommodation_augmented_text_parts = [
+                        extracted_text,
+                        accommodation_ai_review.get("employee_name_seen", ""),
+                        accommodation_ai_review.get("period_text_seen", ""),
+                        accommodation_ai_review.get("notes", ""),
+                    ]
+                    if not employee:
+                        employee, match_reason = await match_employee_from_email(
+                            db,
+                            document.get("from", ""),
+                            subject=document.get("subject", ""),
+                            body_preview=" ".join(
+                                part
+                                for part in [
+                                    document.get("body_preview", ""),
+                                    accommodation_ai_review.get("employee_name_seen", ""),
+                                    accommodation_ai_review.get("period_text_seen", ""),
+                                    accommodation_ai_review.get("notes", ""),
+                                ]
+                                if part
+                            ),
+                            attachment_names=[
+                                document.get("filename", ""),
+                                *[part for part in accommodation_augmented_text_parts if part],
+                            ],
+                            extra_texts=[
+                                accommodation_ai_review.get("employee_name_seen", ""),
+                                accommodation_ai_review.get("period_text_seen", ""),
+                            ],
+                        )
+                    elif accommodation_ai_review.get("employee_name_seen"):
+                        refined_employee, refined_reason = await match_employee_from_email(
+                            db,
+                            document.get("from", ""),
+                            subject=document.get("subject", ""),
+                            body_preview=document.get("body_preview", ""),
+                            attachment_names=[document.get("filename", ""), extracted_text],
+                            extra_texts=[accommodation_ai_review.get("employee_name_seen", "")],
+                        )
+                        if refined_employee and refined_employee.id != employee.id:
+                            employee = refined_employee
+                            match_reason = refined_reason or "nom_document"
+                    accommodation_analysis = analyze_accommodation_document(
+                        document,
+                        employee=employee,
+                        extracted_text=" ".join(part for part in accommodation_augmented_text_parts if part),
+                    )
+                    accommodation_analysis = merge_ai_accommodation_analysis(
+                        accommodation_analysis,
+                        accommodation_ai_review,
+                    )
             analyzed_docs.append(
                 {
                     "document": document,
@@ -1248,43 +1790,17 @@ async def index_recent_timesheet_email_documents(
                     "analysis": analysis,
                     "extracted_text": extracted_text,
                     "ai_review": ai_review,
+                    "accommodation_analysis": accommodation_analysis,
+                    "accommodation_ai_review": accommodation_ai_review,
                 }
             )
 
         selected_docs = _select_timesheet_candidates(analyzed_docs)
-
-        if not selected_docs:
-            for item in analyzed_docs:
-                document = item["document"]
-                ignored_items.append(
-                    {
-                        "message_id": message_id,
-                        "filename": document.get("filename", ""),
-                        "from": document.get("from", ""),
-                        "subject": document.get("subject", ""),
-                        "score": item["analysis"]["score"],
-                        "ai_review": item.get("ai_review") or {},
-                        "reason": ", ".join(item["analysis"]["reasons"]) or "Piece jointe non retenue comme FDT",
-                    }
-                )
-            continue
-
         selected_ids = {id(item) for item in selected_docs}
-        for item in analyzed_docs:
-            if id(item) in selected_ids:
-                continue
-            document = item["document"]
-            ignored_items.append(
-                {
-                    "message_id": message_id,
-                    "filename": document.get("filename", ""),
-                    "from": document.get("from", ""),
-                    "subject": document.get("subject", ""),
-                    "score": item["analysis"]["score"],
-                    "ai_review": item.get("ai_review") or {},
-                    "reason": ", ".join(item["analysis"]["reasons"]) or "Piece jointe secondaire ignoree",
-                }
-            )
+        selected_accommodation_docs = _select_accommodation_candidates(
+            [item for item in analyzed_docs if id(item) not in selected_ids]
+        )
+        selected_accommodation_ids = {id(item) for item in selected_accommodation_docs}
 
         for item in selected_docs:
             document = item["document"]
@@ -1347,22 +1863,143 @@ async def index_recent_timesheet_email_documents(
             created_timesheets += 1 if was_created else 0
             created_attachments += 1 if was_attached else 0
             mirrored_review_attachments += mirrored
-            indexed_items.append(
+            payload = {
+                "document_type": "fdt",
+                "message_id": message_id,
+                "employee_id": employee.id,
+                "employee_name": employee.name,
+                "match_reason": item["match_reason"] or "nom",
+                "timesheet_id": timesheet.id,
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
+                "attachment_id": attachment.id,
+                "attachment_added": was_attached,
+                "review_attachments_added": mirrored,
+                "filename": attachment.original_filename,
+                "score": item["analysis"]["score"],
+                "analysis_reasons": item["analysis"]["reasons"],
+                "ai_review": item.get("ai_review") or {},
+            }
+            indexed_items.append(payload)
+            timesheet_items.append(payload)
+
+        for item in selected_accommodation_docs:
+            document = item["document"]
+            employee = item["employee"]
+            if not employee:
+                unmatched_items.append(
+                    {
+                        "message_id": message_id,
+                        "document_type": "hebergement",
+                        "filename": document.get("filename", ""),
+                        "from": document.get("from", ""),
+                        "subject": document.get("subject", ""),
+                        "score": item["accommodation_analysis"]["score"],
+                        "ai_review": item.get("accommodation_ai_review") or {},
+                        "reason": "Employe introuvable pour le document d'hebergement",
+                    }
+                )
+                continue
+
+            reference_date = _safe_parse_message_date(document.get("date", "")) or date.today()
+            extracted_period = extract_period_from_text(
+                " ".join(
+                    part
+                    for part in [
+                        document.get("subject", ""),
+                        document.get("body_preview", ""),
+                        document.get("filename", ""),
+                        item["extracted_text"],
+                        (item.get("accommodation_ai_review") or {}).get("period_text_seen", ""),
+                    ]
+                    if part
+                ),
+                reference_date=reference_date,
+            )
+            if extracted_period:
+                start_date, end_date = extracted_period
+                period_note = ""
+            else:
+                start_date = reference_date
+                end_date = reference_date
+                period_note = " Periode a valider."
+
+            amount_detected = round(
+                float(
+                    (item.get("accommodation_ai_review") or {}).get("total_cost")
+                    or (item.get("accommodation_analysis") or {}).get("amount_detected")
+                    or 0
+                ),
+                2,
+            )
+            vendor_name = str((item.get("accommodation_ai_review") or {}).get("vendor_name") or "").strip()
+            notes = f"Document d'hebergement indexe depuis courriel: {document.get('subject', '')}".strip()
+            if vendor_name:
+                notes = f"{notes}\nFournisseur detecte: {vendor_name}".strip()
+            ai_notes = str((item.get("accommodation_ai_review") or {}).get("notes") or "").strip()
+            if ai_notes:
+                notes = f"{notes}\n{ai_notes}".strip()
+            if period_note:
+                notes = f"{notes}\n{period_note.strip()}".strip()
+
+            accommodation, was_created = await ensure_accommodation_for_period(
+                db,
+                employee.id,
+                start_date,
+                end_date,
+                total_cost=amount_detected,
+                notes=notes,
+                pdf_name=document.get("filename", "") or "",
+            )
+            attachment, was_attached = await add_accommodation_attachment(
+                db,
+                accommodation_id=accommodation.id,
+                filename=document.get("filename", "") or "document.pdf",
+                file_data=document.get("file_data", b"") or b"",
+                content_type=document.get("mime_type", "") or "",
+                category="hebergement",
+                description=document.get("subject", "") or "Document d'hebergement recu par courriel",
+                uploaded_by=uploaded_by,
+            )
+            created_accommodations += 1 if was_created else 0
+            created_accommodation_attachments += 1 if was_attached else 0
+            payload = {
+                "document_type": "hebergement",
+                "message_id": message_id,
+                "employee_id": employee.id,
+                "employee_name": employee.name,
+                "match_reason": item["match_reason"] or "nom",
+                "accommodation_id": accommodation.id,
+                "period_start": start_date.isoformat(),
+                "period_end": end_date.isoformat(),
+                "attachment_id": attachment.id,
+                "attachment_added": was_attached,
+                "filename": attachment.original_filename,
+                "score": item["accommodation_analysis"]["score"],
+                "analysis_reasons": item["accommodation_analysis"]["reasons"],
+                "amount_detected": amount_detected,
+                "ai_review": item.get("accommodation_ai_review") or {},
+            }
+            indexed_items.append(payload)
+            accommodation_items.append(payload)
+
+        for item in analyzed_docs:
+            if id(item) in selected_ids or id(item) in selected_accommodation_ids:
+                continue
+            document = item["document"]
+            reason = ", ".join(item["analysis"]["reasons"]) or ", ".join((item.get("accommodation_analysis") or {}).get("reasons") or [])
+            ignored_items.append(
                 {
                     "message_id": message_id,
-                    "employee_id": employee.id,
-                    "employee_name": employee.name,
-                    "match_reason": item["match_reason"] or "nom",
-                    "timesheet_id": timesheet.id,
-                    "period_start": period_start.isoformat(),
-                    "period_end": period_end.isoformat(),
-                    "attachment_id": attachment.id,
-                    "attachment_added": was_attached,
-                    "review_attachments_added": mirrored,
-                    "filename": attachment.original_filename,
-                    "score": item["analysis"]["score"],
-                    "analysis_reasons": item["analysis"]["reasons"],
-                    "ai_review": item.get("ai_review") or {},
+                    "filename": document.get("filename", ""),
+                    "from": document.get("from", ""),
+                    "subject": document.get("subject", ""),
+                    "score": max(
+                        float((item.get("analysis") or {}).get("score") or 0),
+                        float((item.get("accommodation_analysis") or {}).get("score") or 0),
+                    ),
+                    "ai_review": item.get("ai_review") or item.get("accommodation_ai_review") or {},
+                    "reason": reason or "Piece jointe ignoree",
                 }
             )
 
@@ -1371,7 +2008,11 @@ async def index_recent_timesheet_email_documents(
         "created_timesheets": created_timesheets,
         "created_attachments": created_attachments,
         "mirrored_review_attachments": mirrored_review_attachments,
+        "created_accommodations": created_accommodations,
+        "created_accommodation_attachments": created_accommodation_attachments,
         "items": indexed_items,
+        "timesheet_items": timesheet_items,
+        "accommodation_items": accommodation_items,
         "ignored": ignored_items,
         "unmatched": unmatched_items,
     }

@@ -623,6 +623,24 @@ export default function SchedulesPage({ toast, onNavigate }) {
       }
 
       if (modal.type === "add") {
+        const createPayload = {
+          employee_id: Number(d.employeeId),
+          date: d.date,
+          start,
+          end,
+          pause: Number(d.pause || 0),
+          hours: Number(d.hours || 0),
+          location: d.location || "",
+          client_id: d.clientId ? Number(d.clientId) : null,
+          km: Number(d.km || 0),
+          deplacement: Number(d.deplacement || 0),
+          autre_dep: Number(d.autreDep || 0),
+          notes: d.notes || "",
+          billable_rate: Number(
+            d.billableRate || getEmployeeRate(d.employeeId) || 0,
+          ),
+          status: "published",
+        };
         const recurrenceConfig = (() => {
           if (d.repeatMode === "daily")
             return {
@@ -650,9 +668,77 @@ export default function SchedulesPage({ toast, onNavigate }) {
             };
           return { recurrence: "once" };
         })();
-        await api.createSchedule({ ...payload, ...recurrenceConfig });
+        await api.createSchedule({ ...createPayload, ...recurrenceConfig });
       } else {
-        await api.updateSchedule(d.id, payload);
+        const originalShift =
+          schedules.find((shift) => String(shift.id) === String(d.id)) || null;
+
+        if (!originalShift) {
+          await api.updateSchedule(d.id, payload);
+        } else {
+          const updatePayload = {};
+          const normalizedOriginalStart = normalizeTimeForInput(
+            originalShift.start,
+          );
+          const normalizedOriginalEnd = normalizeTimeForInput(originalShift.end);
+          const originalDate = originalShift.date
+            ? String(originalShift.date).slice(0, 10)
+            : "";
+          const originalLocation = String(originalShift.location || "");
+          const originalClientId =
+            originalShift.client_id == null ? null : Number(originalShift.client_id);
+          const nextClientId = d.clientId ? Number(d.clientId) : null;
+          const originalNotes = String(originalShift.notes || "");
+          const nextPause = Number(d.pause || 0);
+          const nextHours = Number(d.hours || 0);
+          const nextKm = Number(d.km || 0);
+          const nextDeplacement = Number(d.deplacement || 0);
+          const nextAutreDep = Number(d.autreDep || 0);
+          const nextBillableRate = Number(
+            d.billableRate || getEmployeeRate(d.employeeId) || 0,
+          );
+
+          if (d.date !== originalDate) updatePayload.date = d.date;
+          if (start !== normalizedOriginalStart) updatePayload.start = start;
+          if (end !== normalizedOriginalEnd) updatePayload.end = end;
+          if (nextPause !== Number(originalShift.pause || 0)) {
+            updatePayload.pause = nextPause;
+          }
+          if (nextHours !== Number(originalShift.hours || 0)) {
+            updatePayload.hours = nextHours;
+          }
+          if (String(d.location || "") !== originalLocation) {
+            updatePayload.location = d.location || "";
+          }
+          if (nextClientId !== originalClientId) {
+            updatePayload.client_id = nextClientId;
+          }
+          if (nextKm !== Number(originalShift.km || 0)) {
+            updatePayload.km = nextKm;
+          }
+          if (nextDeplacement !== Number(originalShift.deplacement || 0)) {
+            updatePayload.deplacement = nextDeplacement;
+          }
+          if (nextAutreDep !== Number(originalShift.autre_dep || 0)) {
+            updatePayload.autre_dep = nextAutreDep;
+          }
+          if (String(d.notes || "") !== originalNotes) {
+            updatePayload.notes = d.notes || "";
+          }
+          if (
+            nextBillableRate !== Number(originalShift.billable_rate || 0)
+          ) {
+            updatePayload.billable_rate = nextBillableRate;
+          }
+
+          if (Object.keys(updatePayload).length === 0) {
+            toast?.("Aucune modification a enregistrer");
+            setModal(null);
+            return;
+          }
+
+          await api.updateSchedule(d.id, updatePayload);
+        }
       }
 
       toast?.(modal.type === "add" ? "Quart cree" : "Quart modifie");

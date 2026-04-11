@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, desc
 from ..database import get_db
 from ..models.models import Employee, Schedule, Client, Accommodation, new_id
-from ..models.models_invoice import Invoice
+from ..models.models_invoice import AuditAction, Invoice, InvoiceAuditLog, InvoiceStatus
 from ..models.schemas import ChatMessage
 from ..services.auth_service import require_admin
 from ..services.billing_gmail_oauth import (
@@ -93,6 +93,12 @@ RAW_TOOLS = [
     {"name": "generate_invoice_for_employee", "description": "Générer une facture brouillon à partir des horaires d'un employé pour une période donnée. Utiliser quand on te demande explicitement de générer une facture.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}}, "required": ["period_start", "period_end"]}},
     {"name": "read_recent_emails", "description": "Lire les courriels récents de la boîte de réception.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "folder": {"type": "string", "default": "INBOX"}}}},
     {"name": "generate_current_invoice_for_employee", "description": "Generer une facture brouillon pour la periode actuelle de facturation d'un employe.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "client_name": {"type": "string"}, "client_id": {"type": "integer"}}, "required": []}},
+    {"name": "get_invoice_details", "description": "Retrouver une facture et retourner ses lignes modifiables. Utiliser avant de modifier une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "draft_only": {"type": "boolean", "default": False}}, "required": []}},
+    {"name": "update_invoice_service_line", "description": "Modifier un quart deja present dans une facture brouillon existante. Utiliser quand l'utilisateur veut changer une pause, une heure, un taux, debut/fin ou supprimer un quart directement dans la facture et non dans l'horaire.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "schedule_id": {"type": "string"}, "date": {"type": "string"}, "current_start": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_min": {"type": "number"}, "hours": {"type": "number"}, "rate": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}, "delete": {"type": "boolean", "default": False}}, "required": []}},
+    {"name": "add_invoice_expense_line", "description": "Ajouter un frais directement dans une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "type": {"type": "string"}, "description": {"type": "string"}, "quantity": {"type": "number"}, "rate": {"type": "number"}, "amount": {"type": "number"}}, "required": ["description"]}},
+    {"name": "delete_invoice_expense_line", "description": "Supprimer un frais d'une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "description": {"type": "string"}, "type": {"type": "string"}}, "required": ["description"]}},
+    {"name": "add_invoice_accommodation_per_worked_day", "description": "Ajouter un frais d'hebergement par journee travaillee directement dans une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "cost_per_day": {"type": "number"}, "replace_existing": {"type": "boolean", "default": False}}, "required": ["cost_per_day"]}},
+    {"name": "delete_invoice_accommodation_line", "description": "Supprimer une ligne d'hebergement d'une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "period": {"type": "string"}}, "required": ["period"]}},
     {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Peut aussi servir pour un brouillon de masse avec CC ou CCI. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}, "cc": {"type": "string"}, "bcc": {"type": "string"}, "cc_list": {"type": "array", "items": {"type": "string"}}, "bcc_list": {"type": "array", "items": {"type": "string"}}}, "required": ["to", "subject", "body_text"]}},
     {"name": "send_email", "description": "Envoyer immediatement un courriel. Ne jamais utiliser pour un brouillon Gmail ou si l'utilisateur veut revoir le message avant envoi.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_html": {"type": "string"}}, "required": ["to", "subject", "body_html"]}},
     {"name": "create_schedule_shift", "description": "Creer un quart dans l'horaire. Les heures doivent etre en format 24 h HH:MM.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": ["date", "start", "end"]}},
@@ -612,6 +618,156 @@ async def _build_invoice_from_schedules(
     await db.refresh(inv)
     return {"id": inv.id, "number": inv.number, "status": inv.status, "total": inv.total, "client_name": inv.client_name, "employee_name": inv.employee_name, "period_start": period_start, "period_end": period_end}
 
+
+def _invoice_identity_payload(invoice: Invoice) -> dict:
+    return {
+        "id": invoice.id,
+        "number": invoice.number,
+        "status": invoice.status,
+        "employee_id": invoice.employee_id,
+        "employee_name": invoice.employee_name,
+        "client_id": invoice.client_id,
+        "client_name": invoice.client_name,
+        "period_start": invoice.period_start.isoformat() if getattr(invoice, "period_start", None) else "",
+        "period_end": invoice.period_end.isoformat() if getattr(invoice, "period_end", None) else "",
+        "total": round(float(getattr(invoice, "total", 0) or 0), 2),
+    }
+
+
+def _serialize_invoice_for_chat(invoice: Invoice) -> dict:
+    payload = _invoice_identity_payload(invoice)
+    payload.update(
+        {
+            "lines": list(getattr(invoice, "lines", None) or []),
+            "expense_lines": list(getattr(invoice, "expense_lines", None) or []),
+            "accommodation_lines": list(getattr(invoice, "accommodation_lines", None) or []),
+            "extra_lines": list(getattr(invoice, "extra_lines", None) or []),
+            "notes": getattr(invoice, "notes", "") or "",
+            "po_number": getattr(invoice, "po_number", "") or "",
+            "include_tax": bool(getattr(invoice, "include_tax", True)),
+        }
+    )
+    return payload
+
+
+async def _find_invoice(
+    db: AsyncSession,
+    invoice_id=None,
+    invoice_number=None,
+    employee_id=None,
+    employee_name=None,
+    period_start=None,
+    period_end=None,
+    client_id=None,
+    client_name=None,
+    draft_only: bool = False,
+):
+    query = select(Invoice).where(Invoice.status != InvoiceStatus.CANCELLED.value)
+    if draft_only:
+        query = query.where(Invoice.status == InvoiceStatus.DRAFT.value)
+    if invoice_id:
+        query = query.where(Invoice.id == str(invoice_id))
+    if invoice_number:
+        query = query.where(Invoice.number == str(invoice_number).strip())
+
+    employee = None
+    if employee_id or employee_name:
+        employee = await _find_employee(db, employee_id, employee_name)
+        if not employee:
+            return None, "Employe introuvable pour cette facture"
+        query = query.where(Invoice.employee_id == employee.id)
+
+    client = None
+    if client_id or client_name:
+        client = await _find_client(db, client_id, client_name)
+        if not client:
+            return None, "Client introuvable pour cette facture"
+        query = query.where(Invoice.client_id == client.id)
+
+    if period_start:
+        query = query.where(Invoice.period_start == _parse_date_value(period_start, "period_start"))
+    if period_end:
+        query = query.where(Invoice.period_end == _parse_date_value(period_end, "period_end"))
+
+    result = await db.execute(query.order_by(desc(Invoice.created_at), desc(Invoice.date)))
+    matches = result.scalars().all()
+    if not matches:
+        return None, "Facture introuvable"
+    if len(matches) == 1:
+        return matches[0], None
+
+    normalized_number = _norm(str(invoice_number or ""))
+    if normalized_number:
+        exact_number = [item for item in matches if _norm(item.number) == normalized_number]
+        if len(exact_number) == 1:
+            return exact_number[0], None
+
+    draft_matches = [item for item in matches if item.status == InvoiceStatus.DRAFT.value]
+    if len(draft_matches) == 1:
+        return draft_matches[0], None
+
+    if employee and (period_start or period_end):
+        return matches[0], None
+    return None, "Plusieurs factures correspondent. Fournis le numero de facture pour etre plus precis."
+
+
+def _recalculate_invoice_service_line(line: dict) -> dict:
+    updated = dict(line or {})
+    start = str(updated.get("start") or "").strip()
+    end = str(updated.get("end") or "").strip()
+    pause_min = float(updated.get("pause_min") or 0)
+    rate = float(updated.get("rate") or 0)
+    if start and end and ("hours" not in updated or updated.get("hours") in (None, "")):
+        start_minutes = _time_to_minutes(start, "start")
+        end_minutes = _time_to_minutes(end, "end")
+        if end_minutes <= start_minutes:
+            end_minutes += 24 * 60
+        updated["hours"] = round(max(((end_minutes - start_minutes) - pause_min) / 60.0, 0), 2)
+    updated["hours"] = round(float(updated.get("hours") or 0), 2)
+    updated["pause_min"] = round(pause_min, 2)
+    updated["rate"] = round(rate, 2)
+    updated["garde_hours"] = round(float(updated.get("garde_hours") or 0), 2)
+    updated["rappel_hours"] = round(float(updated.get("rappel_hours") or 0), 2)
+    updated["service_amount"] = round(updated["hours"] * updated["rate"], 2)
+    updated["garde_amount"] = round((updated["garde_hours"] / 8.0) * GARDE_RATE, 2)
+    updated["rappel_amount"] = round(updated["rappel_hours"] * updated["rate"], 2)
+    return updated
+
+
+def _find_service_line_index(lines: list[dict], schedule_id=None, date_value=None, current_start=None):
+    if schedule_id:
+        for index, line in enumerate(lines):
+            if str(line.get("schedule_id") or "") == str(schedule_id):
+                return index
+        return -1
+
+    target_date = str(date_value or "").strip()
+    target_start = str(current_start or "").strip()
+    matches = []
+    for index, line in enumerate(lines):
+        if target_date and str(line.get("date") or "")[:10] != target_date[:10]:
+            continue
+        if target_start and str(line.get("start") or "") != target_start:
+            continue
+        matches.append(index)
+    if len(matches) == 1:
+        return matches[0]
+    return -1
+
+
+async def _save_chatbot_invoice_update(db: AsyncSession, invoice: Invoice, user_email: str, details: str) -> dict:
+    invoice = recalculate_invoice(invoice)
+    audit = InvoiceAuditLog(
+        invoice_id=invoice.id,
+        action=AuditAction.UPDATED.value,
+        user_email=user_email or "chatbot@soins-expert-plus.com",
+        details=details,
+    )
+    db.add(audit)
+    await db.commit()
+    await db.refresh(invoice)
+    return _serialize_invoice_for_chat(invoice)
+
 async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "") -> str:
     try:
         input_data = _apply_schedule_date_guard(name, input_data, user_message)
@@ -695,6 +851,222 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 result['period_start'] = period_start.isoformat()
                 result['period_end'] = period_end.isoformat()
             return json.dumps(result, ensure_ascii=False)
+        if name == 'get_invoice_details':
+            invoice, error = await _find_invoice(
+                db,
+                invoice_id=input_data.get('invoice_id'),
+                invoice_number=input_data.get('invoice_number'),
+                employee_id=input_data.get('employee_id'),
+                employee_name=input_data.get('employee_name'),
+                period_start=input_data.get('period_start'),
+                period_end=input_data.get('period_end'),
+                client_id=input_data.get('client_id'),
+                client_name=input_data.get('client_name'),
+                draft_only=bool(input_data.get('draft_only')),
+            )
+            if not invoice:
+                return error or "Facture introuvable"
+            return json.dumps(_serialize_invoice_for_chat(invoice), ensure_ascii=False)
+        if name == 'update_invoice_service_line':
+            invoice, error = await _find_invoice(
+                db,
+                invoice_id=input_data.get('invoice_id'),
+                invoice_number=input_data.get('invoice_number'),
+                employee_id=input_data.get('employee_id'),
+                employee_name=input_data.get('employee_name'),
+                period_start=input_data.get('period_start'),
+                period_end=input_data.get('period_end'),
+                client_id=input_data.get('client_id'),
+                client_name=input_data.get('client_name'),
+                draft_only=True,
+            )
+            if not invoice:
+                return error or "Facture brouillon introuvable"
+            lines = [dict(line or {}) for line in (getattr(invoice, 'lines', None) or [])]
+            line_index = _find_service_line_index(
+                lines,
+                schedule_id=input_data.get('schedule_id'),
+                date_value=input_data.get('date'),
+                current_start=input_data.get('current_start'),
+            )
+            if line_index < 0:
+                return "Ligne de service introuvable dans cette facture. Fournis la date et l'heure de debut, ou schedule_id."
+            target_line = dict(lines[line_index] or {})
+            if bool(input_data.get('delete')):
+                removed = lines.pop(line_index)
+                invoice.lines = lines
+                saved = await _save_chatbot_invoice_update(
+                    db,
+                    invoice,
+                    "chatbot",
+                    f"Ligne service supprimee depuis chatbot ({removed.get('date', '')} {removed.get('start', '')})",
+                )
+                return json.dumps({"message": "Ligne de facture supprimee", "invoice": saved}, ensure_ascii=False)
+            if input_data.get('date'):
+                target_line['date'] = str(input_data.get('date'))[:10]
+            for field in ['start', 'end']:
+                if input_data.get(field):
+                    target_line[field] = _normalize_time_value(input_data.get(field), field)
+            for field in ['pause_min', 'hours', 'rate', 'garde_hours', 'rappel_hours']:
+                if input_data.get(field) not in (None, ''):
+                    target_line[field] = float(input_data.get(field) or 0)
+            target_line = _recalculate_invoice_service_line(target_line)
+            lines[line_index] = target_line
+            invoice.lines = lines
+            saved = await _save_chatbot_invoice_update(
+                db,
+                invoice,
+                "chatbot",
+                f"Ligne service modifiee depuis chatbot ({target_line.get('date', '')} {target_line.get('start', '')})",
+            )
+            return json.dumps({"message": "Ligne de facture modifiee", "invoice": saved, "line": target_line}, ensure_ascii=False)
+        if name == 'add_invoice_expense_line':
+            invoice, error = await _find_invoice(
+                db,
+                invoice_id=input_data.get('invoice_id'),
+                invoice_number=input_data.get('invoice_number'),
+                employee_id=input_data.get('employee_id'),
+                employee_name=input_data.get('employee_name'),
+                period_start=input_data.get('period_start'),
+                period_end=input_data.get('period_end'),
+                client_id=input_data.get('client_id'),
+                client_name=input_data.get('client_name'),
+                draft_only=True,
+            )
+            if not invoice:
+                return error or "Facture brouillon introuvable"
+            expense_lines = [dict(line or {}) for line in (getattr(invoice, 'expense_lines', None) or [])]
+            quantity = float(input_data.get('quantity') or 0)
+            rate = float(input_data.get('rate') or 0)
+            amount = input_data.get('amount')
+            if amount not in (None, ''):
+                amount = float(amount)
+                if quantity in (0, 0.0) and rate:
+                    quantity = round(amount / rate, 2)
+            else:
+                amount = round(quantity * rate, 2)
+            new_line = {
+                "type": str(input_data.get('type') or 'autre'),
+                "description": str(input_data.get('description') or '').strip(),
+                "quantity": round(quantity, 2),
+                "rate": round(rate, 2),
+                "amount": round(amount, 2),
+            }
+            expense_lines.append(new_line)
+            invoice.expense_lines = expense_lines
+            saved = await _save_chatbot_invoice_update(
+                db,
+                invoice,
+                "chatbot",
+                f"Frais ajoute depuis chatbot ({new_line['description']})",
+            )
+            return json.dumps({"message": "Frais ajoute a la facture", "invoice": saved, "expense_line": new_line}, ensure_ascii=False)
+        if name == 'delete_invoice_expense_line':
+            invoice, error = await _find_invoice(
+                db,
+                invoice_id=input_data.get('invoice_id'),
+                invoice_number=input_data.get('invoice_number'),
+                employee_id=input_data.get('employee_id'),
+                employee_name=input_data.get('employee_name'),
+                period_start=input_data.get('period_start'),
+                period_end=input_data.get('period_end'),
+                client_id=input_data.get('client_id'),
+                client_name=input_data.get('client_name'),
+                draft_only=True,
+            )
+            if not invoice:
+                return error or "Facture brouillon introuvable"
+            match_description = _norm(str(input_data.get('description') or ''))
+            match_type = str(input_data.get('type') or '').strip().lower()
+            expense_lines = [dict(line or {}) for line in (getattr(invoice, 'expense_lines', None) or [])]
+            kept = []
+            removed = None
+            for line in expense_lines:
+                if removed is None and match_description and match_description in _norm(line.get('description', '')):
+                    if not match_type or str(line.get('type') or '').strip().lower() == match_type:
+                        removed = line
+                        continue
+                kept.append(line)
+            if not removed:
+                return "Frais introuvable dans cette facture."
+            invoice.expense_lines = kept
+            saved = await _save_chatbot_invoice_update(
+                db,
+                invoice,
+                "chatbot",
+                f"Frais supprime depuis chatbot ({removed.get('description', '')})",
+            )
+            return json.dumps({"message": "Frais supprime de la facture", "invoice": saved, "removed": removed}, ensure_ascii=False)
+        if name == 'add_invoice_accommodation_per_worked_day':
+            invoice, error = await _find_invoice(
+                db,
+                invoice_id=input_data.get('invoice_id'),
+                invoice_number=input_data.get('invoice_number'),
+                employee_id=input_data.get('employee_id'),
+                employee_name=input_data.get('employee_name'),
+                period_start=input_data.get('period_start'),
+                period_end=input_data.get('period_end'),
+                client_id=input_data.get('client_id'),
+                client_name=input_data.get('client_name'),
+                draft_only=True,
+            )
+            if not invoice:
+                return error or "Facture brouillon introuvable"
+            worked_days = sorted({str(line.get('date') or '')[:10] for line in (getattr(invoice, 'lines', None) or []) if str(line.get('date') or '').strip()})
+            if not worked_days:
+                return "Aucun quart facture dans cette facture pour calculer l'hebergement."
+            accommodation_lines = [] if bool(input_data.get('replace_existing')) else [dict(line or {}) for line in (getattr(invoice, 'accommodation_lines', None) or [])]
+            cost_per_day = float(input_data.get('cost_per_day') or 0)
+            new_line = {
+                "employee": invoice.employee_name or "",
+                "period": f"{invoice.period_start.isoformat()} → {invoice.period_end.isoformat()}",
+                "days": len(worked_days),
+                "cost_per_day": round(cost_per_day, 2),
+                "amount": round(len(worked_days) * cost_per_day, 2),
+            }
+            accommodation_lines.append(new_line)
+            invoice.accommodation_lines = accommodation_lines
+            saved = await _save_chatbot_invoice_update(
+                db,
+                invoice,
+                "chatbot",
+                f"Hebergement ajoute depuis chatbot ({cost_per_day:.2f}$/jour sur {len(worked_days)} jour(s))",
+            )
+            return json.dumps({"message": "Hebergement ajoute a la facture", "invoice": saved, "accommodation_line": new_line}, ensure_ascii=False)
+        if name == 'delete_invoice_accommodation_line':
+            invoice, error = await _find_invoice(
+                db,
+                invoice_id=input_data.get('invoice_id'),
+                invoice_number=input_data.get('invoice_number'),
+                employee_id=input_data.get('employee_id'),
+                employee_name=input_data.get('employee_name'),
+                period_start=input_data.get('period_start'),
+                period_end=input_data.get('period_end'),
+                client_id=input_data.get('client_id'),
+                client_name=input_data.get('client_name'),
+                draft_only=True,
+            )
+            if not invoice:
+                return error or "Facture brouillon introuvable"
+            match_period = _norm(str(input_data.get('period') or ''))
+            accommodation_lines = [dict(line or {}) for line in (getattr(invoice, 'accommodation_lines', None) or [])]
+            kept = []
+            removed = None
+            for line in accommodation_lines:
+                if removed is None and match_period and match_period in _norm(line.get('period', '')):
+                    removed = line
+                    continue
+                kept.append(line)
+            if not removed:
+                return "Ligne d'hebergement introuvable dans cette facture."
+            invoice.accommodation_lines = kept
+            saved = await _save_chatbot_invoice_update(
+                db,
+                invoice,
+                "chatbot",
+                f"Hebergement supprime depuis chatbot ({removed.get('period', '')})",
+            )
+            return json.dumps({"message": "Ligne d'hebergement supprimee", "invoice": saved, "removed": removed}, ensure_ascii=False)
         if name == 'read_recent_emails':
             gmail_connection = await get_billing_gmail_connection(db)
             try:
@@ -1156,6 +1528,10 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             return BUSINESS_KNOWLEDGE
         return f"Outil '{name}' non reconnu"
     except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         return f"Erreur outil {name}: {str(e)}"
 
 AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les horaires, les courriels, les hébergements, les rapports et générer des factures brouillon à partir des données déjà dans la plateforme. Quand on te demande de générer une facture, utilise l'outil generate_invoice_for_employee. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
@@ -1190,6 +1566,32 @@ def _detect_prompt(message: str):
         'hebergement', 'rappel', 'dimanche', 'hebdomadaire', 'automatisation', 'automation',
         'document', 'documents', 'piece jointe', 'pieces jointes', 'signature', 'signer',
         'pause', 'pauses', 'visible', 'visibles', 'pdf', 'jpg', 'jpeg', 'cci', 'bcc'
+    ]
+    recrutement_keywords = [
+        'candidat', 'recrutement', 'besoin', 'soumission', 'disponib', 'assignation',
+        'placement', 'horaire', 'quart', 'quarts'
+    ]
+    if any(kw in m for kw in facturation_keywords):
+        return AGENT_FACTURATION_PROMPT, 'facturation'
+    if any(kw in m for kw in recrutement_keywords):
+        return AGENT_RECRUTEMENT_PROMPT, 'recrutement'
+    return GENERAL_PROMPT, 'general'
+
+
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de consulter ou modifier une facture brouillon existante directement dans la facture et non dans l'horaire, utilise get_invoice_details puis update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line selon le besoin. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter ou surveiller les courriels entrants et preparer les brouillons, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements, horaires et FDT. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie, l'indexation de FDT recues, le traitement automatique des courriels entrants, la generation d'une facture, une conciliation FDT-facture ou l'envoi du rappel hebdomadaire de FDT, execute l'action demandee puis resume le resultat. Agis comme un commis de facturation prudent: ignore les pieces jointes qui ne sont pas pertinentes et dis clairement quand une verification visuelle reste necessaire. Pour lister les dernieres vraies FDT recues ou analyser les quarts, pauses et signatures visibles, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Quand l'utilisateur demande de modifier directement une facture brouillon existante, utilise les outils get_invoice_details, update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line au lieu de modifier l'horaire. Quand l'utilisateur demande un niveau de confiance, utilise reconcile_timesheet_invoice et cite clairement le niveau eleve, moyen ou faible. Quand l'utilisateur demande de traiter ou surveiller les courriels entrants, utilise process_incoming_timesheet_emails. Quand l'utilisateur demande un rappel hebdomadaire en brouillon Gmail ou un test d'envoi de masse en brouillon, utilise draft_weekly_timesheet_reminder. Quand l'utilisateur demande le jour, l'heure, le fuseau horaire ou les destinataires du rappel du dimanche, utilise get_automation_config. Quand l'utilisateur demande un resume documentaire par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+
+
+def _detect_prompt(message: str):
+    m = _norm(message)
+    facturation_keywords = [
+        'factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impay', 'conciliation',
+        'courriel', 'courriels', 'email', 'emails', 'gmail', 'brouillon', 'draft',
+        'hebergement', 'frais', 'ajustement', 'ligne de facture', 'rappel', 'dimanche',
+        'hebdomadaire', 'automatisation', 'automation', 'document', 'documents',
+        'piece jointe', 'pieces jointes', 'signature', 'signer', 'pause', 'pauses',
+        'visible', 'visibles', 'pdf', 'jpg', 'jpeg', 'cci', 'bcc'
     ]
     recrutement_keywords = [
         'candidat', 'recrutement', 'besoin', 'soumission', 'disponib', 'assignation',

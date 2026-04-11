@@ -25,6 +25,7 @@ from ..services.billing_gmail_oauth import (
     get_billing_gmail_connection,
     list_recent_billing_gmail_documents,
     list_recent_billing_gmail_messages,
+    send_via_connected_billing_gmail,
 )
 from ..services.automation_service import (
     draft_weekly_timesheet_reminder,
@@ -753,7 +754,24 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             except Exception as e:
                 return f"Erreur lecture emails: {str(e)}"
         if name == 'send_email':
-            await _send_email(input_data['to'], input_data['subject'], input_data['body_html'])
+            gmail_error = None
+            try:
+                delivery = await send_via_connected_billing_gmail(
+                    db,
+                    to_email=input_data['to'],
+                    subject=input_data['subject'],
+                    body_html=input_data['body_html'],
+                )
+                if not delivery:
+                    raise RuntimeError("Le compte Gmail de facturation n'est pas connecte")
+            except Exception as exc:
+                gmail_error = exc
+                try:
+                    await _send_email(input_data['to'], input_data['subject'], input_data['body_html'])
+                except Exception as smtp_exc:
+                    raise RuntimeError(
+                        f"Envoi Gmail impossible: {gmail_error}. Secours SMTP echoue aussi: {smtp_exc}"
+                    ) from smtp_exc
             return f"Courriel envoyé à {input_data['to']}: {input_data['subject']}"
         if name == 'create_email_draft':
             cc_emails = _parse_recipient_input(input_data.get('cc'), input_data.get('cc_list'))

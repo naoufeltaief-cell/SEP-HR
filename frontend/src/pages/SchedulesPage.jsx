@@ -591,11 +591,17 @@ export default function SchedulesPage({ toast, onNavigate }) {
 
     try {
       const d = modal.data;
+      const start = normalizeTimeForInput(d.start);
+      const end = normalizeTimeForInput(d.end);
+      if (!start || !end) {
+        toast?.("Heure invalide. Utilise le format 24 h HH:MM.");
+        return;
+      }
       const payload = {
         employee_id: Number(d.employeeId),
         date: d.date,
-        start: normalizeTimeForInput(d.start),
-        end: normalizeTimeForInput(d.end),
+        start,
+        end,
         pause: Number(d.pause || 0),
         hours: Number(d.hours || 0),
         location: d.location || "",

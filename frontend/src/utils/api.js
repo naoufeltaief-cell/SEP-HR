@@ -1,5 +1,60 @@
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
+function formatApiErrorDetail(detail, fallback = 'Erreur reseau') {
+  const fallbackText = String(fallback || 'Erreur reseau').trim();
+
+  if (detail == null) return fallbackText;
+
+  if (typeof detail === 'string') {
+    const clean = detail.trim();
+    return clean || fallbackText;
+  }
+
+  if (Array.isArray(detail)) {
+    const clean = detail
+      .map((item) => {
+        if (typeof item === 'string') return item.trim();
+        if (!item || typeof item !== 'object') return String(item || '').trim();
+
+        const message = String(
+          item.msg || item.message || item.detail || '',
+        ).trim();
+        const location = Array.isArray(item.loc)
+          ? item.loc.filter((part) => part !== 'body').join('.')
+          : '';
+
+        if (location && message) return `${location}: ${message}`;
+        if (message) return message;
+
+        try {
+          return JSON.stringify(item);
+        } catch {
+          return '';
+        }
+      })
+      .filter(Boolean)
+      .join(' | ')
+      .trim();
+
+    return clean || fallbackText;
+  }
+
+  if (typeof detail === 'object') {
+    const nested = detail.detail || detail.message || detail.error;
+    if (nested && nested !== detail) {
+      return formatApiErrorDetail(nested, fallbackText);
+    }
+
+    try {
+      return JSON.stringify(detail);
+    } catch {
+      return fallbackText;
+    }
+  }
+
+  return String(detail).trim() || fallbackText;
+}
+
 class ApiClient {
   constructor() {
     this.token = localStorage.getItem('sep_token') || null;
@@ -37,11 +92,12 @@ class ApiClient {
       let detail = '';
       if (contentType.includes('application/json')) {
         const err = await resp.json().catch(() => null);
-        detail = err?.detail || '';
+        detail = formatApiErrorDetail(err?.detail, `Erreur ${resp.status}`);
       } else {
-        detail = await resp.text().catch(() => '');
+        const text = await resp.text().catch(() => '');
+        detail = formatApiErrorDetail(text, `Erreur ${resp.status}`);
       }
-      throw new Error((detail || `Erreur ${resp.status}`).trim());
+      throw new Error(detail || `Erreur ${resp.status}`);
     }
     return resp;
   }

@@ -950,11 +950,11 @@ def _message_requests_chat_upload_analysis(
         for item in (uploads or [])
         if item
     )
-    history_context = " ".join(
+    recent_history = [
         _norm(str(entry.get("content") or ""))
         for entry in (history or [])[-6:]
         if isinstance(entry, dict)
-    )
+    ]
     analysis_words = [
         "detail",
         "details",
@@ -983,8 +983,62 @@ def _message_requests_chat_upload_analysis(
         "cette feuille de temps",
     ]
     timesheet_words = ["fdt", "feuille de temps", "timesheet"]
-    combined_context = " ".join(part for part in [m, upload_context, history_context] if part)
-    return any(word in m for word in analysis_words) and any(word in combined_context for word in timesheet_words)
+    upload_reference_words = [
+        "ce document",
+        "cette piece jointe",
+        "cette piece",
+        "ce fichier",
+        "ce pdf",
+        "cette image",
+        "cette photo",
+        "celle la",
+        "celle-ci",
+        "celui la",
+        "document joint",
+        "piece jointe",
+        "pieces jointes",
+    ]
+    email_words = [
+        "courriel",
+        "courriels",
+        "email",
+        "emails",
+        "mail",
+        "mails",
+        "boite",
+        "boite mail",
+        "boite courriel",
+        "recu",
+        "recus",
+        "recues",
+        "message",
+        "messages",
+        "inbox",
+    ]
+    analysis_intent = any(word in m for word in analysis_words)
+    current_timesheet_reference = any(word in m for word in timesheet_words + upload_reference_words)
+    email_intent = any(word in m for word in email_words)
+    recent_timesheet_context = any(
+        any(word in entry for word in timesheet_words)
+        or "employe a confirmer" in entry
+        or "signature" in entry
+        or "quarts:" in entry
+        or any(word in entry for word in ("lecture partielle", "fdt"))
+        for entry in recent_history
+    ) or any(word in upload_context for word in timesheet_words)
+
+    if email_intent and not current_timesheet_reference:
+        return False
+    if analysis_intent and current_timesheet_reference:
+        return True
+    if (
+        analysis_intent
+        and recent_timesheet_context
+        and len((message or "").split()) <= 10
+        and not email_intent
+    ):
+        return True
+    return False
 
 async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "", chat_session_id: str = "") -> str:
     try:

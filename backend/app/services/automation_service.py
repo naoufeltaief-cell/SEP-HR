@@ -37,7 +37,7 @@ TIMESHEET_REMINDER_HOUR = int(os.getenv("TIMESHEET_REMINDER_HOUR", "9") or 9)
 TIMESHEET_REMINDER_MINUTE = int(os.getenv("TIMESHEET_REMINDER_MINUTE", "0") or 0)
 TIMESHEET_REMINDER_TO = (os.getenv("TIMESHEET_REMINDER_TO") or BILLING_SENDER_EMAIL).strip()
 TIMESHEET_INBOX_MONITOR_ENABLED = str(os.getenv("TIMESHEET_INBOX_MONITOR_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
-TIMESHEET_INBOX_MAX_RESULTS = int(os.getenv("TIMESHEET_INBOX_MAX_RESULTS", "30") or 30)
+TIMESHEET_INBOX_MAX_RESULTS = int(os.getenv("TIMESHEET_INBOX_MAX_RESULTS", "100") or 100)
 TIMESHEET_INBOX_SEARCH = (os.getenv("TIMESHEET_INBOX_SEARCH") or "newer_than:14d").strip()
 TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED = str(os.getenv("TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 TIMESHEET_AUTO_DRAFT_ENABLED = str(os.getenv("TIMESHEET_AUTO_DRAFT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
@@ -476,7 +476,9 @@ async def process_requested_period_timesheets(
     unread_only: bool = False,
     period_start: date | None = None,
     period_end: date | None = None,
-    generate_invoices: bool = True,
+    search: str | None = None,
+    apply_schedule_changes: bool = False,
+    generate_invoices: bool = False,
 ) -> dict:
     target_start, target_end = (
         (period_start, period_end)
@@ -488,7 +490,7 @@ async def process_requested_period_timesheets(
         documents = await list_recent_billing_gmail_documents(
             db,
             max_results=max_results or TIMESHEET_INBOX_MAX_RESULTS,
-            search=TIMESHEET_INBOX_SEARCH,
+            search=(search or TIMESHEET_INBOX_SEARCH),
             unread_only=unread_only,
         )
         if documents is None:
@@ -510,21 +512,24 @@ async def process_requested_period_timesheets(
                 target_start,
                 target_end,
                 uploaded_by=triggered_by or "system",
+                dry_run=not apply_schedule_changes,
             )
             await db.commit()
         else:
             sync_result = {
                 "period_start": target_start.isoformat(),
                 "period_end": target_end.isoformat(),
+                "dry_run": not apply_schedule_changes,
                 "selected_count": 0,
                 "applied_count": 0,
+                "proposed_count": 0,
                 "review_count": 0,
                 "items": [],
                 "skipped": [],
             }
 
         drafted = []
-        if generate_invoices and TIMESHEET_AUTO_DRAFT_ENABLED:
+        if apply_schedule_changes and generate_invoices and TIMESHEET_AUTO_DRAFT_ENABLED:
             drafted = await _draft_invoices_from_schedule_sync(db, sync_result)
 
         if (
@@ -540,7 +545,9 @@ async def process_requested_period_timesheets(
                     status="processed",
                     details=(
                         f"indexed={indexing_result.get('indexed_count', 0)} "
+                        f"mode={'apply' if apply_schedule_changes else 'review'} "
                         f"sync={sync_result.get('applied_count', 0)} "
+                        f"proposed={sync_result.get('proposed_count', 0)} "
                         f"review={sync_result.get('review_count', 0)} "
                         f"drafted={len([item for item in drafted if item.get('status') == 'created'])}"
                     ),
@@ -553,6 +560,8 @@ async def process_requested_period_timesheets(
             "status": "processed",
             "period_start": target_start.isoformat(),
             "period_end": target_end.isoformat(),
+            "search": search or TIMESHEET_INBOX_SEARCH,
+            "apply_schedule_changes": apply_schedule_changes,
             "indexed_count": indexing_result.get("indexed_count", 0),
             "created_timesheets": indexing_result.get("created_timesheets", 0),
             "created_attachments": indexing_result.get("created_attachments", 0),
@@ -816,7 +825,8 @@ async def run_pending_automations() -> None:
         await process_requested_period_timesheets(
             triggered_by="scheduler",
             unread_only=False,
-            generate_invoices=TIMESHEET_AUTO_DRAFT_ENABLED,
+            apply_schedule_changes=False,
+            generate_invoices=False,
         )
     if not TIMESHEET_REMINDER_ENABLED:
         return

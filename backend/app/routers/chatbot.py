@@ -32,6 +32,7 @@ from ..services.automation_service import (
     draft_weekly_timesheet_reminder,
     get_automation_config,
     process_incoming_timesheet_emails,
+    process_requested_period_timesheets,
     send_weekly_timesheet_reminder,
 )
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
@@ -49,8 +50,8 @@ from ..services.timesheet_service import (
 router = APIRouter()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
-OPENAI_REASONING_EFFORT = (os.getenv("OPENAI_REASONING_EFFORT", "medium") or "medium").strip().lower()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
+OPENAI_REASONING_EFFORT = (os.getenv("OPENAI_REASONING_EFFORT", "high") or "high").strip().lower()
 CURRENT_YEAR = date.today().year
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 IMAP_USER = (
@@ -134,8 +135,9 @@ RAW_TOOLS = [
     {"name": "create_accommodation_record", "description": "Ajouter un hebergement pour un employe.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "total_cost": {"type": "number"}, "days_worked": {"type": "integer"}, "cost_per_day": {"type": "number"}, "notes": {"type": "string"}}, "required": ["start_date", "end_date", "total_cost"]}},
     {"name": "reconcile_timesheet_invoice", "description": "Concilier une FDT avec la facture de la meme periode et retourner un niveau de confiance.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "invoice_id": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}}, "required": []}},
     {"name": "index_recent_timesheet_emails", "description": "Indexer les pieces jointes recues dans la boite paie et classer les vraies FDT ainsi que les documents d'hebergement au bon employe.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "unread_only": {"type": "boolean", "default": False}}, "required": []}},
-    {"name": "analyze_recent_timesheet_documents", "description": "Analyser les dernieres FDT recues dans la boite paie et resumer les quarts, pauses, signatures et periodes detectees. Utiliser pour lister les vraies FDT recentes ou pour resumer les quarts/pauses par employe.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "unread_only": {"type": "boolean", "default": False}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}, "required": []}},
-    {"name": "process_incoming_timesheet_emails", "description": "Traiter automatiquement la boite paie: filtrer les vraies FDT, classer les documents d'hebergement, les rattacher au bon employe et preparer les brouillons de facture quand le niveau de confiance est suffisant.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 30}, "unread_only": {"type": "boolean", "default": False}}, "required": []}},
+    {"name": "analyze_recent_timesheet_documents", "description": "Analyser les dernieres FDT recues dans la boite paie et resumer les quarts, pauses, signatures et periodes detectees. Utiliser pour lister les vraies FDT recentes ou pour resumer les quarts/pauses par employe.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 30}, "search": {"type": "string"}, "unread_only": {"type": "boolean", "default": False}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}, "required": []}},
+    {"name": "process_incoming_timesheet_emails", "description": "Traiter automatiquement la boite paie: filtrer les vraies FDT, classer les documents d'hebergement, les rattacher au bon employe et preparer les brouillons de facture quand le niveau de confiance est suffisant.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 100}, "unread_only": {"type": "boolean", "default": False}}, "required": []}},
+    {"name": "process_requested_period_timesheets", "description": "Traiter les FDT recues pour la semaine visee par le rappel hebdomadaire ou une fenetre Gmail precise. Peut analyser les dernieres 72 heures avec search='newer_than:3d', comparer les FDT a l'horaire, indexer les pieces jointes, puis appliquer les modifications et generer les brouillons seulement apres approbation explicite.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 100}, "search": {"type": "string"}, "unread_only": {"type": "boolean", "default": False}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "apply_schedule_changes": {"type": "boolean", "default": False}, "generate_invoices": {"type": "boolean", "default": False}}, "required": []}},
     {"name": "send_weekly_timesheet_reminder", "description": "Envoyer le rappel hebdomadaire de FDT avec la periode automatiquement calculee.", "input_schema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "required": []}},
     {"name": "draft_weekly_timesheet_reminder", "description": "Creer un brouillon Gmail du rappel hebdomadaire de FDT avec les destinataires CCI configures et la periode automatiquement calculee. Utiliser quand l'utilisateur demande un test, un brouillon Gmail, ou veut verifier le rendu avant envoi.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "get_automation_config", "description": "Retourner la configuration des taches automatiques du dimanche et de la semaine FDT en cours: jour, heure, fuseau horaire, periode FDT visee, courriel d'envoi et destinataires CCI du rappel FDT.", "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}, "required": []}},
@@ -935,6 +937,124 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
                 lines.append("   Lecture: aucune structure fiable extraite, mais je peux relire le document si tu me demandes un point precis.")
         if item.get("notes"):
             lines.append(f"   Note: {item.get('notes')}")
+    return "\n".join(lines)
+
+
+def _infer_recent_email_search(user_message: str) -> str:
+    normalized = _norm(user_message)
+    if not normalized:
+        return ""
+    if "72 heure" in normalized or "72h" in normalized or "3 jour" in normalized:
+        return "newer_than:3d"
+    if "48 heure" in normalized or "48h" in normalized or "2 jour" in normalized:
+        return "newer_than:2d"
+    if "24 heure" in normalized or "24h" in normalized:
+        return "newer_than:1d"
+    if "7 jour" in normalized or "7 derniers jours" in normalized or "semaine" in normalized:
+        return "newer_than:7d"
+    if "aujourd hui" in normalized or "aujourdhui" in normalized:
+        return "newer_than:1d"
+    if "hier" in normalized:
+        return "newer_than:2d"
+    return ""
+
+
+def _default_timesheet_scan_limit(user_message: str, requested: int | None) -> int:
+    asked = int(requested or 0)
+    normalized = _norm(user_message)
+    if asked > 0:
+        return min(max(asked, 1), 200)
+    if "10 derni" in normalized:
+        return 120
+    if "72 heure" in normalized or "3 jour" in normalized:
+        return 120
+    return 80
+
+
+def _format_requested_period_workflow_response(result: dict) -> str:
+    if not isinstance(result, dict):
+        return str(result or "").strip()
+
+    period_start = str(result.get("period_start") or "")
+    period_end = str(result.get("period_end") or "")
+    schedule_sync = result.get("schedule_sync") or {}
+    items = list(schedule_sync.get("items") or [])
+    skipped = list(schedule_sync.get("skipped") or [])
+    drafted = list(result.get("drafted") or [])
+    dry_run = bool(schedule_sync.get("dry_run"))
+    mode_label = "revue avant application" if dry_run else "changements appliques"
+
+    lines = [
+        f"Workflow FDT traite ({mode_label})",
+        f"Periode cible: {period_start} au {period_end}",
+    ]
+    if result.get("search"):
+        lines.append(f"Recherche Gmail: {result.get('search')}")
+    lines.append(
+        "Documents indexes: "
+        f"{int(result.get('indexed_count') or 0)} | "
+        f"FDT creees: {int(result.get('created_timesheets') or 0)} | "
+        f"Pieces jointes creees: {int(result.get('created_attachments') or 0)}"
+    )
+    lines.append(
+        "Synchronisation horaire: "
+        f"selectionnees={int(schedule_sync.get('selected_count') or 0)}, "
+        f"proposees={int(schedule_sync.get('proposed_count') or 0)}, "
+        f"appliquees={int(schedule_sync.get('applied_count') or 0)}, "
+        f"a_verifier={int(schedule_sync.get('review_count') or 0)}"
+    )
+
+    if items:
+        lines.append("")
+        lines.append("FDT retenues pour la periode:")
+        for item in items[:20]:
+            employee_label = item.get("employee_name") or "Employe a confirmer"
+            client_label = item.get("client_name") or "Client a confirmer"
+            status = item.get("status") or ("review_only" if dry_run else "synced")
+            lines.append(
+                f"- {employee_label} | {client_label} | statut={status} | "
+                f"quarts FDT={int(item.get('shift_count') or 0)} | "
+                f"updates={int(item.get('updated_count') or 0)} | "
+                f"creates={int(item.get('created_count') or 0)} | "
+                f"unchanged={int(item.get('unchanged_count') or 0)}"
+            )
+            issues = [str(value).strip() for value in (item.get("issues") or []) if str(value).strip()]
+            if issues:
+                lines.append(f"  Probleme(s): {', '.join(issues[:6])}")
+            unmatched = list(item.get("unmatched_existing") or [])
+            if unmatched:
+                lines.append(f"  Quarts horaire hors FDT a verifier: {len(unmatched)}")
+
+    if skipped:
+        reason_counts: dict[str, int] = {}
+        for item in skipped:
+            reason = str(item.get("reason") or "inconnu")
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        lines.append("")
+        lines.append(
+            "Documents/FDT non retenus: "
+            + ", ".join(f"{reason}={count}" for reason, count in sorted(reason_counts.items()))
+        )
+
+    if drafted:
+        created = [item for item in drafted if item.get("status") == "created"]
+        existing = [item for item in drafted if item.get("status") == "existing"]
+        blocked = [item for item in drafted if item.get("status") == "skipped"]
+        lines.append("")
+        lines.append(
+            "Factures: "
+            f"creees={len(created)} | existantes={len(existing)} | bloquees={len(blocked)}"
+        )
+        for item in created[:20]:
+            lines.append(
+                f"- Brouillon cree: {item.get('employee_name', '')} | "
+                f"{item.get('invoice_number', '')} | total={item.get('invoice_total', 0)} $"
+            )
+
+    if dry_run:
+        lines.append("")
+        lines.append("Aucune modification d'horaire n'a ete appliquee. Valider d'abord, puis relancer avec approbation.")
+
     return "\n".join(lines)
 
 
@@ -2432,10 +2552,12 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 employee = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
                 if input_data.get('employee_name') and not employee:
                     return "Employe introuvable pour l'analyse des FDT"
+            inferred_search = _infer_recent_email_search(user_message)
+            effective_max_results = _default_timesheet_scan_limit(user_message, input_data.get('max_results'))
             documents = await list_recent_billing_gmail_documents(
                 db,
-                max_results=input_data.get('max_results', 10),
-                search=input_data.get('search', '') or 'newer_than:21d',
+                max_results=effective_max_results,
+                search=(input_data.get('search', '') or inferred_search or 'newer_than:21d'),
                 unread_only=bool(input_data.get('unread_only')),
             )
             if documents is None:
@@ -2445,6 +2567,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 if employee:
                     return f"Aucune FDT recente exploitable n'a ete trouvee pour {employee.name} dans la boite paie."
                 return "Aucune vraie FDT recente exploitable n'a pu etre lue dans la boite paie."
+            return _format_timesheet_analysis_response(items, max_results=effective_max_results)
             lines = []
             for idx, item in enumerate(items[: input_data.get('max_results', 10)], start=1):
                 employee_label = item.get('employee_name') or 'Employe a confirmer'
@@ -2479,10 +2602,27 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
         if name == 'process_incoming_timesheet_emails':
             result = await process_incoming_timesheet_emails(
                 triggered_by="chatbot",
-                max_results=input_data.get('max_results', 30),
+                max_results=_default_timesheet_scan_limit(user_message, input_data.get('max_results')),
                 unread_only=bool(input_data.get('unread_only')),
             )
             return json.dumps(result, ensure_ascii=False)
+        if name == 'process_requested_period_timesheets':
+            period_start_value = input_data.get('period_start')
+            period_end_value = input_data.get('period_end')
+            parsed_period_start = date.fromisoformat(period_start_value) if period_start_value else None
+            parsed_period_end = date.fromisoformat(period_end_value) if period_end_value else None
+            inferred_search = _infer_recent_email_search(user_message)
+            result = await process_requested_period_timesheets(
+                triggered_by="chatbot",
+                max_results=_default_timesheet_scan_limit(user_message, input_data.get('max_results')),
+                unread_only=bool(input_data.get('unread_only')),
+                period_start=parsed_period_start,
+                period_end=parsed_period_end,
+                search=(input_data.get('search') or '').strip() or inferred_search or None,
+                apply_schedule_changes=bool(input_data.get('apply_schedule_changes')),
+                generate_invoices=bool(input_data.get('generate_invoices')),
+            )
+            return _format_requested_period_workflow_response(result)
         if name == 'send_weekly_timesheet_reminder':
             result = await send_weekly_timesheet_reminder(
                 triggered_by="chatbot",
@@ -2579,6 +2719,8 @@ def _detect_prompt(message: str):
 AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. REGLE ABSOLUE FDT → FACTURE: Si l'utilisateur joint une FDT dans le chat et te demande de generer une facture a partir de cette FDT, tu NE DOIS JAMAIS appeler generate_current_invoice_for_employee ni generate_invoice_for_employee directement. Au lieu de ca, tu dois OBLIGATOIREMENT suivre ce workflow en 4 etapes: (1) appeler analyze_chat_session_documents pour extraire les quarts reels de la FDT; (2) afficher a l'utilisateur un tableau clair avec date, heure debut, heure fin, pause en minutes et le nom du client/etablissement extrait, et demander explicitement sa confirmation avant toute modification; (3) apres confirmation, appeler apply_timesheet_to_schedule avec dry_run=true pour afficher le diff, attendre que l'utilisateur valide le diff, puis rappeler apply_timesheet_to_schedule avec dry_run=false pour appliquer; (4) seulement ensuite, appeler generate_invoice_for_employee avec period_start et period_end EXACTEMENT egales a la periode couverte par la FDT (que apply_timesheet_to_schedule te retourne), pas la periode courante du systeme. IMPORTANT: la periode de la facture doit toujours correspondre a la vraie periode du document FDT, jamais a la periode de facturation courante quand les deux different. Ne jamais pretendre avoir genere une facture a partir d'une FDT quand tu as en fait utilise l'horaire existant sans appliquer la FDT dessus d'abord. REGLE DATES FDT: les dates ecrites sur les FDT sont souvent au format AA/MM/JJ ou JJ/MM/AA. Exemple '26/03/29' signifie le 29 mars 2026, pas le 26 mars 2029. Toujours confirmer l'annee avec le champ 'Semaine du X au Y' en haut du formulaire. REGLE CONFIANCE: si une FDT contient un ou plusieurs champs illisibles ou si tu as un doute sur les heures, les dates ou les pauses, NE genere PAS la facture. Explique plutot les champs incertains et demande une verification humaine avant toute action. Mieux vaut demander que faire faux. Quand on te demande de consulter ou modifier une facture brouillon existante directement dans la facture et non dans l'horaire, utilise get_invoice_details puis update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line selon le besoin. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter les FDT recues a la suite du rappel hebdomadaire, d'identifier les dernieres FDT de la semaine demandee, de modifier l'horaire selon ces FDT puis de generer les brouillons de facture, utilise process_requested_period_timesheets plutot que process_incoming_timesheet_emails. Cet outil doit rester ta voie principale pour le workflow recurrent du dimanche et de la semaine suivante. Quand on te demande seulement de surveiller les courriels entrants et classer les pieces jointes, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire, quelle periode de FDT ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements, horaires et FDT. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie, l'indexation de FDT recues, le traitement automatique des courriels entrants, la generation d'une facture, une conciliation FDT-facture ou l'envoi du rappel hebdomadaire de FDT, execute l'action demandee puis resume le resultat. Agis comme un commis de facturation prudent: ignore les pieces jointes qui ne sont pas pertinentes et dis clairement quand une verification visuelle reste necessaire. Pour lister les dernieres vraies FDT recues ou analyser les quarts, pauses et signatures visibles, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Quand l'utilisateur demande de modifier directement une facture brouillon existante, utilise les outils get_invoice_details, update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line au lieu de modifier l'horaire. Quand l'utilisateur demande un niveau de confiance, utilise reconcile_timesheet_invoice et cite clairement le niveau eleve, moyen ou faible. Quand l'utilisateur demande d'identifier les dernieres FDT recues pour la semaine demandee par le rappel hebdomadaire, de mettre a jour l'horaire en fonction de leur analyse ou de generer ensuite les brouillons de facture, utilise process_requested_period_timesheets. Quand l'utilisateur demande seulement de traiter ou surveiller les courriels entrants, utilise process_incoming_timesheet_emails. Quand l'utilisateur demande un rappel hebdomadaire en brouillon Gmail ou un test d'envoi de masse en brouillon, utilise draft_weekly_timesheet_reminder. Quand l'utilisateur demande le jour, l'heure, le fuseau horaire, la periode visee ou les destinataires du rappel du dimanche, utilise get_automation_config. Quand l'utilisateur demande un resume documentaire par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT += "\nQuand l'utilisateur demande d'examiner les FDT recues dans les dernieres 24, 48 ou 72 heures, utilise process_requested_period_timesheets avec une recherche Gmail explicite comme newer_than:1d, newer_than:2d ou newer_than:3d. Pour les demandes du type 'identifie les 10 dernieres FDT recues puis modifie l'horaire', commence TOUJOURS par un passage de revue avec apply_schedule_changes=false et generate_invoices=false. Montre les ecarts entre FDT et horaire, demande l'approbation humaine, puis seulement apres accord explicite relance process_requested_period_timesheets avec apply_schedule_changes=true. Ne presente jamais l'horaire existant comme si c'etait la FDT analysee."
+GENERAL_PROMPT += "\nPour les workflows FDT hebdomadaires, travaille en deux temps: d'abord revue et ecarts, ensuite application et facturation seulement apres approbation explicite. Si l'utilisateur parle des dernieres 24, 48 ou 72 heures, ajoute une recherche Gmail newer_than adaptee."
 
 
 def _detect_prompt(message: str):

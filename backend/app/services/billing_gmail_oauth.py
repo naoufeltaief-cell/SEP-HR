@@ -486,41 +486,58 @@ async def list_recent_billing_gmail_documents(
     if search:
         query_parts.append(str(search).strip())
 
-    params = {"maxResults": max(1, min(int(max_results or 10), 20)), "q": " ".join(query_parts)}
+    requested_results = max(1, min(int(max_results or 10), 200))
     documents = []
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(
-            GMAIL_MESSAGES_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
-            params=params,
-        )
-        if response.status_code == 401:
-            access_token = await _refresh_access_token(db, conn)
+        messages = []
+        page_token = ""
+        while len(messages) < requested_results:
+            params = {
+                "maxResults": min(100, requested_results - len(messages)),
+                "q": " ".join(query_parts),
+            }
+            if page_token:
+                params["pageToken"] = page_token
             response = await client.get(
                 GMAIL_MESSAGES_URL,
                 headers={"Authorization": f"Bearer {access_token}"},
                 params=params,
             )
-        if response.status_code != 200:
-            conn.last_error = response.text
-            conn.updated_at = datetime.utcnow()
-            await db.commit()
-            raise RuntimeError(f"Lecture Gmail echouee: {response.text}")
+            if response.status_code == 401:
+                access_token = await _refresh_access_token(db, conn)
+                response = await client.get(
+                    GMAIL_MESSAGES_URL,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
+            if response.status_code != 200:
+                conn.last_error = response.text
+                conn.updated_at = datetime.utcnow()
+                await db.commit()
+                raise RuntimeError(f"Lecture Gmail echouee: {response.text}")
 
-        listing = response.json()
-        messages = listing.get("messages") or []
+            listing = response.json()
+            batch = listing.get("messages") or []
+            if not batch:
+                break
+            messages.extend(batch)
+            page_token = str(listing.get("nextPageToken") or "").strip()
+            if not page_token:
+                break
+
+        messages = messages[:requested_results]
         for message in messages:
             msg_id = message.get("id")
             if not msg_id:
                 continue
-            detail = await client.get(
+            response = await client.get(
                 f"{GMAIL_MESSAGES_URL}/{msg_id}",
                 headers={"Authorization": f"Bearer {access_token}"},
                 params={"format": "full"},
             )
-            if detail.status_code != 200:
+            if response.status_code != 200:
                 continue
-            payload = detail.json()
+            payload = response.json()
             headers = ((payload.get("payload") or {}).get("headers") or [])
             attachment_parts = _payload_attachment_parts(payload.get("payload") or {})
             if not attachment_parts:

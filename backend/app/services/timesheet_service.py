@@ -1238,6 +1238,17 @@ def _select_timesheet_candidates(analyzed_docs: list[dict]) -> list[dict]:
     if not analyzed_docs:
         return []
 
+    def _rank(pool: list[dict]) -> list[dict]:
+        return sorted(
+            pool,
+            key=lambda item: (
+                float((item.get("analysis") or {}).get("score") or 0),
+                1 if item.get("employee") else 0,
+                1 if (item.get("analysis") or {}).get("period_detected") else 0,
+            ),
+            reverse=True,
+        )
+
     filtered = [
         item
         for item in analyzed_docs
@@ -1253,27 +1264,19 @@ def _select_timesheet_candidates(analyzed_docs: list[dict]) -> list[dict]:
 
     confirmed = [item for item in filtered if (item.get("ai_review") or {}).get("is_timesheet") is True]
     if confirmed:
-        return confirmed
+        return _rank(confirmed)[:4]
 
     strong_with_hint = [
         item for item in filtered
         if (item.get("analysis") or {}).get("strong") and _document_has_explicit_timesheet_hint(item)
     ]
     if strong_with_hint:
-        return strong_with_hint
+        return _rank(strong_with_hint)[:4]
 
     hinted = [item for item in filtered if _document_has_explicit_timesheet_hint(item)]
     pool = hinted or filtered
-    ranked = sorted(
-        pool,
-        key=lambda item: (
-            float((item.get("analysis") or {}).get("score") or 0),
-            1 if item.get("employee") else 0,
-            1 if (item.get("analysis") or {}).get("period_detected") else 0,
-        ),
-        reverse=True,
-    )
-    return ranked[:1]
+    ranked = _rank(pool)
+    return ranked[:4]
 
 
 def _select_accommodation_candidates(analyzed_docs: list[dict]) -> list[dict]:
@@ -3078,6 +3081,68 @@ async def summarize_recent_timesheet_documents(
                 extracted_text=item.get("extracted_text", ""),
                 raise_on_error=raise_on_openai_error,
             )
+            transcript = ""
+            if not summary or not summary.get("shifts"):
+                transcript = await _transcribe_timesheet_document_with_openai(
+                    document,
+                    employee_hint=(
+                        getattr(matched_employee, "name", "")
+                        or getattr(employee, "name", "")
+                    ),
+                    raise_on_error=raise_on_openai_error,
+                )
+                transcript_summary = await _extract_timesheet_shift_summary_from_transcript(
+                    transcript,
+                    document,
+                    employee_hint=(
+                        getattr(matched_employee, "name", "")
+                        or getattr(employee, "name", "")
+                    ),
+                    period_hint=str((item.get("ai_review") or {}).get("period_text_seen") or ""),
+                    raise_on_error=raise_on_openai_error,
+                )
+                if transcript_summary and (
+                    transcript_summary.get("shifts")
+                    or transcript_summary.get("employee_name")
+                    or transcript_summary.get("visible_names")
+                ):
+                    summary = transcript_summary
+
+            prose_description = ""
+            needs_prose_help = (
+                not summary
+                or not summary.get("shifts")
+                or not summary.get("employee_name")
+                or len(summary.get("visible_names") or []) < 2
+            )
+            if needs_prose_help:
+                prose_description = await _describe_timesheet_document_with_openai(
+                    document,
+                    employee_hint=(
+                        getattr(matched_employee, "name", "")
+                        or getattr(employee, "name", "")
+                    ),
+                    transcript=transcript,
+                    raise_on_error=raise_on_openai_error,
+                )
+                if not prose_description and transcript:
+                    prose_description = transcript
+
+            if not summary:
+                if transcript or prose_description or item.get("ai_review"):
+                    summary = {
+                        "is_timesheet": True,
+                        "employee_name": str((item.get("ai_review") or {}).get("employee_name_seen") or "").strip(),
+                        "employee_title": "",
+                        "period_text": str((item.get("ai_review") or {}).get("period_text_seen") or "").strip(),
+                        "is_signed": None,
+                        "visible_names": [],
+                        "shifts": [],
+                        "notes": str((item.get("ai_review") or {}).get("notes") or "").strip(),
+                    }
+                else:
+                    continue
+
             if summary and summary.get("is_timesheet") is False and not (item.get("analysis") or {}).get("strong"):
                 continue
 
@@ -3129,6 +3194,8 @@ async def summarize_recent_timesheet_documents(
                     "date": str(document.get("date") or ""),
                     "employee_name": getattr(matched_employee, "name", "") or str(summary.get("employee_name") or "").strip(),
                     "employee_id": getattr(matched_employee, "id", None),
+                    "employee_title": str(summary.get("employee_title") or "").strip(),
+                    "visible_names": list(summary.get("visible_names") or []),
                     "match_reason": item.get("match_reason") or "",
                     "confidence_score": float((item.get("analysis") or {}).get("score") or 0),
                     "analysis_reasons": list((item.get("analysis") or {}).get("reasons") or []),
@@ -3138,6 +3205,7 @@ async def summarize_recent_timesheet_documents(
                     "shift_count": len(shifts),
                     "shifts": shifts,
                     "notes": str(summary.get("notes") or "").strip(),
+                    "prose_description": prose_description,
                 }
             )
 
@@ -3389,6 +3457,7 @@ async def sync_timesheet_summary_to_schedule(
     period_start: date,
     period_end: date,
     uploaded_by: str = "system",
+    dry_run: bool = False,
 ) -> dict:
     employee_id = summary.get("employee_id")
     if not employee_id:
@@ -3432,11 +3501,20 @@ async def sync_timesheet_summary_to_schedule(
         client_result = await db.execute(select(Client).where(Client.id == default_client_id))
         client = client_result.scalar_one_or_none()
         client_name = client.name if client else ""
+
+    timesheet = await find_timesheet(db, employee.id, period_start, period_end)
+    timesheet_locked = bool(timesheet and getattr(timesheet, "status", "") == "approved")
+    apply_allowed = not dry_run and not timesheet_locked
+
     used_schedule_ids: set[str] = set()
     applied_shifts: list[dict] = []
     issues: list[str] = []
     updated_count = 0
     created_count = 0
+    unchanged_count = 0
+    updated_items: list[dict] = []
+    created_items: list[dict] = []
+    unchanged_items: list[dict] = []
 
     normalized_shifts = []
     for raw_shift in list(summary.get("shifts") or []):
@@ -3476,70 +3554,143 @@ async def sync_timesheet_summary_to_schedule(
             issues.append(f"quart_incomplet:{shift_date.isoformat()}")
             continue
 
+        proposed_start = normalize_time_str(str(shift.get("start") or "")) or (candidate.start if candidate else "")
+        proposed_end = normalize_time_str(str(shift.get("end") or "")) or (candidate.end if candidate else "")
+        proposed_pause = round(float(pause_hours or 0), 2)
+        proposed_hours = round(float(hours_value or 0), 2)
+        proposed_location = str(shift.get("unit") or "").strip() or (str(candidate.location or "").strip() if candidate else "")
+        proposed_notes = _build_schedule_notes_from_extracted_shift(candidate.notes or "", shift) if candidate else _build_schedule_notes_from_extracted_shift("", shift)
+
         if candidate:
-            candidate.date = shift_date
-            if shift.get("start"):
-                candidate.start = normalize_time_str(str(shift.get("start") or "")) or candidate.start
-            if shift.get("end"):
-                candidate.end = normalize_time_str(str(shift.get("end") or "")) or candidate.end
-            if pause_hours is not None:
-                candidate.pause = pause_hours
-            if hours_value > 0:
-                candidate.hours = hours_value
-            if shift.get("unit"):
-                candidate.location = str(shift.get("unit") or "").strip()
-            candidate.notes = _build_schedule_notes_from_extracted_shift(candidate.notes or "", shift)
             used_schedule_ids.add(candidate.id)
+            before = {
+                "date": candidate.date.isoformat() if candidate.date else "",
+                "start": str(candidate.start or ""),
+                "end": str(candidate.end or ""),
+                "pause": round(float(candidate.pause or 0), 2),
+                "hours": round(float(candidate.hours or 0), 2),
+                "location": str(candidate.location or "").strip(),
+                "notes": str(candidate.notes or "").strip(),
+            }
+            after = {
+                "date": shift_date.isoformat(),
+                "start": proposed_start,
+                "end": proposed_end,
+                "pause": proposed_pause,
+                "hours": proposed_hours,
+                "location": proposed_location,
+                "notes": proposed_notes,
+            }
+            changed_fields = [field for field in ("date", "start", "end", "pause", "hours", "location", "notes") if before[field] != after[field]]
+            if changed_fields and apply_allowed:
+                candidate.date = shift_date
+                candidate.start = proposed_start or candidate.start
+                candidate.end = proposed_end or candidate.end
+                candidate.pause = proposed_pause
+                if proposed_hours > 0:
+                    candidate.hours = proposed_hours
+                if proposed_location:
+                    candidate.location = proposed_location
+                candidate.notes = proposed_notes
             applied_shifts.append(
                 {
                     "schedule_id": candidate.id,
-                    "date": candidate.date,
-                    "hours_worked": round(float(candidate.hours or 0), 2),
-                    "pause": round(float(candidate.pause or 0), 2),
-                    "start_actual": normalize_time_str(str(shift.get("start") or "")) or candidate.start,
-                    "end_actual": normalize_time_str(str(shift.get("end") or "")) or candidate.end,
+                    "date": shift_date,
+                    "hours_worked": proposed_hours or round(float(candidate.hours or 0), 2),
+                    "pause": proposed_pause,
+                    "start_actual": proposed_start or candidate.start,
+                    "end_actual": proposed_end or candidate.end,
                 }
             )
-            updated_count += 1
+            if changed_fields:
+                updated_count += 1
+                updated_items.append(
+                    {
+                        "schedule_id": candidate.id,
+                        "date": shift_date.isoformat(),
+                        "before": before,
+                        "after": after,
+                        "changed_fields": changed_fields,
+                    }
+                )
+            else:
+                unchanged_count += 1
+                unchanged_items.append(
+                    {
+                        "schedule_id": candidate.id,
+                        "date": shift_date.isoformat(),
+                        "start": after["start"],
+                        "end": after["end"],
+                        "hours": after["hours"],
+                    }
+                )
             continue
 
-        start_value = normalize_time_str(str(shift.get("start") or ""))
-        end_value = normalize_time_str(str(shift.get("end") or ""))
+        start_value = proposed_start
+        end_value = proposed_end
         if not start_value or not end_value:
             issues.append(f"quart_sans_heures:{shift_date.isoformat()}")
             continue
         if not default_client_id:
             issues.append(f"client_a_confirmer:{shift_date.isoformat()}")
             continue
-        new_schedule = Schedule(
-            id=new_id(),
-            employee_id=employee.id,
-            client_id=default_client_id,
-            date=shift_date,
-            start=start_value,
-            end=end_value,
-            hours=hours_value or _calculate_shift_hours_from_summary(start_value, end_value, float(shift.get("pause_minutes") or 0)),
-            pause=pause_hours,
-            location=str(shift.get("unit") or "").strip(),
-            billable_rate=float(getattr(employee, "rate", 0) or 0),
-            status="published",
-            notes=_build_schedule_notes_from_extracted_shift("", shift),
-        )
-        db.add(new_schedule)
-        await db.flush()
-        schedules_by_date[shift_date].append(new_schedule)
-        used_schedule_ids.add(new_schedule.id)
+        new_schedule_payload = {
+            "date": shift_date.isoformat(),
+            "start": start_value,
+            "end": end_value,
+            "pause": proposed_pause,
+            "hours": round(
+                float(
+                    hours_value
+                    or _calculate_shift_hours_from_summary(
+                        start_value,
+                        end_value,
+                        float(shift.get("pause_minutes") or 0),
+                    )
+                ),
+                2,
+            ),
+            "location": proposed_location,
+            "notes": _build_schedule_notes_from_extracted_shift("", shift),
+        }
+        new_schedule_id = None
+        if apply_allowed:
+            new_schedule = Schedule(
+                id=new_id(),
+                employee_id=employee.id,
+                client_id=default_client_id,
+                date=shift_date,
+                start=start_value,
+                end=end_value,
+                hours=new_schedule_payload["hours"],
+                pause=pause_hours,
+                location=proposed_location,
+                billable_rate=float(getattr(employee, "rate", 0) or 0),
+                status="published",
+                notes=new_schedule_payload["notes"],
+            )
+            db.add(new_schedule)
+            await db.flush()
+            schedules_by_date[shift_date].append(new_schedule)
+            used_schedule_ids.add(new_schedule.id)
+            new_schedule_id = new_schedule.id
         applied_shifts.append(
             {
-                "schedule_id": new_schedule.id,
-                "date": new_schedule.date,
-                "hours_worked": round(float(new_schedule.hours or 0), 2),
-                "pause": round(float(new_schedule.pause or 0), 2),
-                "start_actual": new_schedule.start,
-                "end_actual": new_schedule.end,
+                "schedule_id": new_schedule_id,
+                "date": shift_date,
+                "hours_worked": new_schedule_payload["hours"],
+                "pause": new_schedule_payload["pause"],
+                "start_actual": start_value,
+                "end_actual": end_value,
             }
         )
         created_count += 1
+        created_items.append(
+            {
+                "schedule_id": new_schedule_id,
+                **new_schedule_payload,
+            }
+        )
 
     unmatched_existing = [
         {
@@ -3556,15 +3707,17 @@ async def sync_timesheet_summary_to_schedule(
     if unmatched_existing:
         issues.append(f"quarts_non_couverts:{len(unmatched_existing)}")
 
-    timesheet, _ = await ensure_timesheet_for_period(
-        db,
-        employee.id,
-        period_start,
-        period_end,
-        status="submitted",
-        notes=f"Synchronisee depuis FDT courriel: {summary.get('filename', '')}",
-    )
-    if getattr(timesheet, "status", "") != "approved":
+    if timesheet_locked:
+        issues.append("fdt_deja_approuvee")
+    elif apply_allowed:
+        timesheet, _ = await ensure_timesheet_for_period(
+            db,
+            employee.id,
+            period_start,
+            period_end,
+            status="submitted",
+            notes=f"Synchronisee depuis FDT courriel: {summary.get('filename', '')}",
+        )
         timesheet.status = "submitted"
         current_notes = str(timesheet.notes or "").strip()
         sync_note = f"Synchronisee depuis FDT courriel: {summary.get('filename', '')}".strip()
@@ -3575,6 +3728,8 @@ async def sync_timesheet_summary_to_schedule(
             await db.delete(existing_shift)
         await db.flush()
         for applied in applied_shifts:
+            if not applied.get("schedule_id"):
+                continue
             db.add(
                 TimesheetShift(
                     id=new_id(),
@@ -3589,8 +3744,6 @@ async def sync_timesheet_summary_to_schedule(
             )
         await db.flush()
         await sync_timesheet_attachments_to_reviews(db, timesheet)
-    else:
-        issues.append("fdt_deja_approuvee")
 
     blocking_issue_prefixes = ("client_a_confirmer", "quart_sans_heures", "quart_incomplet", "quarts_non_couverts")
     blocking = any(
@@ -3599,7 +3752,7 @@ async def sync_timesheet_summary_to_schedule(
     )
 
     return {
-        "status": "synced_with_review" if blocking else "synced",
+        "status": "review_only" if dry_run else "synced_with_review" if blocking else "synced",
         "employee_id": employee.id,
         "employee_name": employee.name,
         "client_id": default_client_id,
@@ -3607,10 +3760,15 @@ async def sync_timesheet_summary_to_schedule(
         "filename": summary.get("filename", ""),
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
-        "timesheet_id": timesheet.id,
+        "timesheet_id": timesheet.id if timesheet else None,
+        "dry_run": dry_run,
         "shift_count": len(applied_shifts),
         "updated_count": updated_count,
         "created_count": created_count,
+        "unchanged_count": unchanged_count,
+        "updated": updated_items,
+        "created": created_items,
+        "unchanged": unchanged_items,
         "unmatched_existing_count": len(unmatched_existing),
         "unmatched_existing": unmatched_existing,
         "issues": issues,
@@ -3624,6 +3782,7 @@ async def sync_recent_timesheet_documents_for_period(
     period_start: date,
     period_end: date,
     uploaded_by: str = "system",
+    dry_run: bool = False,
 ) -> dict:
     summaries = await summarize_recent_timesheet_documents(db, documents)
     selected, skipped = _select_latest_summaries_for_period(summaries, period_start, period_end)
@@ -3636,14 +3795,17 @@ async def sync_recent_timesheet_documents_for_period(
                 period_start,
                 period_end,
                 uploaded_by=uploaded_by,
+                dry_run=dry_run,
             )
         )
 
     return {
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
+        "dry_run": dry_run,
         "selected_count": len(selected),
         "applied_count": len([item for item in items if item.get("status", "").startswith("synced")]),
+        "proposed_count": len([item for item in items if item.get("status") == "review_only"]),
         "review_count": len([item for item in items if item.get("blocking")]),
         "items": items,
         "skipped": skipped,

@@ -2913,6 +2913,8 @@ async def summarize_explicit_timesheet_documents(
                     transcript=transcript,
                     raise_on_error=raise_on_openai_error,
                 )
+                if not prose_description and transcript:
+                    prose_description = transcript
         if not summary:
             continue
 

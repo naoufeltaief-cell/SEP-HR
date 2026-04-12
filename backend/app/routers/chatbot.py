@@ -884,7 +884,6 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
     lines = []
     for idx, item in enumerate(items[:max_results], start=1):
         employee_label = item.get("employee_name") or "Employe a confirmer"
-        confidence_pct = int(round(float(item.get("confidence_score") or 0) * 100))
         signature = (
             "signee"
             if item.get("is_signed") is True
@@ -893,7 +892,6 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
             else "signature non confirmee"
         )
         lines.append(f"{idx}. {employee_label} — {item.get('filename', 'document')}")
-        lines.append(f"   Confiance: {confidence_pct}%")
         if item.get("employee_title"):
             lines.append(f"   Titre: {item.get('employee_title')}")
         if item.get("period_start") and item.get("period_end"):
@@ -933,7 +931,7 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
                     if clean:
                         lines.append(f"   {clean}")
             else:
-                lines.append("   Quarts: lecture partielle, quarts non extraits clairement.")
+                lines.append("   Lecture: aucune structure fiable extraite, mais je peux relire le document si tu me demandes un point precis.")
         if item.get("notes"):
             lines.append(f"   Note: {item.get('notes')}")
     return "\n".join(lines)
@@ -1893,17 +1891,15 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             if not items:
                 if employee:
                     return f"Aucune FDT recente exploitable n'a ete trouvee pour {employee.name} dans la boite paie."
-                return "Aucune vraie FDT recente n'a pu etre analysee avec suffisamment de confiance dans la boite paie."
+                return "Aucune vraie FDT recente exploitable n'a pu etre lue dans la boite paie."
             lines = []
             for idx, item in enumerate(items[: input_data.get('max_results', 10)], start=1):
                 employee_label = item.get('employee_name') or 'Employe a confirmer'
                 period_bits = []
                 if item.get('period_start') and item.get('period_end'):
                     period_bits.append(f"{item.get('period_start')} au {item.get('period_end')}")
-                confidence_pct = int(round(float(item.get('confidence_score') or 0) * 100))
                 signature = "signee" if item.get('is_signed') is True else "signature a verifier" if item.get('is_signed') is False else "signature non confirmee"
                 lines.append(f"{idx}. {employee_label} — {item.get('filename', 'document')}")
-                lines.append(f"   Confiance: {confidence_pct}%")
                 if period_bits:
                     lines.append(f"   Periode: {'; '.join(period_bits)}")
                 lines.append(f"   Signature: {signature}")

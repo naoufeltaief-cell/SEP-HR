@@ -1057,6 +1057,7 @@ def _normalize_shift_summary_item(item: dict) -> Optional[dict]:
     if not isinstance(item, dict):
         return None
     date_value = str(item.get("date") or "").strip()[:10]
+    day_label = str(item.get("day_label") or "").strip()
     start_value = normalize_time_str(str(item.get("start") or "").strip())
     end_value = normalize_time_str(str(item.get("end") or "").strip())
     try:
@@ -1067,18 +1068,25 @@ def _normalize_shift_summary_item(item: dict) -> Optional[dict]:
         hours = round(float(item.get("hours", 0) or 0), 2)
     except (TypeError, ValueError):
         hours = 0.0
+    unit = str(item.get("unit") or item.get("location") or "").strip()
+    approver_name = str(item.get("approver_name") or item.get("signer_name") or "").strip()
+    shift_notes = str(item.get("notes") or "").strip()
     shift_type = str(item.get("type") or "unknown").strip().lower()
     if shift_type not in {"regular", "orientation", "unknown"}:
         shift_type = "unknown"
-    if not any([date_value, start_value, end_value, hours]):
+    if not any([date_value, day_label, start_value, end_value, hours, unit, approver_name, shift_notes]):
         return None
     return {
         "date": date_value,
+        "day_label": day_label,
         "start": start_value,
         "end": end_value,
         "pause_minutes": pause_minutes,
         "hours": hours,
         "type": shift_type,
+        "unit": unit,
+        "approver_name": approver_name,
+        "notes": shift_notes,
     }
 
 
@@ -1088,21 +1096,32 @@ async def extract_timesheet_shift_summary(
     period_hint: str = "",
     extracted_text: str = "",
     raise_on_error: bool = False,
+    force_timesheet: bool = False,
 ) -> dict:
     if not OPENAI_API_KEY:
         return {}
 
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
     content = None
+    prompt_prefix = (
+        "L'utilisateur confirme qu'il s'agit d'une FDT jointe dans le chat. "
+        "Lis le document comme une feuille de temps et extrais le maximum d'information utile sans inventer. "
+        if force_timesheet
+        else ""
+    )
     prompt_text = (
+        f"{prompt_prefix}"
         "Analyse cette feuille de temps de Soins Expert Plus. "
         "Retourne uniquement un JSON compact avec les cles: "
-        "is_timesheet, employee_name, period_text, is_signed, shifts, notes. "
-        "Chaque element de shifts doit contenir: date, start, end, pause_minutes, hours, type. "
+        "is_timesheet, employee_name, employee_title, period_text, is_signed, visible_names, shifts, notes. "
+        "visible_names doit etre une liste courte des noms lisibles sur le document. "
+        "Chaque element de shifts doit contenir: "
+        "date, day_label, start, end, pause_minutes, hours, type, unit, approver_name, notes. "
         "Si une valeur est illisible, laisse-la vide ou a 0. "
-        "Lis attentivement chaque ligne de quart visible, y compris les pauses. "
+        "Lis attentivement chaque ligne de quart visible, y compris les pauses, le service/unite, les noms du signataire et les mentions d'orientation. "
         "N'invente pas. Type doit etre regular, orientation ou unknown. "
-        "Si le document semble etre une vraie FDT mais que certains quarts restent partiels, indique-le dans notes.\n\n"
+        "Si le document semble etre une vraie FDT mais que certains quarts restent partiels, indique-le dans notes. "
+        "Si une ligne est barree ou vide, n'ajoute pas de faux quart.\n\n"
         f"Expediteur: {document.get('from', '')}\n"
         f"Objet: {document.get('subject', '')}\n"
         f"Apercu: {document.get('body_preview', '')}\n"
@@ -1137,12 +1156,19 @@ async def extract_timesheet_shift_summary(
 
     payload = {
         "model": TIMESHEET_ATTACHMENT_MODEL,
-        "instructions": "Tu aides un commis de facturation et de paie a lire des feuilles de temps. Sois prudent, n'invente rien et extrais seulement ce qui est clairement visible ou lisible.",
+        "instructions": (
+            "Tu aides un commis de facturation et de paie a lire des feuilles de temps. "
+            "Sois prudent, n'invente rien et extrais seulement ce qui est clairement visible ou lisible. "
+            "Quand l'utilisateur fournit explicitement une FDT, donne le meilleur effort de transcription utile pour la facturation meme si certains champs restent partiels."
+        ),
         "input": [{"role": "user", "content": content}],
-        "max_output_tokens": 1200,
+        "max_output_tokens": 1800,
     }
     if _supports_reasoning(TIMESHEET_ATTACHMENT_MODEL):
-        payload["reasoning"] = {"effort": _normalized_reasoning_effort()}
+        reasoning_effort = _normalized_reasoning_effort()
+        if force_timesheet and reasoning_effort in {"none", "low", "medium"}:
+            reasoning_effort = "high"
+        payload["reasoning"] = {"effort": reasoning_effort}
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
@@ -1188,11 +1214,48 @@ async def extract_timesheet_shift_summary(
     return {
         "is_timesheet": is_timesheet,
         "employee_name": str(parsed.get("employee_name") or "").strip(),
+        "employee_title": str(parsed.get("employee_title") or "").strip(),
         "period_text": str(parsed.get("period_text") or "").strip(),
         "is_signed": is_signed,
+        "visible_names": [
+            str(name).strip()
+            for name in (parsed.get("visible_names") or [])
+            if str(name).strip()
+        ][:12],
         "shifts": shifts[:20],
         "notes": str(parsed.get("notes") or "").strip(),
     }
+
+
+def _summarize_explicit_timesheet_confidence(
+    summary: dict,
+    analysis: Optional[dict] = None,
+    ai_review: Optional[dict] = None,
+    matched_employee: Optional[Employee] = None,
+) -> float:
+    score = 0.48
+    if summary.get("is_timesheet") is True:
+        score += 0.12
+    elif summary.get("is_timesheet") is False:
+        score -= 0.08
+    if summary.get("employee_name") or matched_employee:
+        score += 0.12
+    if summary.get("employee_title"):
+        score += 0.04
+    if summary.get("period_text"):
+        score += 0.08
+    if summary.get("is_signed") is not None:
+        score += 0.04
+    shift_count = len(summary.get("shifts") or [])
+    if shift_count > 0:
+        score += 0.16 + min(0.08, 0.02 * shift_count)
+    if summary.get("visible_names"):
+        score += min(0.06, 0.02 * len(summary.get("visible_names") or []))
+    if analysis:
+        score += min(0.10, float(analysis.get("score") or 0) * 0.10)
+    if ai_review:
+        score += min(0.10, float(ai_review.get("confidence") or 0) * 0.10)
+    return _clamp_score(score)
 
 
 def serialize_timesheet_attachment(att: TimesheetAttachment) -> dict:
@@ -2424,6 +2487,119 @@ async def summarize_recent_timesheet_documents(
                 }
             )
 
+    return summaries
+
+
+async def summarize_explicit_timesheet_documents(
+    db: AsyncSession,
+    documents: list[dict],
+    employee: Optional[Employee] = None,
+    raise_on_openai_error: bool = False,
+) -> list[dict]:
+    summaries = []
+    for document in documents or []:
+        extracted_text = extract_document_text_preview(
+            document.get("filename", ""),
+            document.get("mime_type", ""),
+            document.get("file_data", b"") or b"",
+        )
+        matched_employee = employee
+        match_reason = "filtre" if employee else ""
+        if not matched_employee:
+            matched_employee, match_reason = await match_employee_from_email(
+                db,
+                document.get("from", ""),
+                subject=document.get("subject", ""),
+                body_preview=" ".join(part for part in [document.get("body_preview", ""), extracted_text] if part),
+                attachment_names=[document.get("filename", ""), extracted_text],
+            )
+
+        analysis = analyze_timesheet_document(document, employee=matched_employee, extracted_text=extracted_text)
+        ai_review = {}
+        if OPENAI_API_KEY:
+            ai_review = await inspect_attachment_with_openai(
+                document,
+                employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+                raise_on_error=raise_on_openai_error,
+            )
+
+        summary = await extract_timesheet_shift_summary(
+            document,
+            employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+            period_hint=str((ai_review or {}).get("period_text_seen") or ""),
+            extracted_text=extracted_text,
+            raise_on_error=raise_on_openai_error,
+            force_timesheet=True,
+        )
+        if not summary:
+            continue
+
+        if not matched_employee and summary.get("employee_name"):
+            refined_employee, refined_reason = await match_employee_from_email(
+                db,
+                document.get("from", ""),
+                subject=document.get("subject", ""),
+                body_preview=document.get("body_preview", ""),
+                attachment_names=[document.get("filename", ""), extracted_text],
+                extra_texts=[summary.get("employee_name", "")] + list(summary.get("visible_names") or []),
+            )
+            if refined_employee:
+                matched_employee = refined_employee
+                match_reason = refined_reason or "nom_document"
+
+        reference_date = _safe_parse_message_date(document.get("date", ""))
+        period_source = " ".join(
+            part
+            for part in [
+                summary.get("period_text", ""),
+                (ai_review or {}).get("period_text_seen", ""),
+                document.get("subject", ""),
+                document.get("body_preview", ""),
+                document.get("filename", ""),
+                extracted_text,
+            ]
+            if part
+        )
+        extracted_period = extract_period_from_text(period_source, reference_date=reference_date)
+        period_start = extracted_period[0].isoformat() if extracted_period else ""
+        period_end = extracted_period[1].isoformat() if extracted_period else ""
+        confidence_score = _summarize_explicit_timesheet_confidence(
+            summary,
+            analysis=analysis,
+            ai_review=ai_review,
+            matched_employee=matched_employee,
+        )
+        summaries.append(
+            {
+                "message_id": str(document.get("message_id") or ""),
+                "filename": str(document.get("filename") or ""),
+                "from": str(document.get("from") or ""),
+                "subject": str(document.get("subject") or ""),
+                "date": str(document.get("date") or ""),
+                "employee_name": getattr(matched_employee, "name", "") or str(summary.get("employee_name") or "").strip(),
+                "employee_id": getattr(matched_employee, "id", None),
+                "employee_title": str(summary.get("employee_title") or "").strip(),
+                "visible_names": list(summary.get("visible_names") or []),
+                "match_reason": match_reason or "",
+                "confidence_score": confidence_score,
+                "analysis_reasons": list(analysis.get("reasons") or []),
+                "period_start": period_start,
+                "period_end": period_end,
+                "is_signed": summary.get("is_signed"),
+                "shift_count": len(summary.get("shifts") or []),
+                "shifts": list(summary.get("shifts") or []),
+                "notes": str(summary.get("notes") or "").strip(),
+            }
+        )
+
+    summaries.sort(
+        key=lambda item: (
+            float(item.get("confidence_score") or 0),
+            item.get("shift_count") or 0,
+            1 if item.get("employee_name") else 0,
+        ),
+        reverse=True,
+    )
     return summaries
 
 

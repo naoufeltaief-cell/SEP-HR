@@ -42,6 +42,7 @@ from ..services.timesheet_service import (
     build_timesheet_reconciliation,
     completed_billing_period,
     index_recent_timesheet_email_documents,
+    summarize_explicit_timesheet_documents,
     summarize_recent_timesheet_documents,
 )
 
@@ -878,7 +879,7 @@ def _chat_upload_context_text(uploads: list[ChatbotUpload]) -> str:
 
 def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5) -> str:
     if not items:
-        return "Aucune vraie FDT n'a pu etre analysee avec suffisamment de confiance."
+        return "Aucune FDT exploitable n'a pu etre lue dans les documents joints."
 
     lines = []
     for idx, item in enumerate(items[:max_results], start=1):
@@ -893,13 +894,19 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
         )
         lines.append(f"{idx}. {employee_label} — {item.get('filename', 'document')}")
         lines.append(f"   Confiance: {confidence_pct}%")
+        if item.get("employee_title"):
+            lines.append(f"   Titre: {item.get('employee_title')}")
         if item.get("period_start") and item.get("period_end"):
             lines.append(f"   Periode: {item.get('period_start')} au {item.get('period_end')}")
         lines.append(f"   Signature: {signature}")
+        if item.get("visible_names"):
+            lines.append(f"   Noms visibles: {', '.join(item.get('visible_names')[:8])}")
         if item.get("shift_count"):
             lines.append("   Quarts:")
             for shift in item.get("shifts", [])[:20]:
                 shift_bits = []
+                if shift.get("day_label"):
+                    shift_bits.append(shift["day_label"])
                 if shift.get("date"):
                     shift_bits.append(shift["date"])
                 if shift.get("start") or shift.get("end"):
@@ -910,6 +917,12 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
                     shift_bits.append(f"{shift.get('hours')} h")
                 if shift.get("type") and shift.get("type") != "unknown":
                     shift_bits.append(shift.get("type"))
+                if shift.get("unit"):
+                    shift_bits.append(shift.get("unit"))
+                if shift.get("approver_name"):
+                    shift_bits.append(f"signataire {shift.get('approver_name')}")
+                if shift.get("notes"):
+                    shift_bits.append(shift.get("notes"))
                 lines.append(f"   - {' | '.join(shift_bits) if shift_bits else 'Quart detecte'}")
         else:
             lines.append("   Quarts: lecture partielle, quarts non extraits clairement.")
@@ -918,18 +931,40 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
     return "\n".join(lines)
 
 
-def _message_requests_chat_upload_analysis(message: str) -> bool:
+def _message_requests_chat_upload_analysis(
+    message: str,
+    uploads: list[ChatbotUpload] | None = None,
+    history: list[dict] | None = None,
+) -> bool:
     m = _norm(message or "")
+    upload_context = " ".join(
+        _norm(item.original_filename or item.filename or "")
+        for item in (uploads or [])
+        if item
+    )
+    history_context = " ".join(
+        _norm(str(entry.get("content") or ""))
+        for entry in (history or [])[-6:]
+        if isinstance(entry, dict)
+    )
     analysis_words = [
         "detail",
         "details",
         "analy",
         "resume",
         "resumer",
+        "voir",
+        "montre",
+        "affiche",
         "quart",
         "quarts",
         "pause",
         "pauses",
+        "nom",
+        "noms",
+        "inscrit",
+        "inscrits",
+        "transcri",
         "lire",
         "lis",
         "reconn",
@@ -940,7 +975,8 @@ def _message_requests_chat_upload_analysis(message: str) -> bool:
         "cette feuille de temps",
     ]
     timesheet_words = ["fdt", "feuille de temps", "timesheet"]
-    return any(word in m for word in analysis_words) and any(word in m for word in timesheet_words)
+    combined_context = " ".join(part for part in [m, upload_context, history_context] if part)
+    return any(word in m for word in analysis_words) and any(word in combined_context for word in timesheet_words)
 
 async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "", chat_session_id: str = "") -> str:
     try:
@@ -1283,7 +1319,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 employee = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
                 if input_data.get('employee_name') and not employee:
                     return "Employe introuvable pour l'analyse de la FDT jointe."
-            items = await summarize_recent_timesheet_documents(
+            items = await summarize_explicit_timesheet_documents(
                 db,
                 [_chat_upload_to_document(upload) for upload in uploads],
                 employee=employee,
@@ -2127,9 +2163,9 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
     system_prompt, agent_name = _detect_prompt(msg.message)
     session_uploads = await _get_chat_session_uploads(db, msg.session_id)
     system_prompt = f"{system_prompt}{_chat_upload_context_text(session_uploads)}"
-    if session_uploads and _message_requests_chat_upload_analysis(msg.message):
+    if session_uploads and _message_requests_chat_upload_analysis(msg.message, session_uploads, msg.history):
         try:
-            items = await summarize_recent_timesheet_documents(
+            items = await summarize_explicit_timesheet_documents(
                 db,
                 [_chat_upload_to_document(upload) for upload in session_uploads],
                 raise_on_openai_error=True,

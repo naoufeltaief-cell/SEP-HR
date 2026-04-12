@@ -1530,6 +1530,47 @@ async def _describe_timesheet_document_with_openai(
                 "detail": "high",
             },
         ]
+    elif ext == "pdf" and file_data:
+        png_bytes = _render_pdf_first_page_png(file_data)
+        preview_text = transcript or extract_document_text_preview(
+            document.get("filename", ""),
+            document.get("mime_type", ""),
+            file_data,
+        )
+        if png_bytes:
+            content = [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "Lis cette FDT comme le ferait un commis a la facturation. "
+                        "Decris en francais ce que tu vois: nom employe, titre, periode, quarts ligne par ligne, pauses, unite/service, signataires, remarques, orientation, total approximatif et anomalies utiles. "
+                        "Il vaut mieux donner une lecture approximative mais utile plutot que dire seulement que c'est partiel. "
+                        "N'invente pas; dis 'illisible' quand necessaire. "
+                        f"Employe attendu si connu: {employee_hint or 'inconnu'}."
+                    ),
+                }
+            ]
+            if preview_text:
+                content.append({"type": "input_text", "text": f"Texte extrait / OCR disponible:\n{preview_text[:14000]}"})
+            content.append(
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
+                    "detail": "high",
+                }
+            )
+        elif preview_text:
+            content = [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "Voici la transcription OCR d'une FDT. Resume clairement ce qui est visible et utile pour la facturation: "
+                        "nom employe, titre, periode, quarts, pauses, unite/service, signataires, orientation et anomalies. "
+                        "N'invente pas.\n\n"
+                        f"{preview_text[:14000]}"
+                    ),
+                }
+            ]
     elif transcript:
         content = [
             {
@@ -2916,7 +2957,19 @@ async def summarize_explicit_timesheet_documents(
                 if not prose_description and transcript:
                     prose_description = transcript
         if not summary:
-            continue
+            if transcript or prose_description or ai_review:
+                summary = {
+                    "is_timesheet": True,
+                    "employee_name": str((ai_review or {}).get("employee_name_seen") or "").strip(),
+                    "employee_title": "",
+                    "period_text": str((ai_review or {}).get("period_text_seen") or "").strip(),
+                    "is_signed": None,
+                    "visible_names": [],
+                    "shifts": [],
+                    "notes": str((ai_review or {}).get("notes") or "").strip(),
+                }
+            else:
+                continue
 
         if not matched_employee and summary.get("employee_name"):
             refined_employee, refined_reason = await match_employee_from_email(

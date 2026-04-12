@@ -271,6 +271,22 @@ def _supports_reasoning(model_name: str) -> bool:
     return model.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
+def _format_openai_api_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            payload = exc.response.json()
+        except Exception:
+            payload = None
+        message = (
+            payload.get("error", {}).get("message")
+            if isinstance(payload, dict)
+            else exc.response.text
+        )
+        clean = str(message or "").strip()
+        return clean or f"Erreur API OpenAI ({exc.response.status_code})"
+    return str(exc or "").strip() or "Erreur API OpenAI"
+
+
 def extract_document_text_preview(filename: str = "", mime_type: str = "", file_data: bytes = b"") -> str:
     ext = _attachment_extension(filename, mime_type)
     if ext == "pdf":
@@ -640,7 +656,11 @@ def _should_use_ai_accommodation_review(
     return 0.12 <= score <= 0.86
 
 
-async def inspect_attachment_with_openai(document: dict, employee_hint: str = "") -> dict:
+async def inspect_attachment_with_openai(
+    document: dict,
+    employee_hint: str = "",
+    raise_on_error: bool = False,
+) -> dict:
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
     if ext not in _VISION_ATTACHMENT_EXTENSIONS or not OPENAI_API_KEY:
         return {}
@@ -692,7 +712,9 @@ async def inspect_attachment_with_openai(document: dict, employee_hint: str = ""
             )
             response.raise_for_status()
             parsed = _parse_json_object(_extract_openai_text(response.json()))
-    except Exception:
+    except Exception as exc:
+        if raise_on_error:
+            raise RuntimeError(_format_openai_api_error(exc)) from exc
         return {}
 
     confidence_raw = parsed.get("confidence", 0)
@@ -1065,6 +1087,7 @@ async def extract_timesheet_shift_summary(
     employee_hint: str = "",
     period_hint: str = "",
     extracted_text: str = "",
+    raise_on_error: bool = False,
 ) -> dict:
     if not OPENAI_API_KEY:
         return {}
@@ -1133,7 +1156,9 @@ async def extract_timesheet_shift_summary(
             )
             response.raise_for_status()
             parsed = _parse_json_object(_extract_openai_text(response.json()))
-    except Exception:
+    except Exception as exc:
+        if raise_on_error:
+            raise RuntimeError(_format_openai_api_error(exc)) from exc
         return {}
 
     shifts = []
@@ -2276,6 +2301,7 @@ async def summarize_recent_timesheet_documents(
     db: AsyncSession,
     documents: list[dict],
     employee: Optional[Employee] = None,
+    raise_on_openai_error: bool = False,
 ) -> list[dict]:
     summaries = []
     grouped_documents: dict[str, list[dict]] = defaultdict(list)
@@ -2306,6 +2332,7 @@ async def summarize_recent_timesheet_documents(
                 ai_review = await inspect_attachment_with_openai(
                     document,
                     employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+                    raise_on_error=raise_on_openai_error,
                 )
                 if ai_review:
                     if not matched_employee:
@@ -2354,6 +2381,7 @@ async def summarize_recent_timesheet_documents(
                 employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
                 period_hint=str((item.get("ai_review") or {}).get("period_text_seen") or ""),
                 extracted_text=item.get("extracted_text", ""),
+                raise_on_error=raise_on_openai_error,
             )
             if summary and summary.get("is_timesheet") is False and not (item.get("analysis") or {}).get("strong"):
                 continue

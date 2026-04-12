@@ -117,6 +117,7 @@ RAW_TOOLS = [
     {"name": "add_invoice_accommodation_per_worked_day", "description": "Ajouter un frais d'hebergement par journee travaillee directement dans une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "cost_per_day": {"type": "number"}, "replace_existing": {"type": "boolean", "default": False}}, "required": ["cost_per_day"]}},
     {"name": "delete_invoice_accommodation_line", "description": "Supprimer une ligne d'hebergement d'une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "period": {"type": "string"}}, "required": ["period"]}},
     {"name": "list_chat_session_documents", "description": "Lister les documents joints dans cette conversation chatbot pour pouvoir les rattacher ensuite a une facture ou a un courriel.", "input_schema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "analyze_chat_session_documents", "description": "Analyser les documents joints dans cette conversation, surtout une FDT ou un justificatif depose directement dans le chat, et extraire les quarts, pauses, dates, signature et periode detectees.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 5}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}, "required": []}},
     {"name": "attach_chat_documents_to_invoice", "description": "Joindre un ou plusieurs documents televerses dans cette conversation a une facture existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "document_ids": {"type": "array", "items": {"type": "string"}}, "filename_query": {"type": "string"}, "attach_all_session_documents": {"type": "boolean", "default": False}, "category": {"type": "string"}, "description": {"type": "string"}}, "required": []}},
     {"name": "resolve_contact_email", "description": "Retrouver une adresse courriel a partir du nom d'un employe ou d'un client avant d'envoyer un courriel.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
     {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Peut aussi servir pour un brouillon de masse avec CC ou CCI. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}, "cc": {"type": "string"}, "bcc": {"type": "string"}, "cc_list": {"type": "array", "items": {"type": "string"}}, "bcc_list": {"type": "array", "items": {"type": "string"}}, "document_ids": {"type": "array", "items": {"type": "string"}}, "filename_query": {"type": "string"}, "attach_all_session_documents": {"type": "boolean", "default": False}}, "required": ["to", "subject", "body_text"]}},
@@ -822,6 +823,20 @@ def _chat_upload_to_attachment_payload(upload: ChatbotUpload) -> dict:
     }
 
 
+def _chat_upload_to_document(upload: ChatbotUpload) -> dict:
+    return {
+        "message_id": f"chat-upload:{upload.id}",
+        "filename": upload.original_filename or upload.filename or "document",
+        "mime_type": upload.mime_type or "application/octet-stream",
+        "file_size": int(upload.file_size or 0),
+        "file_data": upload.file_data or b"",
+        "from": upload.uploaded_by or "chatbot",
+        "subject": upload.description or "",
+        "body_preview": upload.description or "",
+        "date": upload.created_at.isoformat() if upload.created_at else "",
+    }
+
+
 async def _select_chat_uploads_for_action(
     db: AsyncSession,
     session_id: str,
@@ -857,8 +872,75 @@ def _chat_upload_context_text(uploads: list[ChatbotUpload]) -> str:
         "\n\nDocuments actuellement joints dans cette conversation:\n"
         + "\n".join(lines)
         + "\nQuand l'utilisateur veut joindre un document a une facture ou a un courriel, utilise list_chat_session_documents, "
-          "attach_chat_documents_to_invoice ou les options de pieces jointes des outils send_email/create_email_draft."
+          "analyze_chat_session_documents, attach_chat_documents_to_invoice ou les options de pieces jointes des outils send_email/create_email_draft."
     )
+
+
+def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5) -> str:
+    if not items:
+        return "Aucune vraie FDT n'a pu etre analysee avec suffisamment de confiance."
+
+    lines = []
+    for idx, item in enumerate(items[:max_results], start=1):
+        employee_label = item.get("employee_name") or "Employe a confirmer"
+        confidence_pct = int(round(float(item.get("confidence_score") or 0) * 100))
+        signature = (
+            "signee"
+            if item.get("is_signed") is True
+            else "signature a verifier"
+            if item.get("is_signed") is False
+            else "signature non confirmee"
+        )
+        lines.append(f"{idx}. {employee_label} — {item.get('filename', 'document')}")
+        lines.append(f"   Confiance: {confidence_pct}%")
+        if item.get("period_start") and item.get("period_end"):
+            lines.append(f"   Periode: {item.get('period_start')} au {item.get('period_end')}")
+        lines.append(f"   Signature: {signature}")
+        if item.get("shift_count"):
+            lines.append("   Quarts:")
+            for shift in item.get("shifts", [])[:20]:
+                shift_bits = []
+                if shift.get("date"):
+                    shift_bits.append(shift["date"])
+                if shift.get("start") or shift.get("end"):
+                    shift_bits.append(f"{shift.get('start') or '?'}-{shift.get('end') or '?'}")
+                if shift.get("pause_minutes"):
+                    shift_bits.append(f"pause {shift.get('pause_minutes')} min")
+                if shift.get("hours"):
+                    shift_bits.append(f"{shift.get('hours')} h")
+                if shift.get("type") and shift.get("type") != "unknown":
+                    shift_bits.append(shift.get("type"))
+                lines.append(f"   - {' | '.join(shift_bits) if shift_bits else 'Quart detecte'}")
+        else:
+            lines.append("   Quarts: lecture partielle, quarts non extraits clairement.")
+        if item.get("notes"):
+            lines.append(f"   Note: {item.get('notes')}")
+    return "\n".join(lines)
+
+
+def _message_requests_chat_upload_analysis(message: str) -> bool:
+    m = _norm(message or "")
+    analysis_words = [
+        "detail",
+        "details",
+        "analy",
+        "resume",
+        "resumer",
+        "quart",
+        "quarts",
+        "pause",
+        "pauses",
+        "lire",
+        "lis",
+        "reconn",
+        "document joint",
+        "piece jointe",
+        "pieces jointes",
+        "cette fdt",
+        "cette feuille de temps",
+    ]
+    timesheet_words = ["fdt", "feuille de temps", "timesheet"]
+    return any(word in m for word in analysis_words) and any(word in m for word in timesheet_words)
 
 async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_message: str = "", chat_session_id: str = "") -> str:
     try:
@@ -1192,6 +1274,22 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
         if name == 'list_chat_session_documents':
             uploads = await _get_chat_session_uploads(db, chat_session_id)
             return json.dumps([_serialize_chat_upload(item) for item in uploads], ensure_ascii=False)
+        if name == 'analyze_chat_session_documents':
+            uploads = await _get_chat_session_uploads(db, chat_session_id)
+            if not uploads:
+                return "Aucun document n'est joint a cette conversation."
+            employee = None
+            if input_data.get('employee_id') or input_data.get('employee_name'):
+                employee = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
+                if input_data.get('employee_name') and not employee:
+                    return "Employe introuvable pour l'analyse de la FDT jointe."
+            items = await summarize_recent_timesheet_documents(
+                db,
+                [_chat_upload_to_document(upload) for upload in uploads],
+                employee=employee,
+                raise_on_openai_error=True,
+            )
+            return _format_timesheet_analysis_response(items, max_results=int(input_data.get('max_results', 5) or 5))
         if name == 'attach_chat_documents_to_invoice':
             invoice, error = await _find_invoice(
                 db,
@@ -1805,8 +1903,8 @@ AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. T
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements, horaires et FDT. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie, l'indexation de FDT recues, le traitement automatique des courriels entrants, la generation d'une facture, une conciliation FDT-facture ou l'envoi du rappel hebdomadaire de FDT, execute l'action demandee puis resume le resultat. Agis comme un commis de facturation prudent: ignore les pieces jointes qui ne sont pas pertinentes et dis clairement quand une verification visuelle reste necessaire. Pour lister les dernieres vraies FDT recues ou analyser les quarts, pauses et signatures visibles, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Quand l'utilisateur demande un niveau de confiance, utilise reconcile_timesheet_invoice et cite clairement le niveau eleve, moyen ou faible. Quand l'utilisateur demande de traiter ou surveiller les courriels entrants, utilise process_incoming_timesheet_emails. Quand l'utilisateur demande un rappel hebdomadaire en brouillon Gmail ou un test d'envoi de masse en brouillon, utilise draft_weekly_timesheet_reminder. Quand l'utilisateur demande le jour, l'heure, le fuseau horaire ou les destinataires du rappel du dimanche, utilise get_automation_config. Quand l'utilisateur demande un resume documentaire par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_FACTURATION_PROMPT += "\nQuand tu traites les courriels entrants, classe les pieces jointes utiles par employe: FDT dans les feuilles de temps, documents d'hebergement dans hebergement, et ignore le reste si ce n'est pas pertinent."
 GENERAL_PROMPT += "\nQuand l'utilisateur demande de trier ou classer les courriels recus, priorise la facturation: FDT, hebergement et pieces jointes utiles par employe."
-AGENT_FACTURATION_PROMPT += "\nQuand l'utilisateur joint des documents dans cette conversation, liste-les au besoin avec list_chat_session_documents. Tu peux les rattacher a une facture avec attach_chat_documents_to_invoice, ou les joindre a un courriel ou brouillon Gmail avec document_ids, filename_query ou attach_all_session_documents dans send_email et create_email_draft. Si l'utilisateur donne seulement un nom de personne sans adresse courriel, utilise resolve_contact_email avant l'envoi."
-GENERAL_PROMPT += "\nSi des documents sont joints dans cette conversation, tu peux les reutiliser pour une facture ou un courriel. Utilise list_chat_session_documents pour les voir, attach_chat_documents_to_invoice pour les rattacher a une facture et resolve_contact_email si l'utilisateur donne seulement un nom."
+AGENT_FACTURATION_PROMPT += "\nQuand l'utilisateur joint des documents dans cette conversation, liste-les au besoin avec list_chat_session_documents. Si l'utilisateur te demande de lire, analyser ou resumer une FDT jointe directement dans le chat, utilise analyze_chat_session_documents. Tu peux les rattacher a une facture avec attach_chat_documents_to_invoice, ou les joindre a un courriel ou brouillon Gmail avec document_ids, filename_query ou attach_all_session_documents dans send_email et create_email_draft. Si l'utilisateur donne seulement un nom de personne sans adresse courriel, utilise resolve_contact_email avant l'envoi."
+GENERAL_PROMPT += "\nSi des documents sont joints dans cette conversation, tu peux les reutiliser pour une facture ou un courriel. Utilise list_chat_session_documents pour les voir, analyze_chat_session_documents pour lire une FDT jointe et attach_chat_documents_to_invoice pour les rattacher a une facture."
 
 
 def _detect_prompt(message: str):
@@ -2029,6 +2127,28 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
     system_prompt, agent_name = _detect_prompt(msg.message)
     session_uploads = await _get_chat_session_uploads(db, msg.session_id)
     system_prompt = f"{system_prompt}{_chat_upload_context_text(session_uploads)}"
+    if session_uploads and _message_requests_chat_upload_analysis(msg.message):
+        try:
+            items = await summarize_recent_timesheet_documents(
+                db,
+                [_chat_upload_to_document(upload) for upload in session_uploads],
+                raise_on_openai_error=True,
+            )
+            return {
+                'reply': _format_timesheet_analysis_response(items, max_results=5),
+                'usage': {},
+                'agent': 'facturation',
+                'model': os.getenv("TIMESHEET_ATTACHMENT_MODEL") or OPENAI_MODEL,
+                'reasoning_effort': _normalized_reasoning_effort() if _supports_reasoning(os.getenv("TIMESHEET_ATTACHMENT_MODEL") or OPENAI_MODEL) else None,
+            }
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Analyse FDT impossible avec l'API OpenAI du site: "
+                    f"{exc}. Verifie le quota/facturation de OPENAI_API_KEY sur Render."
+                ),
+            )
     inputs = _history_to_input(msg.history, msg.message)
     headers = {'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'}
     async with httpx.AsyncClient(timeout=120) as client:

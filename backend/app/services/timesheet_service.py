@@ -15,6 +15,10 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from PyPDF2 import PdfReader
+try:
+    import fitz  # PyMuPDF
+except Exception:  # pragma: no cover - optional at runtime until dependency is installed
+    fitz = None
 
 from ..models.models import (
     Accommodation,
@@ -259,6 +263,20 @@ def _extract_pdf_text_preview(file_data: bytes, max_chars: int = 2400) -> str:
         if sum(len(chunk) for chunk in chunks) >= max_chars:
             break
     return "\n".join(chunks)[:max_chars].strip()
+
+
+def _render_pdf_first_page_png(file_data: bytes, zoom: float = 2.0) -> bytes:
+    if not file_data or fitz is None:
+        return b""
+    try:
+        doc = fitz.open(stream=file_data, filetype="pdf")
+        if doc.page_count <= 0:
+            return b""
+        page = doc.load_page(0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        return pix.tobytes("png")
+    except Exception:
+        return b""
 
 
 def _normalized_reasoning_effort() -> str:
@@ -662,15 +680,21 @@ async def inspect_attachment_with_openai(
     raise_on_error: bool = False,
 ) -> dict:
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
-    if ext not in _VISION_ATTACHMENT_EXTENSIONS or not OPENAI_API_KEY:
+    if (ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf") or not OPENAI_API_KEY:
         return {}
 
     file_data = document.get("file_data", b"") or b""
     if not file_data:
         return {}
 
+    image_bytes = file_data
     mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
-    data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
+    if ext == "pdf":
+        image_bytes = _render_pdf_first_page_png(file_data)
+        mime_type = "image/png"
+    if not image_bytes:
+        return {}
+    data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
     context_text = (
         "Courriel de facturation a examiner.\n"
         f"Expediteur: {document.get('from', '')}\n"
@@ -1141,16 +1165,25 @@ async def extract_timesheet_shift_summary(
             {"type": "input_image", "image_url": data_url},
         ]
     elif ext == "pdf":
+        file_data = document.get("file_data", b"") or b""
+        png_bytes = _render_pdf_first_page_png(file_data)
         preview_text = extracted_text or extract_document_text_preview(
             document.get("filename", ""),
             document.get("mime_type", ""),
-            document.get("file_data", b"") or b"",
+            file_data,
         )
-        if not preview_text:
+        if png_bytes:
+            data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+            content = [{"type": "input_text", "text": prompt_text}]
+            if preview_text:
+                content.append({"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:6000]}"})
+            content.append({"type": "input_image", "image_url": data_url})
+        elif preview_text:
+            content = [
+                {"type": "input_text", "text": f"{prompt_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"},
+            ]
+        else:
             return {}
-        content = [
-            {"type": "input_text", "text": f"{prompt_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"},
-        ]
     else:
         return {}
 
@@ -1298,19 +1331,40 @@ async def _transcribe_timesheet_document_with_openai(
             document.get("mime_type", ""),
             file_data,
         )
-        if not preview_text:
+        png_bytes = _render_pdf_first_page_png(file_data) if ext == "pdf" else b""
+        if png_bytes:
+            payload_content = [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "Transcris le plus fidelement possible cette FDT Soins Expert Plus. "
+                        "Donne un texte structure avec: nom employe, titre, periode, puis chaque ligne de quart visible "
+                        "avec jour/date, heure debut, heure fin, pause/repas, total d'heures, unite/service, signataire et mentions utiles. "
+                        "N'invente rien. Si quelque chose est illisible, note simplement illisible. "
+                        f"Employe attendu si connu: {employee_hint or 'inconnu'}."
+                    ),
+                },
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
+                },
+            ]
+            if preview_text:
+                payload_content.insert(1, {"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:10000]}"})
+        elif not preview_text:
             return ""
-        payload_content = [
-            {
-                "type": "input_text",
-                "text": (
-                    "Voici le texte extrait d'une FDT. Reorganise-le proprement en transcription utile pour la facturation: "
-                    "nom employe, titre, periode, puis quarts visibles avec heures, pauses, unite/service, signataire et notes. "
-                    "N'invente rien.\n\n"
-                    f"{preview_text[:10000]}"
-                ),
-            }
-        ]
+        else:
+            payload_content = [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "Voici le texte extrait d'une FDT. Reorganise-le proprement en transcription utile pour la facturation: "
+                        "nom employe, titre, periode, puis quarts visibles avec heures, pauses, unite/service, signataire et notes. "
+                        "N'invente rien.\n\n"
+                        f"{preview_text[:10000]}"
+                    ),
+                }
+            ]
 
     payload = {
         "model": TIMESHEET_ATTACHMENT_MODEL,

@@ -2699,22 +2699,25 @@ async def summarize_recent_timesheet_documents(
                 document.get("mime_type", ""),
                 document.get("file_data", b"") or b"",
             )
-            matched_employee = employee
-            match_reason = "filtre" if employee else ""
-            if not matched_employee:
-                matched_employee, match_reason = await match_employee_from_email(
-                    db,
-                    document.get("from", ""),
-                    subject=document.get("subject", ""),
-                    body_preview=" ".join(part for part in [document.get("body_preview", ""), extracted_text] if part),
-                    attachment_names=[document.get("filename", ""), extracted_text],
-                )
+            expected_employee = employee
+            matched_employee = None
+            match_reason = ""
+            matched_employee, match_reason = await match_employee_from_email(
+                db,
+                document.get("from", ""),
+                subject=document.get("subject", ""),
+                body_preview=" ".join(part for part in [document.get("body_preview", ""), extracted_text] if part),
+                attachment_names=[document.get("filename", ""), extracted_text],
+            )
             analysis = analyze_timesheet_document(document, employee=matched_employee, extracted_text=extracted_text)
             ai_review = {}
             if _should_use_ai_attachment_review(document, analysis, matched_employee):
                 ai_review = await inspect_attachment_with_openai(
                     document,
-                    employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+                    employee_hint=(
+                        getattr(matched_employee, "name", "")
+                        or getattr(expected_employee, "name", "")
+                    ),
                     raise_on_error=raise_on_openai_error,
                 )
                 if ai_review:
@@ -2761,13 +2764,38 @@ async def summarize_recent_timesheet_documents(
             matched_employee = item.get("employee")
             summary = await extract_timesheet_shift_summary(
                 document,
-                employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+                employee_hint=(
+                    getattr(matched_employee, "name", "")
+                    or getattr(employee, "name", "")
+                ),
                 period_hint=str((item.get("ai_review") or {}).get("period_text_seen") or ""),
                 extracted_text=item.get("extracted_text", ""),
                 raise_on_error=raise_on_openai_error,
             )
             if summary and summary.get("is_timesheet") is False and not (item.get("analysis") or {}).get("strong"):
                 continue
+
+            if employee:
+                candidate_texts = [
+                    document.get("from", ""),
+                    document.get("subject", ""),
+                    document.get("body_preview", ""),
+                    document.get("filename", ""),
+                    item.get("extracted_text", ""),
+                    (item.get("ai_review") or {}).get("employee_name_seen", ""),
+                    summary.get("employee_name", "") if summary else "",
+                ]
+                candidate_texts.extend(list(summary.get("visible_names") or []) if summary else [])
+                employee_filter_score = _match_text_against_employee(employee, candidate_texts)
+                if matched_employee and matched_employee.id != employee.id and employee_filter_score < 40:
+                    continue
+                if not matched_employee:
+                    if employee_filter_score >= 40:
+                        matched_employee = employee
+                        if not item.get("match_reason"):
+                            item["match_reason"] = "filtre_nom"
+                    else:
+                        continue
 
             reference_date = _safe_parse_message_date(document.get("date", ""))
             period_source = " ".join(

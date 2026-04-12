@@ -1891,6 +1891,8 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 return "Le compte Gmail de facturation n'est pas connecte. Clique 'Reconnecter Gmail' dans Facturation pour brancher paie@soins-expert-plus.com."
             items = await summarize_recent_timesheet_documents(db, documents, employee=employee)
             if not items:
+                if employee:
+                    return f"Aucune FDT recente exploitable n'a ete trouvee pour {employee.name} dans la boite paie."
                 return "Aucune vraie FDT recente n'a pu etre analysee avec suffisamment de confiance dans la boite paie."
             lines = []
             for idx, item in enumerate(items[: input_data.get('max_results', 10)], start=1):

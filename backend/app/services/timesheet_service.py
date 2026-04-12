@@ -1443,6 +1443,84 @@ async def _extract_timesheet_shift_summary_from_transcript(
     }
 
 
+async def _describe_timesheet_document_with_openai(
+    document: dict,
+    employee_hint: str = "",
+    transcript: str = "",
+    raise_on_error: bool = False,
+) -> str:
+    if not OPENAI_API_KEY:
+        return ""
+
+    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
+    file_data = document.get("file_data", b"") or b""
+    content = None
+    if ext in _VISION_ATTACHMENT_EXTENSIONS and file_data:
+        mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
+        content = [
+            {
+                "type": "input_text",
+                "text": (
+                    "Lis cette FDT comme le ferait un commis a la facturation. "
+                    "Decris en francais ce que tu vois: nom employe, titre, periode, quarts ligne par ligne, pauses, unite/service, signataires, remarques, orientation, total approximatif et anomalies utiles. "
+                    "Il vaut mieux donner une lecture approximative mais utile plutot que dire seulement que c'est partiel. "
+                    "N'invente pas; dis 'illisible' quand necessaire. "
+                    f"Employe attendu si connu: {employee_hint or 'inconnu'}."
+                ),
+            },
+            {
+                "type": "input_image",
+                "image_url": f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}",
+            },
+        ]
+    elif transcript:
+        content = [
+            {
+                "type": "input_text",
+                "text": (
+                    "Voici la transcription OCR d'une FDT. Resume clairement ce qui est visible et utile pour la facturation: "
+                    "nom employe, titre, periode, quarts, pauses, unite/service, signataires, orientation et anomalies. "
+                    "N'invente pas.\n\n"
+                    f"{transcript[:14000]}"
+                ),
+            }
+        ]
+    else:
+        return ""
+
+    payload = {
+        "model": TIMESHEET_ATTACHMENT_MODEL,
+        "instructions": (
+            "Tu aides un commis a comprendre rapidement une FDT difficile a lire. "
+            "Retourne une reponse prose claire et concrete en francais."
+        ),
+        "input": [{"role": "user", "content": content}],
+        "max_output_tokens": 1800,
+    }
+    if _supports_reasoning(TIMESHEET_ATTACHMENT_MODEL):
+        reasoning_effort = _normalized_reasoning_effort()
+        if reasoning_effort in {"none", "low", "medium"}:
+            reasoning_effort = "high"
+        payload["reasoning"] = {"effort": reasoning_effort}
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return _extract_openai_text(response.json()).strip()
+    except Exception as exc:
+        if raise_on_error:
+            raise RuntimeError(_format_openai_api_error(exc)) from exc
+        return ""
+
+
 def serialize_timesheet_attachment(att: TimesheetAttachment) -> dict:
     return {
         "id": att.id,
@@ -2736,6 +2814,20 @@ async def summarize_explicit_timesheet_documents(
                 or transcript_summary.get("visible_names")
             ):
                 summary = transcript_summary
+        prose_description = ""
+        if summary:
+            needs_prose_help = (
+                not summary.get("shifts")
+                or not summary.get("employee_name")
+                or len(summary.get("visible_names") or []) < 2
+            )
+            if needs_prose_help:
+                prose_description = await _describe_timesheet_document_with_openai(
+                    document,
+                    employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+                    transcript=transcript,
+                    raise_on_error=raise_on_openai_error,
+                )
         if not summary:
             continue
 
@@ -2794,6 +2886,7 @@ async def summarize_explicit_timesheet_documents(
                 "shift_count": len(summary.get("shifts") or []),
                 "shifts": list(summary.get("shifts") or []),
                 "notes": str(summary.get("notes") or "").strip() or ("Transcription OCR partielle disponible." if transcript else ""),
+                "prose_description": prose_description,
             }
         )
 

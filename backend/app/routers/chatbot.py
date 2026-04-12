@@ -925,7 +925,15 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
                     shift_bits.append(shift.get("notes"))
                 lines.append(f"   - {' | '.join(shift_bits) if shift_bits else 'Quart detecte'}")
         else:
-            lines.append("   Quarts: lecture partielle, quarts non extraits clairement.")
+            prose_description = str(item.get("prose_description") or "").strip()
+            if prose_description:
+                lines.append("   Lecture detaillee:")
+                for prose_line in prose_description.splitlines()[:18]:
+                    clean = prose_line.strip()
+                    if clean:
+                        lines.append(f"   {clean}")
+            else:
+                lines.append("   Quarts: lecture partielle, quarts non extraits clairement.")
         if item.get("notes"):
             lines.append(f"   Note: {item.get('notes')}")
     return "\n".join(lines)

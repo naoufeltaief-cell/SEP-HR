@@ -2921,7 +2921,7 @@ async def summarize_explicit_timesheet_documents(
             force_timesheet=True,
         )
         transcript = ""
-        if summary and not summary.get("shifts"):
+        if not summary or not summary.get("shifts"):
             transcript = await _transcribe_timesheet_document_with_openai(
                 document,
                 employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
@@ -2941,21 +2941,21 @@ async def summarize_explicit_timesheet_documents(
             ):
                 summary = transcript_summary
         prose_description = ""
-        if summary:
-            needs_prose_help = (
-                not summary.get("shifts")
-                or not summary.get("employee_name")
-                or len(summary.get("visible_names") or []) < 2
+        needs_prose_help = (
+            not summary
+            or not summary.get("shifts")
+            or not summary.get("employee_name")
+            or len(summary.get("visible_names") or []) < 2
+        )
+        if needs_prose_help:
+            prose_description = await _describe_timesheet_document_with_openai(
+                document,
+                employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
+                transcript=transcript,
+                raise_on_error=raise_on_openai_error,
             )
-            if needs_prose_help:
-                prose_description = await _describe_timesheet_document_with_openai(
-                    document,
-                    employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",
-                    transcript=transcript,
-                    raise_on_error=raise_on_openai_error,
-                )
-                if not prose_description and transcript:
-                    prose_description = transcript
+            if not prose_description and transcript:
+                prose_description = transcript
         if not summary:
             if transcript or prose_description or ai_review:
                 summary = {

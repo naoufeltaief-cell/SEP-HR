@@ -119,6 +119,7 @@ RAW_TOOLS = [
     {"name": "delete_invoice_accommodation_line", "description": "Supprimer une ligne d'hebergement d'une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "period": {"type": "string"}}, "required": ["period"]}},
     {"name": "list_chat_session_documents", "description": "Lister les documents joints dans cette conversation chatbot pour pouvoir les rattacher ensuite a une facture ou a un courriel.", "input_schema": {"type": "object", "properties": {}, "required": []}},
     {"name": "analyze_chat_session_documents", "description": "Analyser les documents joints dans cette conversation, surtout une FDT ou un justificatif depose directement dans le chat, et extraire les quarts, pauses, dates, signature et periode detectees.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 5}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}, "required": []}},
+    {"name": "apply_timesheet_to_schedule", "description": "Appliquer les quarts reels d'une FDT jointe dans le chat aux horaires de l'employe. Compare chaque quart de la FDT avec les quarts existants dans la meme periode puis propose ou applique un diff: creations, modifications d'heures/pause, annulations (cases barrees). OBLIGATOIRE d'appeler d'abord avec dry_run=true pour afficher le diff a l'utilisateur et obtenir sa confirmation, puis rappeler avec dry_run=false pour appliquer. Utiliser ensuite generate_invoice_for_employee avec period_start et period_end egales a la periode de la FDT.", "input_schema": {"type": "object", "properties": {"document_id": {"type": "string", "description": "ID du document FDT dans la session (optionnel si une seule FDT est jointe)"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer", "description": "Client par defaut si non resolu depuis l'horaire existant"}, "client_name": {"type": "string"}, "dry_run": {"type": "boolean", "default": True, "description": "Si true, retourne seulement le diff sans modifier la base. OBLIGATOIRE au premier appel."}}, "required": []}},
     {"name": "attach_chat_documents_to_invoice", "description": "Joindre un ou plusieurs documents televerses dans cette conversation a une facture existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "document_ids": {"type": "array", "items": {"type": "string"}}, "filename_query": {"type": "string"}, "attach_all_session_documents": {"type": "boolean", "default": False}, "category": {"type": "string"}, "description": {"type": "string"}}, "required": []}},
     {"name": "resolve_contact_email", "description": "Retrouver une adresse courriel a partir du nom d'un employe ou d'un client avant d'envoyer un courriel.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
     {"name": "create_email_draft", "description": "Creer un vrai brouillon Gmail dans la boite paie. Utiliser seulement quand l'utilisateur demande explicitement de creer, enregistrer ou mettre un message dans les brouillons Gmail. Peut aussi servir pour un brouillon de masse avec CC ou CCI. Ne jamais envoyer le message.", "input_schema": {"type": "object", "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body_text": {"type": "string"}, "body_html": {"type": "string"}, "thread_id": {"type": "string"}, "in_reply_to": {"type": "string"}, "references": {"type": "string"}, "cc": {"type": "string"}, "bcc": {"type": "string"}, "cc_list": {"type": "array", "items": {"type": "string"}}, "bcc_list": {"type": "array", "items": {"type": "string"}}, "document_ids": {"type": "array", "items": {"type": "string"}}, "filename_query": {"type": "string"}, "attach_all_session_documents": {"type": "boolean", "default": False}}, "required": ["to", "subject", "body_text"]}},
@@ -937,6 +938,506 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
     return "\n".join(lines)
 
 
+# ──────────────────────────────────────────────
+# FDT → Schedule diff/apply helper
+# ──────────────────────────────────────────────
+
+def _normalize_fdt_shift(raw_shift: dict) -> dict | None:
+    """Normalize a shift dict returned by the vision model into canonical
+    fields: date (ISO), start (HH:MM), end (HH:MM), pause_hours (float),
+    hours (recomputed), cancelled (bool), notes (str). Returns None if
+    the shift is unusable (no date)."""
+    if not isinstance(raw_shift, dict):
+        return None
+    raw_date = str(raw_shift.get("date") or "").strip()
+    if not raw_date:
+        return None
+    try:
+        shift_date = _parse_date_value(raw_date, "date FDT")
+    except ValueError:
+        return None
+
+    raw_type = str(raw_shift.get("type") or "").strip().lower()
+    raw_notes = str(raw_shift.get("notes") or "").strip()
+    is_cancelled = (
+        raw_type == "cancelled"
+        or "barre" in _norm(raw_notes)
+        or "barré" in raw_notes.lower()
+        or "annul" in _norm(raw_notes)
+        or "non travaille" in _norm(raw_notes)
+    )
+
+    raw_start = str(raw_shift.get("start") or "").strip()
+    raw_end = str(raw_shift.get("end") or "").strip()
+    start_value = ""
+    end_value = ""
+    try:
+        if raw_start:
+            start_value = _normalize_time_value(raw_start, "start FDT")
+        if raw_end:
+            end_value = _normalize_time_value(raw_end, "end FDT")
+    except ValueError:
+        return None
+
+    pause_minutes_raw = raw_shift.get("pause_minutes")
+    try:
+        pause_minutes = float(pause_minutes_raw) if pause_minutes_raw not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        pause_minutes = 0.0
+    pause_hours = round(pause_minutes / 60.0, 2)
+
+    computed_hours = 0.0
+    if start_value and end_value and not is_cancelled:
+        try:
+            computed_hours = _calculate_schedule_hours(start_value, end_value, pause_hours)
+        except ValueError:
+            computed_hours = 0.0
+
+    return {
+        "date": shift_date,
+        "start": start_value,
+        "end": end_value,
+        "pause_hours": pause_hours,
+        "pause_minutes": int(round(pause_minutes)),
+        "hours": computed_hours,
+        "cancelled": is_cancelled,
+        "unit": str(raw_shift.get("unit") or "").strip(),
+        "approver_name": str(raw_shift.get("approver_name") or "").strip(),
+        "notes": raw_notes,
+        "type": raw_type or "regular",
+    }
+
+
+def _fdt_shift_matches_schedule(fdt_shift: dict, schedule) -> bool:
+    """Decide if a FDT shift and an existing schedule refer to the same work session."""
+    sched_date = schedule.date
+    if hasattr(sched_date, "isoformat"):
+        sched_date_val = sched_date
+    else:
+        try:
+            sched_date_val = date.fromisoformat(str(sched_date))
+        except Exception:
+            return False
+    return sched_date_val == fdt_shift["date"]
+
+
+def _schedule_diff_from_fdt(fdt_shifts: list[dict], existing_schedules: list) -> dict:
+    """Build a diff between FDT shifts and existing schedule rows.
+
+    Returns a dict with keys: creates, updates, cancellations, orphans, unchanged.
+    Each entry lists the relevant schedule rows and the new values.
+    """
+    creates: list[dict] = []
+    updates: list[dict] = []
+    cancellations: list[dict] = []
+    unchanged: list[dict] = []
+    used_schedule_ids: set = set()
+
+    # Index existing schedules by date for quick lookup. If multiple shifts
+    # per date exist, we take them in order and pair by index to FDT shifts
+    # of the same date.
+    by_date: dict = {}
+    for sched in existing_schedules:
+        sched_date = sched.date
+        if not hasattr(sched_date, "isoformat"):
+            try:
+                sched_date = date.fromisoformat(str(sched_date))
+            except Exception:
+                continue
+        by_date.setdefault(sched_date, []).append(sched)
+
+    for fdt_shift in fdt_shifts:
+        candidates = by_date.get(fdt_shift["date"], [])
+        candidates_unused = [s for s in candidates if s.id not in used_schedule_ids]
+
+        if fdt_shift["cancelled"]:
+            if candidates_unused:
+                target = candidates_unused[0]
+                used_schedule_ids.add(target.id)
+                cancellations.append({
+                    "schedule_id": target.id,
+                    "date": fdt_shift["date"].isoformat(),
+                    "existing_start": getattr(target, "start", "") or "",
+                    "existing_end": getattr(target, "end", "") or "",
+                    "existing_hours": float(getattr(target, "hours", 0) or 0),
+                })
+            # If no existing schedule matches, nothing to cancel — silently skip
+            continue
+
+        if not candidates_unused:
+            # No matching schedule — this is a new shift
+            creates.append({
+                "date": fdt_shift["date"].isoformat(),
+                "start": fdt_shift["start"],
+                "end": fdt_shift["end"],
+                "pause_hours": fdt_shift["pause_hours"],
+                "pause_minutes": fdt_shift["pause_minutes"],
+                "hours": fdt_shift["hours"],
+                "unit": fdt_shift["unit"],
+                "approver_name": fdt_shift["approver_name"],
+                "notes": fdt_shift["notes"],
+            })
+            continue
+
+        # Pick the first unused candidate for this date
+        target = candidates_unused[0]
+        used_schedule_ids.add(target.id)
+
+        existing_start = getattr(target, "start", "") or ""
+        existing_end = getattr(target, "end", "") or ""
+        existing_pause = float(getattr(target, "pause", 0) or 0)
+        existing_hours = float(getattr(target, "hours", 0) or 0)
+
+        same_start = fdt_shift["start"] == existing_start if fdt_shift["start"] else True
+        same_end = fdt_shift["end"] == existing_end if fdt_shift["end"] else True
+        same_pause = abs(fdt_shift["pause_hours"] - existing_pause) < 0.01
+        same_hours = abs(fdt_shift["hours"] - existing_hours) < 0.01
+
+        if same_start and same_end and same_pause and same_hours:
+            unchanged.append({
+                "schedule_id": target.id,
+                "date": fdt_shift["date"].isoformat(),
+                "start": existing_start,
+                "end": existing_end,
+                "hours": existing_hours,
+            })
+        else:
+            updates.append({
+                "schedule_id": target.id,
+                "date": fdt_shift["date"].isoformat(),
+                "existing_start": existing_start,
+                "existing_end": existing_end,
+                "existing_pause_hours": round(existing_pause, 2),
+                "existing_hours": round(existing_hours, 2),
+                "new_start": fdt_shift["start"] or existing_start,
+                "new_end": fdt_shift["end"] or existing_end,
+                "new_pause_hours": fdt_shift["pause_hours"],
+                "new_pause_minutes": fdt_shift["pause_minutes"],
+                "new_hours": fdt_shift["hours"],
+                "approver_name": fdt_shift["approver_name"],
+                "unit": fdt_shift["unit"],
+            })
+
+    # Any schedule not matched by any FDT shift is an "orphan" — existing in
+    # the schedule but not covered by the FDT. Flag for human review.
+    orphans: list[dict] = []
+    for sched in existing_schedules:
+        if sched.id in used_schedule_ids:
+            continue
+        sched_date = sched.date
+        orphans.append({
+            "schedule_id": sched.id,
+            "date": sched_date.isoformat() if hasattr(sched_date, "isoformat") else str(sched_date),
+            "start": getattr(sched, "start", "") or "",
+            "end": getattr(sched, "end", "") or "",
+            "hours": float(getattr(sched, "hours", 0) or 0),
+        })
+
+    return {
+        "creates": creates,
+        "updates": updates,
+        "cancellations": cancellations,
+        "orphans": orphans,
+        "unchanged": unchanged,
+    }
+
+
+def _format_schedule_diff(
+    diff: dict,
+    employee_name: str,
+    client_name: str,
+    period_start: date,
+    period_end: date,
+    dry_run: bool,
+) -> str:
+    """Format the diff as a human-readable summary for the chat."""
+    period_str = f"{period_start.strftime('%d/%m/%Y')} au {period_end.strftime('%d/%m/%Y')}"
+    header = "📋 Diff FDT → Horaire" if dry_run else "✅ Horaire mis a jour depuis la FDT"
+    lines = [f"{header} — {employee_name}"]
+    if client_name:
+        lines.append(f"Client: {client_name}")
+    lines.append(f"Periode: {period_str}")
+    lines.append("")
+
+    creates = diff.get("creates") or []
+    updates = diff.get("updates") or []
+    cancellations = diff.get("cancellations") or []
+    orphans = diff.get("orphans") or []
+    unchanged = diff.get("unchanged") or []
+
+    lines.append(f"➕ CREER ({len(creates)}):")
+    for c in creates:
+        lines.append(
+            f"  - {c['date']}: {c['start'] or '?'}-{c['end'] or '?'}"
+            f" pause {c['pause_minutes']}min → {c['hours']}h"
+            + (f" | {c['unit']}" if c['unit'] else "")
+            + (f" | signataire {c['approver_name']}" if c['approver_name'] else "")
+        )
+
+    lines.append(f"✏️ MODIFIER ({len(updates)}):")
+    for u in updates:
+        old_desc = f"{u['existing_start'] or '?'}-{u['existing_end'] or '?'} pause {int(round(u['existing_pause_hours']*60))}min ({u['existing_hours']}h)"
+        new_desc = f"{u['new_start'] or '?'}-{u['new_end'] or '?'} pause {u['new_pause_minutes']}min ({u['new_hours']}h)"
+        lines.append(f"  - {u['date']}: {old_desc} → {new_desc}")
+
+    lines.append(f"🚫 ANNULER ({len(cancellations)}):")
+    for x in cancellations:
+        lines.append(
+            f"  - {x['date']}: marquer comme non-travaille (case barree sur FDT)."
+            f" Existant: {x['existing_start']}-{x['existing_end']} ({x['existing_hours']}h)"
+        )
+
+    lines.append(f"⚠️ ORPHELINS ({len(orphans)}) — presents dans l'horaire mais absents de la FDT, verification humaine requise:")
+    for o in orphans:
+        lines.append(f"  - {o['date']}: {o['start']}-{o['end']} ({o['hours']}h) — schedule_id {o['schedule_id']}")
+
+    lines.append(f"✅ INCHANGES ({len(unchanged)})")
+
+    total_after = (
+        sum(c['hours'] for c in creates)
+        + sum(u['new_hours'] for u in updates)
+        + sum(u['hours'] for u in unchanged)
+    )
+    lines.append("")
+    lines.append(f"Total heures apres application: {round(total_after, 2)}h")
+
+    if dry_run:
+        lines.append("")
+        lines.append("Ceci est un apercu (dry_run). Rien n'a ete modifie.")
+        lines.append("Pour appliquer, rappelle apply_timesheet_to_schedule avec dry_run=false.")
+    else:
+        lines.append("")
+        lines.append("Changements appliques. Tu peux maintenant generer la facture avec generate_invoice_for_employee")
+        lines.append(f"en utilisant period_start='{period_start.isoformat()}' et period_end='{period_end.isoformat()}'.")
+
+    return "\n".join(lines)
+
+
+async def _apply_timesheet_to_schedule_internal(
+    db: AsyncSession,
+    chat_session_id: str,
+    document_id: str = "",
+    employee_id=None,
+    employee_name: str = "",
+    client_id=None,
+    client_name: str = "",
+    dry_run: bool = True,
+) -> str:
+    """Core logic for apply_timesheet_to_schedule tool.
+
+    Orchestrates: find FDT doc → analyze → resolve employee/client →
+    load existing schedules → build diff → optionally apply → return
+    human-readable summary.
+    """
+    # 1. Find the target FDT document in the session
+    uploads = await _get_chat_session_uploads(db, chat_session_id)
+    if not uploads:
+        return "Aucun document joint dans cette conversation."
+
+    target_upload = None
+    if document_id:
+        target_upload = next((u for u in uploads if str(u.id) == str(document_id)), None)
+        if not target_upload:
+            return f"Document {document_id} introuvable dans cette conversation."
+    else:
+        # Pick the first upload that looks like a FDT (has timesheet keywords or is a PDF/image)
+        target_upload = uploads[0]
+
+    # 2. Analyze the FDT via the existing pipeline
+    hint_employee = None
+    if employee_id or employee_name:
+        hint_employee = await _find_employee(db, employee_id, employee_name)
+
+    try:
+        items = await summarize_explicit_timesheet_documents(
+            db,
+            [_chat_upload_to_document(target_upload)],
+            employee=hint_employee,
+            raise_on_openai_error=True,
+        )
+    except Exception as exc:
+        return f"Erreur de lecture de la FDT: {exc}"
+
+    if not items:
+        return "La FDT n'a pas pu etre analysee. Verifie que le document est lisible."
+
+    summary = items[0]
+    raw_shifts = summary.get("shifts") or []
+    if not raw_shifts:
+        return (
+            "Aucun quart structure n'a pu etre extrait de cette FDT. "
+            "Verifie manuellement la lecture avec analyze_chat_session_documents."
+        )
+
+    # 3. Resolve employee
+    matched_employee = hint_employee
+    if not matched_employee and summary.get("employee_id"):
+        matched_employee = await _find_employee(db, summary.get("employee_id"), None)
+    if not matched_employee and summary.get("employee_name"):
+        matched_employee = await _find_employee(db, None, summary.get("employee_name"))
+    if not matched_employee:
+        return (
+            "Employe introuvable pour cette FDT. "
+            "Rappelle apply_timesheet_to_schedule en fournissant employee_id ou employee_name."
+        )
+
+    # 4. Normalize shifts and determine the actual period
+    normalized_shifts = []
+    for raw in raw_shifts:
+        norm = _normalize_fdt_shift(raw)
+        if norm:
+            normalized_shifts.append(norm)
+
+    if not normalized_shifts:
+        return (
+            "Aucun quart exploitable apres normalisation (dates ou heures manquantes). "
+            "Verifie la lecture manuellement avant d'appliquer."
+        )
+
+    # Sort by date and derive period bounds
+    normalized_shifts.sort(key=lambda s: s["date"])
+    period_start = normalized_shifts[0]["date"]
+    period_end = normalized_shifts[-1]["date"]
+
+    # Override with summary period_start/end if present and broader
+    summary_period_start = summary.get("period_start") or ""
+    summary_period_end = summary.get("period_end") or ""
+    try:
+        if summary_period_start:
+            sp_start = date.fromisoformat(summary_period_start[:10])
+            if sp_start < period_start:
+                period_start = sp_start
+        if summary_period_end:
+            sp_end = date.fromisoformat(summary_period_end[:10])
+            if sp_end > period_end:
+                period_end = sp_end
+    except ValueError:
+        pass
+
+    # 5. Resolve client
+    resolved_client = None
+    if client_id or client_name:
+        resolved_client = await _find_client(db, client_id, client_name)
+        if not resolved_client:
+            return "Client introuvable. Verifie client_id ou client_name."
+
+    if not resolved_client:
+        # Look at existing schedules in the period to find the dominant client
+        existing_q = await db.execute(
+            select(Schedule).where(
+                Schedule.employee_id == matched_employee.id,
+                Schedule.date >= period_start,
+                Schedule.date <= period_end,
+                Schedule.status != "cancelled",
+            )
+        )
+        existing_for_client = existing_q.scalars().all()
+        client_counts: dict = {}
+        for s in existing_for_client:
+            if s.client_id:
+                client_counts[s.client_id] = client_counts.get(s.client_id, 0) + 1
+        if client_counts:
+            dominant_client_id = max(client_counts, key=client_counts.get)
+            resolved_client = await _find_client(db, dominant_client_id, None)
+
+    if not resolved_client:
+        # Fall back to employee's default client_id
+        emp_client_id = getattr(matched_employee, "client_id", None)
+        if emp_client_id:
+            resolved_client = await _find_client(db, emp_client_id, None)
+
+    if not resolved_client:
+        return (
+            f"Impossible de determiner le client pour {matched_employee.name} sur la periode "
+            f"{period_start.isoformat()} au {period_end.isoformat()}. "
+            "Rappelle apply_timesheet_to_schedule en fournissant client_id ou client_name."
+        )
+
+    # 6. Load all existing schedules for this employee in the period
+    existing_q = await db.execute(
+        select(Schedule).where(
+            Schedule.employee_id == matched_employee.id,
+            Schedule.date >= period_start,
+            Schedule.date <= period_end,
+        ).order_by(Schedule.date, Schedule.start)
+    )
+    existing_schedules = existing_q.scalars().all()
+
+    # 7. Build the diff
+    diff = _schedule_diff_from_fdt(normalized_shifts, existing_schedules)
+
+    # 8. If dry_run, return the formatted preview without touching DB
+    if dry_run:
+        return _format_schedule_diff(
+            diff,
+            employee_name=matched_employee.name or "",
+            client_name=resolved_client.name or "",
+            period_start=period_start,
+            period_end=period_end,
+            dry_run=True,
+        )
+
+    # 9. Apply changes
+    default_rate = float(getattr(matched_employee, "rate", 0) or 0)
+    applied_note_tag = f"Applique via FDT {date.today().isoformat()}"
+
+    # Creations
+    for c in diff["creates"]:
+        new_shift = Schedule(
+            id=new_id(),
+            employee_id=matched_employee.id,
+            client_id=resolved_client.id,
+            date=date.fromisoformat(c["date"]),
+            start=c["start"],
+            end=c["end"],
+            hours=c["hours"],
+            pause=c["pause_hours"],
+            location=c["unit"] or "",
+            billable_rate=default_rate,
+            status="published",
+            notes=(f"{applied_note_tag}. " + (c["notes"] or "")).strip(),
+        )
+        db.add(new_shift)
+
+    # Updates
+    for u in diff["updates"]:
+        sched_q = await db.execute(select(Schedule).where(Schedule.id == u["schedule_id"]))
+        sched = sched_q.scalar_one_or_none()
+        if not sched:
+            continue
+        sched.start = u["new_start"]
+        sched.end = u["new_end"]
+        sched.pause = u["new_pause_hours"]
+        sched.hours = u["new_hours"]
+        existing_notes = (sched.notes or "").strip()
+        if applied_note_tag not in existing_notes:
+            sched.notes = (f"{existing_notes} | {applied_note_tag}" if existing_notes else applied_note_tag)
+
+    # Cancellations
+    for x in diff["cancellations"]:
+        sched_q = await db.execute(select(Schedule).where(Schedule.id == x["schedule_id"]))
+        sched = sched_q.scalar_one_or_none()
+        if not sched:
+            continue
+        sched.status = "cancelled"
+        sched.hours = 0
+        existing_notes = (sched.notes or "").strip()
+        cancel_note = f"{applied_note_tag} (case barree)"
+        if cancel_note not in existing_notes:
+            sched.notes = (f"{existing_notes} | {cancel_note}" if existing_notes else cancel_note)
+
+    await db.commit()
+
+    return _format_schedule_diff(
+        diff,
+        employee_name=matched_employee.name or "",
+        client_name=resolved_client.name or "",
+        period_start=period_start,
+        period_end=period_end,
+        dry_run=False,
+    )
+
+
 def _message_requests_chat_upload_analysis(
     message: str,
     uploads: list[ChatbotUpload] | None = None,
@@ -1419,6 +1920,25 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             except Exception as exc:
                 return f"Erreur de lecture de la FDT: {exc}"
             return _format_timesheet_analysis_response(items, max_results=int(input_data.get('max_results', 5) or 5))
+        if name == 'apply_timesheet_to_schedule':
+            dry_run_raw = input_data.get('dry_run')
+            if dry_run_raw is None:
+                dry_run = True  # safe default
+            else:
+                dry_run = bool(dry_run_raw)
+            try:
+                return await _apply_timesheet_to_schedule_internal(
+                    db,
+                    chat_session_id,
+                    document_id=str(input_data.get('document_id') or ''),
+                    employee_id=input_data.get('employee_id'),
+                    employee_name=input_data.get('employee_name'),
+                    client_id=input_data.get('client_id'),
+                    client_name=input_data.get('client_name'),
+                    dry_run=dry_run,
+                )
+            except Exception as exc:
+                return f"Erreur application FDT → horaire: {exc}"
         if name == 'attach_chat_documents_to_invoice':
             invoice, error = await _find_invoice(
                 db,
@@ -2056,7 +2576,7 @@ def _detect_prompt(message: str):
     return GENERAL_PROMPT, 'general'
 
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. REGLE ABSOLUE FDT → FACTURE: Si l'utilisateur joint une FDT dans le chat et te demande de generer une facture a partir de cette FDT, tu NE DOIS JAMAIS appeler generate_current_invoice_for_employee ni generate_invoice_for_employee directement. Au lieu de ca, tu dois OBLIGATOIREMENT suivre ce workflow en 4 etapes: (1) appeler analyze_chat_session_documents pour extraire les quarts reels de la FDT; (2) afficher a l'utilisateur un tableau clair avec date, heure debut, heure fin, pause en minutes et le nom du client/etablissement extrait, et demander explicitement sa confirmation avant toute modification; (3) apres confirmation, appeler apply_timesheet_to_schedule (en dry_run d'abord puis reel) pour creer/modifier/marquer les quarts dans l'horaire selon la FDT; (4) seulement ensuite, appeler generate_invoice_for_employee avec period_start et period_end EXACTEMENT egales a la periode couverte par la FDT, pas la periode courante du systeme. IMPORTANT: la periode de la facture doit toujours correspondre a la vraie periode du document FDT, jamais a la periode de facturation courante quand les deux different. Si tu n'as pas encore l'outil apply_timesheet_to_schedule disponible, arrete-toi a l'etape 2 et dis explicitement a l'utilisateur: 'Je dois modifier les quarts dans l'horaire manuellement avant de generer la facture. Veux-tu que je te liste les modifications a faire?' Ne jamais pretendre avoir genere une facture a partir d'une FDT quand tu as en fait utilise l'horaire existant. REGLE DATES FDT: les dates ecrites sur les FDT sont souvent au format AA/MM/JJ ou JJ/MM/AA. Exemple '26/03/29' signifie le 29 mars 2026, pas le 26 mars 2029. Toujours confirmer l'annee avec le champ 'Semaine du X au Y' en haut du formulaire. REGLE CONFIANCE: si une FDT contient un ou plusieurs champs illisibles ou si tu as un doute sur les heures, les dates ou les pauses, NE genere PAS la facture. Explique plutot les champs incertains et demande une verification humaine avant toute action. Mieux vaut demander que faire faux. Quand on te demande de consulter ou modifier une facture brouillon existante directement dans la facture et non dans l'horaire, utilise get_invoice_details puis update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line selon le besoin. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter ou surveiller les courriels entrants et preparer les brouillons, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. REGLE ABSOLUE FDT → FACTURE: Si l'utilisateur joint une FDT dans le chat et te demande de generer une facture a partir de cette FDT, tu NE DOIS JAMAIS appeler generate_current_invoice_for_employee ni generate_invoice_for_employee directement. Au lieu de ca, tu dois OBLIGATOIREMENT suivre ce workflow en 4 etapes: (1) appeler analyze_chat_session_documents pour extraire les quarts reels de la FDT; (2) afficher a l'utilisateur un tableau clair avec date, heure debut, heure fin, pause en minutes et le nom du client/etablissement extrait, et demander explicitement sa confirmation avant toute modification; (3) apres confirmation, appeler apply_timesheet_to_schedule avec dry_run=true pour afficher le diff, attendre que l'utilisateur valide le diff, puis rappeler apply_timesheet_to_schedule avec dry_run=false pour appliquer; (4) seulement ensuite, appeler generate_invoice_for_employee avec period_start et period_end EXACTEMENT egales a la periode couverte par la FDT (que apply_timesheet_to_schedule te retourne), pas la periode courante du systeme. IMPORTANT: la periode de la facture doit toujours correspondre a la vraie periode du document FDT, jamais a la periode de facturation courante quand les deux different. Ne jamais pretendre avoir genere une facture a partir d'une FDT quand tu as en fait utilise l'horaire existant sans appliquer la FDT dessus d'abord. REGLE DATES FDT: les dates ecrites sur les FDT sont souvent au format AA/MM/JJ ou JJ/MM/AA. Exemple '26/03/29' signifie le 29 mars 2026, pas le 26 mars 2029. Toujours confirmer l'annee avec le champ 'Semaine du X au Y' en haut du formulaire. REGLE CONFIANCE: si une FDT contient un ou plusieurs champs illisibles ou si tu as un doute sur les heures, les dates ou les pauses, NE genere PAS la facture. Explique plutot les champs incertains et demande une verification humaine avant toute action. Mieux vaut demander que faire faux. Quand on te demande de consulter ou modifier une facture brouillon existante directement dans la facture et non dans l'horaire, utilise get_invoice_details puis update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line selon le besoin. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter ou surveiller les courriels entrants et preparer les brouillons, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements, horaires et FDT. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie, l'indexation de FDT recues, le traitement automatique des courriels entrants, la generation d'une facture, une conciliation FDT-facture ou l'envoi du rappel hebdomadaire de FDT, execute l'action demandee puis resume le resultat. Agis comme un commis de facturation prudent: ignore les pieces jointes qui ne sont pas pertinentes et dis clairement quand une verification visuelle reste necessaire. Pour lister les dernieres vraies FDT recues ou analyser les quarts, pauses et signatures visibles, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Quand l'utilisateur demande de modifier directement une facture brouillon existante, utilise les outils get_invoice_details, update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line au lieu de modifier l'horaire. Quand l'utilisateur demande un niveau de confiance, utilise reconcile_timesheet_invoice et cite clairement le niveau eleve, moyen ou faible. Quand l'utilisateur demande de traiter ou surveiller les courriels entrants, utilise process_incoming_timesheet_emails. Quand l'utilisateur demande un rappel hebdomadaire en brouillon Gmail ou un test d'envoi de masse en brouillon, utilise draft_weekly_timesheet_reminder. Quand l'utilisateur demande le jour, l'heure, le fuseau horaire ou les destinataires du rappel du dimanche, utilise get_automation_config. Quand l'utilisateur demande un resume documentaire par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 

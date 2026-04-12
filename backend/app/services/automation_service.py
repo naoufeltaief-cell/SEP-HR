@@ -26,6 +26,8 @@ from .timesheet_service import (
     find_timesheet,
     format_french_period,
     index_recent_timesheet_email_documents,
+    requested_timesheet_period,
+    sync_recent_timesheet_documents_for_period,
     sync_timesheet_attachments_to_invoice,
 )
 
@@ -37,6 +39,7 @@ TIMESHEET_REMINDER_TO = (os.getenv("TIMESHEET_REMINDER_TO") or BILLING_SENDER_EM
 TIMESHEET_INBOX_MONITOR_ENABLED = str(os.getenv("TIMESHEET_INBOX_MONITOR_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 TIMESHEET_INBOX_MAX_RESULTS = int(os.getenv("TIMESHEET_INBOX_MAX_RESULTS", "30") or 30)
 TIMESHEET_INBOX_SEARCH = (os.getenv("TIMESHEET_INBOX_SEARCH") or "newer_than:14d").strip()
+TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED = str(os.getenv("TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 TIMESHEET_AUTO_DRAFT_ENABLED = str(os.getenv("TIMESHEET_AUTO_DRAFT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE = float(os.getenv("TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE", "0.68") or 0.68)
 DEFAULT_REMINDER_RECIPIENTS = [
@@ -231,6 +234,149 @@ async def _maybe_auto_draft_invoices(db, indexing_result: dict) -> list[dict]:
     return drafted
 
 
+async def _draft_invoices_from_schedule_sync(db, sync_result: dict) -> list[dict]:
+    drafted: list[dict] = []
+    period_start_raw = sync_result.get("period_start")
+    period_end_raw = sync_result.get("period_end")
+    if not period_start_raw or not period_end_raw:
+        return drafted
+
+    period_start = date.fromisoformat(period_start_raw)
+    period_end = date.fromisoformat(period_end_raw)
+
+    for item in sync_result.get("items", []) or []:
+        employee_id = item.get("employee_id")
+        employee_name = item.get("employee_name", "")
+        client_id = item.get("client_id")
+        client_name = item.get("client_name", "")
+        issues = list(item.get("issues") or [])
+
+        if not employee_id:
+            drafted.append(
+                {
+                    "employee_id": None,
+                    "employee_name": employee_name,
+                    "client_id": client_id,
+                    "client_name": client_name,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "status": "skipped",
+                    "reason": "employe introuvable",
+                }
+            )
+            continue
+
+        if item.get("blocking"):
+            drafted.append(
+                {
+                    "employee_id": employee_id,
+                    "employee_name": employee_name,
+                    "client_id": client_id,
+                    "client_name": client_name,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "status": "skipped",
+                    "reason": f"verification requise: {', '.join(issues) if issues else 'bloqueurs presents'}",
+                }
+            )
+            continue
+
+        if not client_id:
+            drafted.append(
+                {
+                    "employee_id": employee_id,
+                    "employee_name": employee_name,
+                    "client_id": None,
+                    "client_name": client_name,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "status": "skipped",
+                    "reason": "client non resolu",
+                }
+            )
+            continue
+
+        existing_result = await db.execute(
+            select(Invoice).where(
+                Invoice.employee_id == employee_id,
+                Invoice.client_id == client_id,
+                Invoice.period_start == period_start,
+                Invoice.period_end == period_end,
+                Invoice.status != InvoiceStatus.CANCELLED.value,
+            )
+        )
+        existing_invoice = existing_result.scalar_one_or_none()
+        if existing_invoice:
+            drafted.append(
+                {
+                    "employee_id": employee_id,
+                    "employee_name": employee_name,
+                    "client_id": client_id,
+                    "client_name": client_name,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "status": "existing",
+                    "invoice_id": existing_invoice.id,
+                    "invoice_number": existing_invoice.number,
+                }
+            )
+            continue
+
+        generated = await generate_invoices_from_timesheets(
+            db,
+            period_start=period_start,
+            period_end=period_end,
+            client_id=client_id,
+            employee_id=employee_id,
+            user_email="automation@soins-expert-plus.com",
+        )
+        invoice = next(
+            (
+                candidate
+                for candidate in generated
+                if candidate.employee_id == employee_id and candidate.client_id == client_id
+            ),
+            None,
+        )
+        if not invoice:
+            drafted.append(
+                {
+                    "employee_id": employee_id,
+                    "employee_name": employee_name,
+                    "client_id": client_id,
+                    "client_name": client_name,
+                    "period_start": period_start.isoformat(),
+                    "period_end": period_end.isoformat(),
+                    "status": "skipped",
+                    "reason": "aucun brouillon cree",
+                }
+            )
+            continue
+
+        timesheet = await find_timesheet(db, employee_id, period_start, period_end)
+        attached_count = 0
+        if timesheet:
+            attached_count = await sync_timesheet_attachments_to_invoice(db, timesheet, invoice)
+        await db.commit()
+        drafted.append(
+            {
+                "employee_id": employee_id,
+                "employee_name": employee_name,
+                "client_id": client_id,
+                "client_name": client_name,
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
+                "status": "created",
+                "invoice_id": invoice.id,
+                "invoice_number": invoice.number,
+                "invoice_total": round(float(invoice.total or 0), 2),
+                "timesheet_attachments_synced": attached_count,
+            }
+        )
+
+    return drafted
+
+
 async def process_incoming_timesheet_emails(
     triggered_by: str = "system",
     max_results: int | None = None,
@@ -251,7 +397,39 @@ async def process_incoming_timesheet_emails(
 
         indexing_result = await index_recent_timesheet_email_documents(db, documents, uploaded_by=triggered_by or "system")
         await db.commit()
-        drafted = await _maybe_auto_draft_invoices(db, indexing_result)
+        requested_start, requested_end = requested_timesheet_period(datetime.now(AUTOMATION_TIMEZONE).date())
+        sync_result = {
+            "period_start": requested_start.isoformat(),
+            "period_end": requested_end.isoformat(),
+            "selected_count": 0,
+            "applied_count": 0,
+            "review_count": 0,
+            "items": [],
+            "skipped": [],
+        }
+        should_sync = TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED and (
+            triggered_by != "scheduler"
+            or int(indexing_result.get("created_timesheets") or 0) > 0
+            or int(indexing_result.get("created_attachments") or 0) > 0
+        )
+        if should_sync:
+            sync_result = await sync_recent_timesheet_documents_for_period(
+                db,
+                documents,
+                requested_start,
+                requested_end,
+                uploaded_by=triggered_by or "system",
+            )
+            await db.commit()
+
+        draft_source = dict(indexing_result)
+        draft_source["timesheet_items"] = [
+            item
+            for item in (indexing_result.get("timesheet_items") or [])
+            if item.get("period_start") == requested_start.isoformat()
+            and item.get("period_end") == requested_end.isoformat()
+        ]
+        drafted = await _maybe_auto_draft_invoices(db, draft_source)
 
         if indexing_result.get("created_attachments") or indexing_result.get("created_timesheets") or any(item.get("status") == "created" for item in drafted):
             db.add(
@@ -285,9 +463,104 @@ async def process_incoming_timesheet_emails(
             "items": indexing_result.get("items", []),
             "timesheet_items": indexing_result.get("timesheet_items", []),
             "accommodation_items": indexing_result.get("accommodation_items", []),
+            "schedule_sync": sync_result,
             "ignored": indexing_result.get("ignored", []),
             "unmatched": indexing_result.get("unmatched", []),
             "drafted": drafted,
+        }
+
+
+async def process_requested_period_timesheets(
+    triggered_by: str = "system",
+    max_results: int | None = None,
+    unread_only: bool = False,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    generate_invoices: bool = True,
+) -> dict:
+    target_start, target_end = (
+        (period_start, period_end)
+        if period_start and period_end
+        else requested_timesheet_period(datetime.now(AUTOMATION_TIMEZONE).date())
+    )
+
+    async with async_session() as db:
+        documents = await list_recent_billing_gmail_documents(
+            db,
+            max_results=max_results or TIMESHEET_INBOX_MAX_RESULTS,
+            search=TIMESHEET_INBOX_SEARCH,
+            unread_only=unread_only,
+        )
+        if documents is None:
+            return {
+                "status": "not_connected",
+                "period_start": target_start.isoformat(),
+                "period_end": target_end.isoformat(),
+                "indexed_count": 0,
+                "drafted_count": 0,
+                "schedule_sync": {"items": [], "skipped": []},
+            }
+
+        indexing_result = await index_recent_timesheet_email_documents(db, documents, uploaded_by=triggered_by or "system")
+        await db.commit()
+        if TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED:
+            sync_result = await sync_recent_timesheet_documents_for_period(
+                db,
+                documents,
+                target_start,
+                target_end,
+                uploaded_by=triggered_by or "system",
+            )
+            await db.commit()
+        else:
+            sync_result = {
+                "period_start": target_start.isoformat(),
+                "period_end": target_end.isoformat(),
+                "selected_count": 0,
+                "applied_count": 0,
+                "review_count": 0,
+                "items": [],
+                "skipped": [],
+            }
+
+        drafted = []
+        if generate_invoices and TIMESHEET_AUTO_DRAFT_ENABLED:
+            drafted = await _draft_invoices_from_schedule_sync(db, sync_result)
+
+        if (
+            indexing_result.get("created_attachments")
+            or indexing_result.get("created_timesheets")
+            or sync_result.get("applied_count")
+            or any(item.get("status") == "created" for item in drafted)
+        ):
+            db.add(
+                AutomationRun(
+                    job_key="requested_period_timesheet_workflow",
+                    period_key=f"{target_start.isoformat()}_{target_end.isoformat()}",
+                    status="processed",
+                    details=(
+                        f"indexed={indexing_result.get('indexed_count', 0)} "
+                        f"sync={sync_result.get('applied_count', 0)} "
+                        f"review={sync_result.get('review_count', 0)} "
+                        f"drafted={len([item for item in drafted if item.get('status') == 'created'])}"
+                    ),
+                    triggered_by=triggered_by or "system",
+                )
+            )
+            await db.commit()
+
+        return {
+            "status": "processed",
+            "period_start": target_start.isoformat(),
+            "period_end": target_end.isoformat(),
+            "indexed_count": indexing_result.get("indexed_count", 0),
+            "created_timesheets": indexing_result.get("created_timesheets", 0),
+            "created_attachments": indexing_result.get("created_attachments", 0),
+            "schedule_sync": sync_result,
+            "drafted_count": len([item for item in drafted if item.get("status") == "created"]),
+            "drafted": drafted,
+            "unmatched": indexing_result.get("unmatched", []),
+            "ignored": indexing_result.get("ignored", []),
         }
 
 
@@ -390,6 +663,7 @@ def _build_weekly_timesheet_reminder_payload(reference_date: date | None = None)
 
 
 def get_automation_config() -> dict:
+    requested_start, requested_end = requested_timesheet_period(datetime.now(AUTOMATION_TIMEZONE).date())
     return {
         "timezone": str(AUTOMATION_TIMEZONE),
         "timesheet_reminder": {
@@ -404,6 +678,12 @@ def get_automation_config() -> dict:
             "enabled": TIMESHEET_INBOX_MONITOR_ENABLED,
             "max_results": TIMESHEET_INBOX_MAX_RESULTS,
             "search": TIMESHEET_INBOX_SEARCH,
+        },
+        "timesheet_auto_schedule_sync": {
+            "enabled": TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED,
+            "requested_period_start": requested_start.isoformat(),
+            "requested_period_end": requested_end.isoformat(),
+            "requested_period_label": format_french_period(requested_start, requested_end),
         },
         "timesheet_auto_draft": {
             "enabled": TIMESHEET_AUTO_DRAFT_ENABLED,
@@ -533,7 +813,11 @@ async def send_weekly_timesheet_reminder(triggered_by: str = "system", force: bo
 
 async def run_pending_automations() -> None:
     if TIMESHEET_INBOX_MONITOR_ENABLED:
-        await process_incoming_timesheet_emails(triggered_by="scheduler", unread_only=False)
+        await process_requested_period_timesheets(
+            triggered_by="scheduler",
+            unread_only=False,
+            generate_invoices=TIMESHEET_AUTO_DRAFT_ENABLED,
+        )
     if not TIMESHEET_REMINDER_ENABLED:
         return
     now = datetime.now(AUTOMATION_TIMEZONE)

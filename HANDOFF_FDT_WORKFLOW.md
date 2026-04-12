@@ -245,3 +245,46 @@ Et plus tard (Parties B et C de la conversation originale, pas encore décidées
 - Score de confiance exposé dans la réponse du chatbot
 
 Bonne chance. Nao est compétent, patient, communique en français québécois, préfère un diagnostic clair à une action précipitée. Il n'aime pas quand l'agent (ou l'LLM) prétend avoir fait quelque chose qu'il n'a pas vraiment fait — c'est littéralement le bug qu'on corrige ici.
+
+---
+
+## Mise a jour session suivante - workflow hebdomadaire courriel -> horaire -> facture
+
+Cette session a ajoute une deuxieme brique tres importante pour la production:
+
+- `requested_timesheet_period(...)` dans `backend/app/services/timesheet_service.py`
+  - vise la semaine demandee par le dernier rappel du dimanche
+  - exemple: lundi 2026-04-13 doit encore viser `2026-04-05 -> 2026-04-11`
+- `sync_recent_timesheet_documents_for_period(...)`
+  - analyse les FDT recues
+  - ne retient que la bonne periode
+  - dedupe par employe
+  - synchronise l'horaire de cette semaine
+- `process_requested_period_timesheets(...)` dans `backend/app/services/automation_service.py`
+  - indexe les courriels
+  - synchronise l'horaire de la semaine demandee
+  - genere les brouillons de facture quand la synchro est exploitable
+- `run_pending_automations()` appelle maintenant ce workflow de facon recurrente
+- le prompt chatbot doit privilegier `process_requested_period_timesheets` pour les demandes du type:
+  - `identifie les 10 dernieres FDT recues et modifie l'horaire`
+  - `analyse les FDT de la semaine demandee et genere les factures`
+
+### Rendu actuel attendu
+
+- Les demandes generales de surveillance / classement peuvent encore utiliser `process_incoming_timesheet_emails`
+- Le workflow hebdomadaire doit, lui, passer par `process_requested_period_timesheets`
+- La lecture FDT par document joint dans le chat continue a utiliser:
+  - `analyze_chat_session_documents`
+  - puis `apply_timesheet_to_schedule`
+
+### Variables Render a verifier
+
+- `TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED=true`
+- `TIMESHEET_AUTO_DRAFT_ENABLED=true`
+- `TIMESHEET_ATTACHMENT_MODEL=gpt-4o`
+- `TIMESHEET_ATTACHMENT_REASONING_EFFORT=high`
+
+### Backup pris avant cette passe
+
+- branche: `backup/pre-weekly-fdt-sync-workflow`
+- tag: `backup-pre-weekly-fdt-sync-workflow`

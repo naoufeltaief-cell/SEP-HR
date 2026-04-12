@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from collections import defaultdict
+from collections import Counter, defaultdict
 from email.utils import parseaddr, parsedate_to_datetime
 from io import BytesIO
 import json
@@ -127,6 +127,37 @@ TIMESHEET_ATTACHMENT_REASONING_EFFORT = (
     or "medium"
 ).strip().lower()
 _VISION_ATTACHMENT_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
+_ORIENTATION_SYSTEM_TAG = "[[orientation]]"
+_DAY_LABEL_TO_INDEX = {
+    "dim": 0,
+    "dimanche": 0,
+    "sun": 0,
+    "sunday": 0,
+    "lun": 1,
+    "lundi": 1,
+    "mon": 1,
+    "monday": 1,
+    "mar": 2,
+    "mardi": 2,
+    "tue": 2,
+    "tuesday": 2,
+    "mer": 3,
+    "mercredi": 3,
+    "wed": 3,
+    "wednesday": 3,
+    "jeu": 4,
+    "jeudi": 4,
+    "thu": 4,
+    "thursday": 4,
+    "ven": 5,
+    "vendredi": 5,
+    "fri": 5,
+    "friday": 5,
+    "sam": 6,
+    "samedi": 6,
+    "sat": 6,
+    "saturday": 6,
+}
 
 
 def _norm(value: str) -> str:
@@ -175,6 +206,195 @@ def normalize_time_str(value: str) -> str:
     if hours < 0 or hours > 23:
         return ""
     return f"{hours:02d}:{minutes}"
+
+
+def _day_index_from_label(value: str = "") -> Optional[int]:
+    normalized = _norm(value)
+    if not normalized:
+        return None
+    for token, index in _DAY_LABEL_TO_INDEX.items():
+        if normalized.startswith(token):
+            return index
+    return None
+
+
+def _time_to_minutes(value: str = "") -> Optional[int]:
+    normalized = normalize_time_str(value)
+    if not normalized:
+        return None
+    hours, minutes = normalized.split(":", 1)
+    return int(hours) * 60 + int(minutes)
+
+
+def _calculate_shift_hours_from_summary(start_value: str = "", end_value: str = "", pause_minutes: float = 0) -> float:
+    start_minutes = _time_to_minutes(start_value)
+    end_minutes = _time_to_minutes(end_value)
+    if start_minutes is None or end_minutes is None:
+        return 0.0
+    duration = end_minutes - start_minutes
+    if duration < 0:
+        duration += 24 * 60
+    duration -= int(round(float(pause_minutes or 0)))
+    return round(max(duration, 0) / 60.0, 2)
+
+
+def _parse_loose_shift_date(value: str = "") -> Optional[date]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    iso_candidate = raw[:10]
+    try:
+        return date.fromisoformat(iso_candidate)
+    except ValueError:
+        pass
+
+    cleaned = re.sub(r"[^0-9/\-.]", "", raw)
+    if not cleaned:
+        return None
+
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%Y-%m-%d", "%d.%m.%Y", "%Y.%m.%d"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+
+    match = re.match(r"^(\d{1,4})[/-](\d{1,2})[/-](\d{1,4})$", cleaned)
+    if not match:
+        return None
+    first = int(match.group(1))
+    second = int(match.group(2))
+    third = int(match.group(3))
+    candidates: list[date] = []
+
+    def _push_candidate(year_value: int, month_value: int, day_value: int) -> None:
+        try:
+            candidates.append(date(year_value, month_value, day_value))
+        except ValueError:
+            return
+
+    if first > 31:
+        _push_candidate(first, second, third)
+    elif third > 999:
+        _push_candidate(third, second, first)
+    else:
+        if first >= 24:
+            _push_candidate(2000 + first, second, third)
+        if third <= 99:
+            _push_candidate(2000 + third, second, first)
+        _push_candidate(first, second, third)
+        _push_candidate(third, second, first)
+
+    return candidates[0] if candidates else None
+
+
+def _resolve_shift_date_for_period(shift: dict, period_start: date, period_end: date) -> Optional[date]:
+    parsed = _parse_loose_shift_date(str(shift.get("date") or ""))
+    if parsed and period_start <= parsed <= period_end:
+        return parsed
+
+    if parsed:
+        for offset in range(7):
+            candidate = period_start + timedelta(days=offset)
+            if candidate.month == parsed.month and candidate.day == parsed.day:
+                return candidate
+
+    day_index = _day_index_from_label(str(shift.get("day_label") or ""))
+    if day_index is not None:
+        candidate = period_start + timedelta(days=day_index)
+        if period_start <= candidate <= period_end:
+            return candidate
+
+    if parsed:
+        return parsed
+    return None
+
+
+def _schedule_pause_hours_from_minutes(value: float) -> float:
+    try:
+        minutes = float(value or 0)
+    except (TypeError, ValueError):
+        minutes = 0.0
+    if minutes <= 0:
+        return 0.0
+    return round(minutes / 60.0, 2)
+
+
+def _strip_orientation_system_tag(notes: str = "") -> str:
+    cleaned = str(notes or "").replace(_ORIENTATION_SYSTEM_TAG, " ")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _build_schedule_notes_from_extracted_shift(existing_notes: str, shift: dict) -> str:
+    parts: list[str] = []
+    cleaned_existing = _strip_orientation_system_tag(existing_notes)
+    if cleaned_existing:
+        parts.append(cleaned_existing)
+    if shift.get("approver_name"):
+        parts.append(f"Signataire FDT: {shift.get('approver_name')}")
+    if shift.get("notes"):
+        parts.append(str(shift.get("notes") or "").strip())
+    merged: list[str] = []
+    seen = set()
+    for item in parts:
+        normalized = re.sub(r"\s+", " ", str(item or "").strip())
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(normalized)
+    body = " | ".join(merged).strip()
+    if str(shift.get("type") or "").strip().lower() == "orientation":
+        return f"{_ORIENTATION_SYSTEM_TAG} {body}".strip()
+    return body
+
+
+def _infer_period_client_id(schedules: list[Schedule], employee: Employee) -> Optional[int]:
+    explicit_client_ids = [int(schedule.client_id) for schedule in schedules if getattr(schedule, "client_id", None) is not None]
+    if explicit_client_ids:
+        ranked = Counter(explicit_client_ids).most_common()
+        if len(ranked) == 1 or ranked[0][1] > ranked[1][1]:
+            return ranked[0][0]
+    return int(getattr(employee, "client_id", 0) or 0) or None
+
+
+def _match_schedule_candidate(shift: dict, candidates: list[Schedule], used_ids: set[str]) -> Optional[Schedule]:
+    available = [schedule for schedule in candidates if schedule.id not in used_ids]
+    if not available:
+        return None
+
+    shift_start = _time_to_minutes(str(shift.get("start") or ""))
+    shift_end = _time_to_minutes(str(shift.get("end") or ""))
+
+    if shift_start is not None and shift_end is not None:
+        for schedule in available:
+            if _time_to_minutes(schedule.start) == shift_start and _time_to_minutes(schedule.end) == shift_end:
+                return schedule
+
+    if shift_start is not None:
+        exact_start = [schedule for schedule in available if _time_to_minutes(schedule.start) == shift_start]
+        if len(exact_start) == 1:
+            return exact_start[0]
+
+    if shift_end is not None:
+        exact_end = [schedule for schedule in available if _time_to_minutes(schedule.end) == shift_end]
+        if len(exact_end) == 1:
+            return exact_end[0]
+
+    if len(available) == 1:
+        return available[0]
+
+    if shift_start is not None:
+        ranked = sorted(
+            available,
+            key=lambda schedule: abs((_time_to_minutes(schedule.start) or 0) - shift_start),
+        )
+        best = ranked[0]
+        if abs((_time_to_minutes(best.start) or 0) - shift_start) <= 180:
+            return best
+
+    return None
 
 
 def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
@@ -551,6 +771,14 @@ def completed_billing_period(reference_date: Optional[date] = None) -> tuple[dat
     completed_day = ref - timedelta(days=1)
     days_since_sunday = (completed_day.weekday() + 1) % 7
     period_start = completed_day - timedelta(days=days_since_sunday)
+    return period_start, period_start + timedelta(days=6)
+
+
+def requested_timesheet_period(reference_date: Optional[date] = None) -> tuple[date, date]:
+    ref = reference_date or date.today()
+    days_since_sunday = (ref.weekday() + 1) % 7
+    current_sunday = ref - timedelta(days=days_since_sunday)
+    period_start = current_sunday - timedelta(days=7)
     return period_start, period_start + timedelta(days=6)
 
 
@@ -3076,6 +3304,350 @@ async def summarize_explicit_timesheet_documents(
         reverse=True,
     )
     return summaries
+
+
+def _select_latest_summaries_for_period(
+    summaries: list[dict],
+    period_start: date,
+    period_end: date,
+) -> tuple[list[dict], list[dict]]:
+    target_start = period_start.isoformat()
+    target_end = period_end.isoformat()
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    skipped: list[dict] = []
+
+    for item in summaries or []:
+        if item.get("period_start") != target_start or item.get("period_end") != target_end:
+            skipped.append(
+                {
+                    "employee_id": item.get("employee_id"),
+                    "employee_name": item.get("employee_name", ""),
+                    "filename": item.get("filename", ""),
+                    "reason": "periode_hors_cible",
+                    "period_start": item.get("period_start", ""),
+                    "period_end": item.get("period_end", ""),
+                }
+            )
+            continue
+        if not item.get("employee_id"):
+            skipped.append(
+                {
+                    "employee_id": None,
+                    "employee_name": item.get("employee_name", ""),
+                    "filename": item.get("filename", ""),
+                    "reason": "employe_introuvable",
+                    "period_start": item.get("period_start", ""),
+                    "period_end": item.get("period_end", ""),
+                }
+            )
+            continue
+        if not int(item.get("shift_count") or 0):
+            skipped.append(
+                {
+                    "employee_id": item.get("employee_id"),
+                    "employee_name": item.get("employee_name", ""),
+                    "filename": item.get("filename", ""),
+                    "reason": "aucun_quart_extrait",
+                    "period_start": item.get("period_start", ""),
+                    "period_end": item.get("period_end", ""),
+                }
+            )
+            continue
+        grouped[str(item.get("employee_id"))].append(item)
+
+    selected = []
+    for _, items in grouped.items():
+        ranked = sorted(
+            items,
+            key=lambda candidate: (
+                _safe_parse_message_date(candidate.get("date", "")) or date.min,
+                int(candidate.get("shift_count") or 0),
+                len(candidate.get("visible_names") or []),
+            ),
+            reverse=True,
+        )
+        selected.append(ranked[0])
+        for duplicate in ranked[1:]:
+            skipped.append(
+                {
+                    "employee_id": duplicate.get("employee_id"),
+                    "employee_name": duplicate.get("employee_name", ""),
+                    "filename": duplicate.get("filename", ""),
+                    "reason": "version_plus_recente_retenue",
+                    "period_start": duplicate.get("period_start", ""),
+                    "period_end": duplicate.get("period_end", ""),
+                }
+            )
+
+    selected.sort(key=lambda item: str(item.get("employee_name") or "").lower())
+    return selected, skipped
+
+
+async def sync_timesheet_summary_to_schedule(
+    db: AsyncSession,
+    summary: dict,
+    period_start: date,
+    period_end: date,
+    uploaded_by: str = "system",
+) -> dict:
+    employee_id = summary.get("employee_id")
+    if not employee_id:
+        return {
+            "status": "skipped",
+            "employee_id": None,
+            "employee_name": summary.get("employee_name", ""),
+            "filename": summary.get("filename", ""),
+            "issues": ["employe_introuvable"],
+        }
+
+    employee_result = await db.execute(select(Employee).where(Employee.id == employee_id))
+    employee = employee_result.scalar_one_or_none()
+    if not employee:
+        return {
+            "status": "skipped",
+            "employee_id": employee_id,
+            "employee_name": summary.get("employee_name", ""),
+            "filename": summary.get("filename", ""),
+            "issues": ["employe_introuvable"],
+        }
+
+    schedules_result = await db.execute(
+        select(Schedule)
+        .where(
+            Schedule.employee_id == employee.id,
+            Schedule.date >= period_start,
+            Schedule.date <= period_end,
+            Schedule.status != "cancelled",
+        )
+        .order_by(Schedule.date, Schedule.start)
+    )
+    existing_schedules = schedules_result.scalars().all()
+    schedules_by_date: dict[date, list[Schedule]] = defaultdict(list)
+    for schedule in existing_schedules:
+        schedules_by_date[schedule.date].append(schedule)
+
+    default_client_id = _infer_period_client_id(existing_schedules, employee)
+    client_name = ""
+    if default_client_id:
+        client_result = await db.execute(select(Client).where(Client.id == default_client_id))
+        client = client_result.scalar_one_or_none()
+        client_name = client.name if client else ""
+    used_schedule_ids: set[str] = set()
+    applied_shifts: list[dict] = []
+    issues: list[str] = []
+    updated_count = 0
+    created_count = 0
+
+    normalized_shifts = []
+    for raw_shift in list(summary.get("shifts") or []):
+        resolved_date = _resolve_shift_date_for_period(raw_shift, period_start, period_end)
+        if not resolved_date:
+            issues.append(f"date_introuvable:{raw_shift.get('day_label') or raw_shift.get('date') or '?'}")
+            continue
+        normalized = dict(raw_shift)
+        normalized["resolved_date"] = resolved_date
+        if not float(normalized.get("hours") or 0):
+            normalized["hours"] = _calculate_shift_hours_from_summary(
+                str(normalized.get("start") or ""),
+                str(normalized.get("end") or ""),
+                float(normalized.get("pause_minutes") or 0),
+            )
+        normalized_shifts.append(normalized)
+
+    normalized_shifts.sort(
+        key=lambda shift: (
+            shift.get("resolved_date") or period_start,
+            _time_to_minutes(str(shift.get("start") or "")) or 0,
+        )
+    )
+
+    for shift in normalized_shifts:
+        shift_date = shift["resolved_date"]
+        candidate = _match_schedule_candidate(shift, schedules_by_date.get(shift_date, []), used_schedule_ids)
+        pause_hours = _schedule_pause_hours_from_minutes(float(shift.get("pause_minutes") or 0))
+        hours_value = round(float(shift.get("hours") or 0), 2)
+        if hours_value <= 0:
+            hours_value = _calculate_shift_hours_from_summary(
+                str(shift.get("start") or ""),
+                str(shift.get("end") or ""),
+                float(shift.get("pause_minutes") or 0),
+            )
+        if hours_value <= 0 and not candidate:
+            issues.append(f"quart_incomplet:{shift_date.isoformat()}")
+            continue
+
+        if candidate:
+            candidate.date = shift_date
+            if shift.get("start"):
+                candidate.start = normalize_time_str(str(shift.get("start") or "")) or candidate.start
+            if shift.get("end"):
+                candidate.end = normalize_time_str(str(shift.get("end") or "")) or candidate.end
+            if pause_hours is not None:
+                candidate.pause = pause_hours
+            if hours_value > 0:
+                candidate.hours = hours_value
+            if shift.get("unit"):
+                candidate.location = str(shift.get("unit") or "").strip()
+            candidate.notes = _build_schedule_notes_from_extracted_shift(candidate.notes or "", shift)
+            used_schedule_ids.add(candidate.id)
+            applied_shifts.append(
+                {
+                    "schedule_id": candidate.id,
+                    "date": candidate.date,
+                    "hours_worked": round(float(candidate.hours or 0), 2),
+                    "pause": round(float(candidate.pause or 0), 2),
+                    "start_actual": normalize_time_str(str(shift.get("start") or "")) or candidate.start,
+                    "end_actual": normalize_time_str(str(shift.get("end") or "")) or candidate.end,
+                }
+            )
+            updated_count += 1
+            continue
+
+        start_value = normalize_time_str(str(shift.get("start") or ""))
+        end_value = normalize_time_str(str(shift.get("end") or ""))
+        if not start_value or not end_value:
+            issues.append(f"quart_sans_heures:{shift_date.isoformat()}")
+            continue
+        if not default_client_id:
+            issues.append(f"client_a_confirmer:{shift_date.isoformat()}")
+            continue
+        new_schedule = Schedule(
+            id=new_id(),
+            employee_id=employee.id,
+            client_id=default_client_id,
+            date=shift_date,
+            start=start_value,
+            end=end_value,
+            hours=hours_value or _calculate_shift_hours_from_summary(start_value, end_value, float(shift.get("pause_minutes") or 0)),
+            pause=pause_hours,
+            location=str(shift.get("unit") or "").strip(),
+            billable_rate=float(getattr(employee, "rate", 0) or 0),
+            status="published",
+            notes=_build_schedule_notes_from_extracted_shift("", shift),
+        )
+        db.add(new_schedule)
+        await db.flush()
+        schedules_by_date[shift_date].append(new_schedule)
+        used_schedule_ids.add(new_schedule.id)
+        applied_shifts.append(
+            {
+                "schedule_id": new_schedule.id,
+                "date": new_schedule.date,
+                "hours_worked": round(float(new_schedule.hours or 0), 2),
+                "pause": round(float(new_schedule.pause or 0), 2),
+                "start_actual": new_schedule.start,
+                "end_actual": new_schedule.end,
+            }
+        )
+        created_count += 1
+
+    unmatched_existing = [
+        {
+            "schedule_id": schedule.id,
+            "date": schedule.date.isoformat(),
+            "start": schedule.start,
+            "end": schedule.end,
+            "hours": round(float(schedule.hours or 0), 2),
+        }
+        for schedule in existing_schedules
+        if schedule.id not in used_schedule_ids
+    ]
+
+    if unmatched_existing:
+        issues.append(f"quarts_non_couverts:{len(unmatched_existing)}")
+
+    timesheet, _ = await ensure_timesheet_for_period(
+        db,
+        employee.id,
+        period_start,
+        period_end,
+        status="submitted",
+        notes=f"Synchronisee depuis FDT courriel: {summary.get('filename', '')}",
+    )
+    if getattr(timesheet, "status", "") != "approved":
+        timesheet.status = "submitted"
+        current_notes = str(timesheet.notes or "").strip()
+        sync_note = f"Synchronisee depuis FDT courriel: {summary.get('filename', '')}".strip()
+        if sync_note and sync_note not in current_notes:
+            timesheet.notes = f"{current_notes}\n{sync_note}".strip() if current_notes else sync_note
+        shifts_result = await db.execute(select(TimesheetShift).where(TimesheetShift.timesheet_id == timesheet.id))
+        for existing_shift in shifts_result.scalars().all():
+            await db.delete(existing_shift)
+        await db.flush()
+        for applied in applied_shifts:
+            db.add(
+                TimesheetShift(
+                    id=new_id(),
+                    timesheet_id=timesheet.id,
+                    schedule_id=applied["schedule_id"],
+                    date=applied["date"],
+                    hours_worked=applied["hours_worked"],
+                    pause=applied["pause"],
+                    start_actual=applied["start_actual"],
+                    end_actual=applied["end_actual"],
+                )
+            )
+        await db.flush()
+        await sync_timesheet_attachments_to_reviews(db, timesheet)
+    else:
+        issues.append("fdt_deja_approuvee")
+
+    blocking_issue_prefixes = ("client_a_confirmer", "quart_sans_heures", "quart_incomplet", "quarts_non_couverts")
+    blocking = any(
+        issue == "fdt_deja_approuvee" or issue.startswith(blocking_issue_prefixes)
+        for issue in issues
+    )
+
+    return {
+        "status": "synced_with_review" if blocking else "synced",
+        "employee_id": employee.id,
+        "employee_name": employee.name,
+        "client_id": default_client_id,
+        "client_name": client_name,
+        "filename": summary.get("filename", ""),
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "timesheet_id": timesheet.id,
+        "shift_count": len(applied_shifts),
+        "updated_count": updated_count,
+        "created_count": created_count,
+        "unmatched_existing_count": len(unmatched_existing),
+        "unmatched_existing": unmatched_existing,
+        "issues": issues,
+        "blocking": blocking,
+    }
+
+
+async def sync_recent_timesheet_documents_for_period(
+    db: AsyncSession,
+    documents: list[dict],
+    period_start: date,
+    period_end: date,
+    uploaded_by: str = "system",
+) -> dict:
+    summaries = await summarize_recent_timesheet_documents(db, documents)
+    selected, skipped = _select_latest_summaries_for_period(summaries, period_start, period_end)
+    items = []
+    for summary in selected:
+        items.append(
+            await sync_timesheet_summary_to_schedule(
+                db,
+                summary,
+                period_start,
+                period_end,
+                uploaded_by=uploaded_by,
+            )
+        )
+
+    return {
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "selected_count": len(selected),
+        "applied_count": len([item for item in items if item.get("status", "").startswith("synced")]),
+        "review_count": len([item for item in items if item.get("blocking")]),
+        "items": items,
+        "skipped": skipped,
+    }
 
 
 async def build_accommodation_documents_summary(

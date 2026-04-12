@@ -71,12 +71,14 @@ services:
         value: "30"
       - key: TIMESHEET_INBOX_SEARCH
         value: newer_than:14d
+      - key: TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED
+        value: "true"
       - key: TIMESHEET_AUTO_DRAFT_ENABLED
         value: "true"
       - key: TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE
         value: "0.68"
       - key: TIMESHEET_ATTACHMENT_MODEL
-        value: gpt-5.4
+        value: gpt-4o
       - key: TIMESHEET_ATTACHMENT_REASONING_EFFORT
         value: high
     healthCheckPath: /api/health

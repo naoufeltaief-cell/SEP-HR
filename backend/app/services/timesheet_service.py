@@ -119,7 +119,7 @@ OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
 TIMESHEET_ATTACHMENT_MODEL = (
     os.getenv("TIMESHEET_ATTACHMENT_MODEL")
     or os.getenv("OPENAI_MODEL")
-    or "gpt-5.4-mini"
+    or "gpt-4o"
 ).strip()
 TIMESHEET_ATTACHMENT_REASONING_EFFORT = (
     os.getenv("TIMESHEET_ATTACHMENT_REASONING_EFFORT")
@@ -265,18 +265,33 @@ def _extract_pdf_text_preview(file_data: bytes, max_chars: int = 2400) -> str:
     return "\n".join(chunks)[:max_chars].strip()
 
 
-def _render_pdf_first_page_png(file_data: bytes, zoom: float = 2.0) -> bytes:
+def _render_pdf_pages_png(file_data: bytes, zoom: float = 2.0, max_pages: int = 3) -> list[bytes]:
+    """Render up to max_pages pages of a PDF as PNG bytes.
+
+    Multi-page support matters because bi-weekly FDT forms often span 2 pages;
+    prior single-page rendering silently dropped week 2. We cap at max_pages to
+    keep payloads reasonable for the vision API.
+    """
     if not file_data or fitz is None:
-        return b""
+        return []
+    pages: list[bytes] = []
     try:
         doc = fitz.open(stream=file_data, filetype="pdf")
-        if doc.page_count <= 0:
-            return b""
-        page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-        return pix.tobytes("png")
+        count = min(doc.page_count, max_pages)
+        for i in range(count):
+            page = doc.load_page(i)
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            pages.append(pix.tobytes("png"))
     except Exception:
-        return b""
+        return pages
+    return pages
+
+
+def _render_pdf_first_page_png(file_data: bytes, zoom: float = 2.0) -> bytes:
+    """Legacy single-page wrapper kept for call sites that only need page 1
+    (e.g. the is_timesheet classifier where extra pages add no signal)."""
+    pages = _render_pdf_pages_png(file_data, zoom=zoom, max_pages=1)
+    return pages[0] if pages else b""
 
 
 def _normalized_reasoning_effort() -> str:
@@ -1123,6 +1138,11 @@ async def extract_timesheet_shift_summary(
     force_timesheet: bool = False,
 ) -> dict:
     if not OPENAI_API_KEY:
+        if raise_on_error:
+            raise RuntimeError(
+                "OPENAI_API_KEY n'est pas configuree sur le serveur. "
+                "Impossible de lire la FDT avec l'API Vision."
+            )
         return {}
 
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
@@ -1166,18 +1186,21 @@ async def extract_timesheet_shift_summary(
         ]
     elif ext == "pdf":
         file_data = document.get("file_data", b"") or b""
-        png_bytes = _render_pdf_first_page_png(file_data)
+        png_pages = _render_pdf_pages_png(file_data, max_pages=3)
         preview_text = extracted_text or extract_document_text_preview(
             document.get("filename", ""),
             document.get("mime_type", ""),
             file_data,
         )
-        if png_bytes:
-            data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+        if png_pages:
             content = [{"type": "input_text", "text": prompt_text}]
             if preview_text:
                 content.append({"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:6000]}"})
-            content.append({"type": "input_image", "image_url": data_url, "detail": "high"})
+            for idx, png_bytes in enumerate(png_pages, start=1):
+                if len(png_pages) > 1:
+                    content.append({"type": "input_text", "text": f"Page {idx} du document:"})
+                data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+                content.append({"type": "input_image", "image_url": data_url, "detail": "high"})
         elif preview_text:
             content = [
                 {"type": "input_text", "text": f"{prompt_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"},
@@ -1332,8 +1355,8 @@ async def _transcribe_timesheet_document_with_openai(
             document.get("mime_type", ""),
             file_data,
         )
-        png_bytes = _render_pdf_first_page_png(file_data) if ext == "pdf" else b""
-        if png_bytes:
+        png_pages = _render_pdf_pages_png(file_data, max_pages=3) if ext == "pdf" else []
+        if png_pages:
             payload_content = [
                 {
                     "type": "input_text",
@@ -1345,14 +1368,19 @@ async def _transcribe_timesheet_document_with_openai(
                         f"Employe attendu si connu: {employee_hint or 'inconnu'}."
                     ),
                 },
-                {
-                    "type": "input_image",
-                    "image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
-                    "detail": "high",
-                },
             ]
             if preview_text:
-                payload_content.insert(1, {"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:10000]}"})
+                payload_content.append({"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:10000]}"})
+            for idx, png_bytes in enumerate(png_pages, start=1):
+                if len(png_pages) > 1:
+                    payload_content.append({"type": "input_text", "text": f"Page {idx} du document:"})
+                payload_content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
+                        "detail": "high",
+                    }
+                )
         elif not preview_text:
             return ""
         else:
@@ -1531,13 +1559,13 @@ async def _describe_timesheet_document_with_openai(
             },
         ]
     elif ext == "pdf" and file_data:
-        png_bytes = _render_pdf_first_page_png(file_data)
+        png_pages = _render_pdf_pages_png(file_data, max_pages=3)
         preview_text = transcript or extract_document_text_preview(
             document.get("filename", ""),
             document.get("mime_type", ""),
             file_data,
         )
-        if png_bytes:
+        if png_pages:
             content = [
                 {
                     "type": "input_text",
@@ -1552,13 +1580,16 @@ async def _describe_timesheet_document_with_openai(
             ]
             if preview_text:
                 content.append({"type": "input_text", "text": f"Texte extrait / OCR disponible:\n{preview_text[:14000]}"})
-            content.append(
-                {
-                    "type": "input_image",
-                    "image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
-                    "detail": "high",
-                }
-            )
+            for idx, png_bytes in enumerate(png_pages, start=1):
+                if len(png_pages) > 1:
+                    content.append({"type": "input_text", "text": f"Page {idx} du document:"})
+                content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
+                        "detail": "high",
+                    }
+                )
         elif preview_text:
             content = [
                 {

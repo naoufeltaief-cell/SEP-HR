@@ -1409,12 +1409,15 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 employee = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
                 if input_data.get('employee_name') and not employee:
                     return "Employe introuvable pour l'analyse de la FDT jointe."
-            items = await summarize_explicit_timesheet_documents(
-                db,
-                [_chat_upload_to_document(upload) for upload in uploads],
-                employee=employee,
-                raise_on_openai_error=True,
-            )
+            try:
+                items = await summarize_explicit_timesheet_documents(
+                    db,
+                    [_chat_upload_to_document(upload) for upload in uploads],
+                    employee=employee,
+                    raise_on_openai_error=True,
+                )
+            except Exception as exc:
+                return f"Erreur de lecture de la FDT: {exc}"
             return _format_timesheet_analysis_response(items, max_results=int(input_data.get('max_results', 5) or 5))
         if name == 'attach_chat_documents_to_invoice':
             invoice, error = await _find_invoice(

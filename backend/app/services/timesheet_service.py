@@ -715,7 +715,7 @@ async def inspect_attachment_with_openai(
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": context_text},
-                    {"type": "input_image", "image_url": data_url},
+                    {"type": "input_image", "image_url": data_url, "detail": "high"},
                 ],
             }
         ],
@@ -806,7 +806,7 @@ async def inspect_accommodation_document_with_openai(
         data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
         content = [
             {"type": "input_text", "text": context_text},
-            {"type": "input_image", "image_url": data_url},
+            {"type": "input_image", "image_url": data_url, "detail": "high"},
         ]
     else:
         preview_text = extracted_text or extract_document_text_preview(
@@ -1162,7 +1162,7 @@ async def extract_timesheet_shift_summary(
         data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
         content = [
             {"type": "input_text", "text": prompt_text},
-            {"type": "input_image", "image_url": data_url},
+            {"type": "input_image", "image_url": data_url, "detail": "high"},
         ]
     elif ext == "pdf":
         file_data = document.get("file_data", b"") or b""
@@ -1177,7 +1177,7 @@ async def extract_timesheet_shift_summary(
             content = [{"type": "input_text", "text": prompt_text}]
             if preview_text:
                 content.append({"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:6000]}"})
-            content.append({"type": "input_image", "image_url": data_url})
+            content.append({"type": "input_image", "image_url": data_url, "detail": "high"})
         elif preview_text:
             content = [
                 {"type": "input_text", "text": f"{prompt_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"},
@@ -1323,6 +1323,7 @@ async def _transcribe_timesheet_document_with_openai(
             {
                 "type": "input_image",
                 "image_url": f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}",
+                "detail": "high",
             },
         ]
     else:
@@ -1347,6 +1348,7 @@ async def _transcribe_timesheet_document_with_openai(
                 {
                     "type": "input_image",
                     "image_url": f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}",
+                    "detail": "high",
                 },
             ]
             if preview_text:
@@ -1525,6 +1527,7 @@ async def _describe_timesheet_document_with_openai(
             {
                 "type": "input_image",
                 "image_url": f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}",
+                "detail": "high",
             },
         ]
     elif transcript:

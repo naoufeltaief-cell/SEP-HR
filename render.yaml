@@ -76,7 +76,9 @@ services:
       - key: TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE
         value: "0.68"
       - key: TIMESHEET_ATTACHMENT_MODEL
-        value: gpt-5.4-mini
+        value: gpt-5.4
+      - key: TIMESHEET_ATTACHMENT_REASONING_EFFORT
+        value: high
     healthCheckPath: /api/health
 
   # Frontend (static site)

@@ -66,6 +66,40 @@ function durationLabel(start, end, pauseMinutes = 0) {
   return `(${hours}h ${minutes}m)`;
 }
 
+function normalizeTimeForInput(value) {
+  if (!value) return "";
+  const raw = String(value).trim();
+  const match = raw.match(/^(\d{1,2}):(\d{1,2})(?::\d{2})?$/);
+  if (!match) return "";
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return "";
+  }
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function normalizeTimeDraft(value) {
+  const raw = String(value || "")
+    .replace(/[^\d:]/g, "")
+    .slice(0, 5);
+  if (!raw) return "";
+  if (raw.includes(":")) {
+    const [hours = "", minutes = ""] = raw.split(":");
+    return `${hours.slice(0, 2)}${raw.includes(":") ? ":" : ""}${minutes.slice(0, 2)}`;
+  }
+  const digits = raw.slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 function formatLongFrenchDate(isoDate) {
   if (!isoDate) return "";
   const dt = new Date(`${isoDate}T12:00:00`);
@@ -663,18 +697,36 @@ export default function ScheduleComposerModal({
                   >
                     <LabeledInput
                       label="Heure de debut"
-                      type="time"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="07:30"
                       value={modal.data.start}
                       onChange={(event) =>
-                        onChangeField("start", event.target.value)
+                        onChangeField("start", normalizeTimeDraft(event.target.value))
+                      }
+                      onBlur={(event) =>
+                        onChangeField(
+                          "start",
+                          normalizeTimeForInput(event.target.value) ||
+                            normalizeTimeDraft(event.target.value),
+                        )
                       }
                     />
                     <LabeledInput
                       label="Heure de fin"
-                      type="time"
+                      type="text"
+                      inputMode="numeric"
+                      placeholder="15:15"
                       value={modal.data.end}
                       onChange={(event) =>
-                        onChangeField("end", event.target.value)
+                        onChangeField("end", normalizeTimeDraft(event.target.value))
+                      }
+                      onBlur={(event) =>
+                        onChangeField(
+                          "end",
+                          normalizeTimeForInput(event.target.value) ||
+                            normalizeTimeDraft(event.target.value),
+                        )
                       }
                       suffix={durationLabel(
                         modal.data.start,
@@ -1120,7 +1172,11 @@ function LabeledInput({ label, suffix, ...props }) {
         <input
           className="input"
           {...props}
-          style={{ width: "100%", ...(props.style || {}) }}
+          style={{
+            width: "100%",
+            paddingRight: suffix ? 92 : undefined,
+            ...(props.style || {}),
+          }}
         />
         {suffix && (
           <span

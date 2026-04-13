@@ -45,6 +45,8 @@ const MONTHS_FULL = [
 const TPS_RATE = 0.05;
 const TVQ_RATE = 0.09975;
 const GARDE_RATE = 86.23;
+const CALENDAR_HEADERS = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+const ORIENTATION_NOTE_TAG = "[[orientation]]";
 const TIMESHEET_STATUS_MISSING = {
   key: "missing",
   label: "FDT non recue",
@@ -54,6 +56,56 @@ const TIMESHEET_STATUS_MISSING = {
   border: "#fecdd3",
   rank: 0,
 };
+
+function isCancelledShift(shift) {
+  return String(shift?.status || "").trim().toLowerCase() === "cancelled";
+}
+
+function isOrientationShift(shift) {
+  const notes = String(shift?.notes || "");
+  return (
+    notes.includes(ORIENTATION_NOTE_TAG) ||
+    Boolean(shift?.is_orientation) ||
+    (!isCancelledShift(shift) && Number(shift?.billable_rate || 0) === 0)
+  );
+}
+
+function buildCalendarWeeks(refDate) {
+  const year = refDate.getFullYear();
+  const month = refDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const start = new Date(firstDay);
+  start.setDate(firstDay.getDate() - firstDay.getDay());
+  const weeks = [];
+  for (let weekIndex = 0; weekIndex < 6; weekIndex += 1) {
+    const days = [];
+    for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+      const date = new Date(start);
+      date.setDate(start.getDate() + weekIndex * 7 + dayIndex);
+      days.push({
+        date,
+        iso: fmtISO(date),
+        inCurrentMonth: date.getMonth() === month,
+        isToday: fmtISO(date) === fmtISO(new Date()),
+      });
+    }
+    weeks.push(days);
+  }
+  return weeks;
+}
+
+function formatLongFrenchDate(isoDate) {
+  if (!isoDate) return "";
+  const dt = new Date(`${isoDate}T12:00:00`);
+  if (Number.isNaN(dt.getTime())) return isoDate;
+  const text = dt.toLocaleDateString("fr-CA", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 function buildTimesheetStatus(timesheet) {
   if (!timesheet?.id) return TIMESHEET_STATUS_MISSING;
@@ -283,6 +335,14 @@ export default function SchedulesPage({ toast, onNavigate }) {
     [viewMode, selectedDate],
   );
   const viewISOs = useMemo(() => viewDates.map(fmtISO), [viewDates]);
+  const calendarWeeks = useMemo(
+    () => buildCalendarWeeks(selectedDate),
+    [selectedDate],
+  );
+  const calendarVisibleISOs = useMemo(
+    () => calendarWeeks.flat().map((day) => day.iso),
+    [calendarWeeks],
+  );
   const currentWeekStart = useMemo(
     () =>
       viewMode === "week" && viewDates.length >= 7
@@ -301,11 +361,13 @@ export default function SchedulesPage({ toast, onNavigate }) {
     () => [
       ...new Set(
         schedules
-          .filter((s) => viewISOs.includes(s.date))
+          .filter((s) =>
+            (viewMode === "week" ? viewISOs : calendarVisibleISOs).includes(s.date),
+          )
           .map((s) => s.employee_id),
       ),
     ],
-    [schedules, viewISOs],
+    [calendarVisibleISOs, schedules, viewISOs, viewMode],
   );
   const activeEmps = useMemo(() => {
     let emps = employees
@@ -323,6 +385,37 @@ export default function SchedulesPage({ toast, onNavigate }) {
     }
     return emps;
   }, [employees, activeEmpIds, filterText]);
+  const employeeMap = useMemo(
+    () => new Map(employees.map((employee) => [employee.id, employee])),
+    [employees],
+  );
+  const clientMap = useMemo(
+    () => new Map(clients.map((client) => [client.id, client])),
+    [clients],
+  );
+  const visibleEmployeeIds = useMemo(
+    () => activeEmps.map((employee) => employee.id),
+    [activeEmps],
+  );
+  const calendarShiftsByDate = useMemo(() => {
+    const visibleSet = new Set(visibleEmployeeIds);
+    const map = new Map(calendarVisibleISOs.map((iso) => [iso, []]));
+    for (const shift of schedules) {
+      if (!map.has(shift.date) || !visibleSet.has(shift.employee_id)) continue;
+      map.get(shift.date).push(shift);
+    }
+    for (const list of map.values()) {
+      list.sort(
+        (a, b) =>
+          String(a.start || "").localeCompare(String(b.start || "")) ||
+          String(a.end || "").localeCompare(String(b.end || "")) ||
+          String(employeeMap.get(a.employee_id)?.name || "").localeCompare(
+            String(employeeMap.get(b.employee_id)?.name || ""),
+          ),
+      );
+    }
+    return map;
+  }, [calendarVisibleISOs, employeeMap, schedules, visibleEmployeeIds]);
   const navigate = (dir) =>
     setSelectedDate((d) => {
       const n = new Date(d);
@@ -330,6 +423,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
       else n.setMonth(n.getMonth() + dir);
       return n;
     });
+  const goToToday = () => setSelectedDate(new Date());
   const periodLabel = useMemo(
     () =>
       viewMode === "week" && viewDates.length >= 7
@@ -410,7 +504,9 @@ export default function SchedulesPage({ toast, onNavigate }) {
           (!s.client_id && fallbackClientId && fallbackClientId === clientId)),
     );
   const getClientWeekHours = (employeeId, clientId, fallbackClientId = null) =>
-    getClientWeekShifts(employeeId, clientId, fallbackClientId).reduce(
+    getClientWeekShifts(employeeId, clientId, fallbackClientId)
+      .filter((shift) => !isCancelledShift(shift))
+      .reduce(
       (sum, s) => sum + (Number(s.hours) || 0),
       0,
     );
@@ -472,6 +568,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
         data: {
           id: base.id,
           employeeId,
+          status: base.status || "published",
           date,
           start,
           end,
@@ -613,7 +710,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
         billable_rate: Number(
           d.billableRate || getEmployeeRate(d.employeeId) || 0,
         ),
-        status: "published",
+        status: d.status || "published",
       };
 
       if (d.applyPositionToEmployee && d.positionLabel) {
@@ -639,7 +736,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
           billable_rate: Number(
             d.billableRate || getEmployeeRate(d.employeeId) || 0,
           ),
-          status: "published",
+          status: d.status || "published",
         };
         const recurrenceConfig = (() => {
           if (d.repeatMode === "daily")
@@ -1575,6 +1672,13 @@ export default function SchedulesPage({ toast, onNavigate }) {
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button
               className="btn btn-outline btn-sm"
+              onClick={goToToday}
+              title="Aller a aujourd'hui"
+            >
+              Aujourd'hui
+            </button>
+            <button
+              className="btn btn-outline btn-sm"
               onClick={() => navigate(-1)}
             >
               <ChevronLeft size={16} />
@@ -1607,7 +1711,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
               className={`btn btn-sm ${viewMode === "month" ? "btn-primary" : "btn-outline"}`}
               onClick={() => setViewMode("month")}
             >
-              Mois
+              Calendrier
             </button>
           </div>
         </div>
@@ -1648,7 +1752,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
           </div>
         </div>
       </div>
-      <div className="schedule-grid">
+      {viewMode === "week" ? (
+        <div className="schedule-grid">
         <table>
           <thead>
             <tr>
@@ -1666,15 +1771,18 @@ export default function SchedulesPage({ toast, onNavigate }) {
               const periodShifts = schedules.filter(
                 (s) => s.employee_id === e.id && viewISOs.includes(s.date),
               );
-              const totalHrs = periodShifts.reduce(
+              const activePeriodShifts = periodShifts.filter(
+                (shift) => !isCancelledShift(shift),
+              );
+              const totalHrs = activePeriodShifts.reduce(
                 (sum, s) => sum + Number(s.hours || 0),
                 0,
               );
-              const totalKm = periodShifts.reduce(
+              const totalKm = activePeriodShifts.reduce(
                 (sum, s) => sum + Number(s.km || 0),
                 0,
               );
-              const totalDep = periodShifts.reduce(
+              const totalDep = activePeriodShifts.reduce(
                 (sum, s) =>
                   sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0),
                 0,
@@ -1717,6 +1825,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
                             <ShiftPill
                               key={s.id}
                               shift={s}
+                              employee={e}
+                              client={clientMap.get(s.client_id || e.client_id || null)}
                               onClick={() => openEdit(s)}
                             />
                           ))}
@@ -1795,7 +1905,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                         empClientIds.map((cid) => {
                           const appr = getWeekApprovalStatus(e.id, cid);
                           const isApproved = appr && appr.status === "approved";
-                          const cl = clients.find((c) => c.id === cid);
+                          const cl = clientMap.get(cid);
                           return (
                             <div
                               key={cid}
@@ -1916,9 +2026,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                             ) : (
                               <ApprovalPanel
                                 employee={e}
-                                client={clients.find(
-                                  (c) => c.id === expandedEmp.clientId,
-                                )}
+                                client={clientMap.get(expandedEmp.clientId)}
                                 shifts={getClientWeekShifts(
                                   e.id,
                                   expandedEmp.clientId,
@@ -1998,7 +2106,140 @@ export default function SchedulesPage({ toast, onNavigate }) {
             })}
           </tbody>
         </table>
-      </div>
+        </div>
+      ) : (
+        <div
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 18,
+            background: "var(--surface)",
+            overflow: "visible",
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+              background: "var(--brand-xl)",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            {CALENDAR_HEADERS.map((label) => (
+              <div
+                key={label}
+                style={{
+                  padding: "10px 12px",
+                  textAlign: "center",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "var(--brand)",
+                  textTransform: "uppercase",
+                  letterSpacing: ".04em",
+                }}
+              >
+                {label}
+              </div>
+            ))}
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+            }}
+          >
+            {calendarWeeks.flat().map((day, index) => {
+              const dayShifts = calendarShiftsByDate.get(day.iso) || [];
+              return (
+                <div
+                  key={day.iso}
+                  onDoubleClick={() => openAdd(null, day.iso)}
+                  style={{
+                    minHeight: 190,
+                    padding: 10,
+                    background: day.inCurrentMonth ? "#fff" : "#f5fafb",
+                    borderRight:
+                      index % 7 === 6 ? "none" : "1px solid var(--border)",
+                    borderBottom: "1px solid var(--border)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: day.isToday ? 800 : 700,
+                        color: day.isToday ? "var(--brand)" : "var(--text1)",
+                        opacity: day.inCurrentMonth ? 1 : 0.45,
+                      }}
+                    >
+                      {day.date.getDate()}
+                    </div>
+                    {day.isToday && (
+                      <span
+                        style={{
+                          padding: "2px 8px",
+                          borderRadius: 999,
+                          fontSize: 10,
+                          fontWeight: 700,
+                          background: "var(--brand-xl)",
+                          color: "var(--brand)",
+                        }}
+                      >
+                        Aujourd'hui
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 5,
+                      alignContent: "start",
+                      maxHeight: 220,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {dayShifts.length === 0 ? (
+                      <button
+                        className="btn btn-outline btn-sm"
+                        style={{
+                          width: "100%",
+                          justifyContent: "center",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          opacity: 0.75,
+                        }}
+                        onClick={() => openAdd(null, day.iso)}
+                      >
+                        + Ajouter
+                      </button>
+                    ) : (
+                      dayShifts.map((shift) => (
+                        <ShiftPill
+                          key={shift.id}
+                          shift={shift}
+                          employee={employeeMap.get(shift.employee_id)}
+                          client={clientMap.get(shift.client_id)}
+                          compact
+                          showEmployee
+                          onClick={() => openEdit(shift)}
+                        />
+                      ))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {(modal || employeeDossierId) && (
         <Suspense fallback={null}>
           {modal ? (
@@ -3355,30 +3596,220 @@ function LegacyApprovalPanel({
     </>
   );
 }
-function ShiftPill({ shift, onClick }) {
+function ShiftPill({
+  shift,
+  employee = null,
+  client = null,
+  onClick,
+  compact = false,
+  showEmployee = false,
+}) {
+  const [hovered, setHovered] = useState(false);
+  const cancelled = isCancelledShift(shift);
+  const orientation = isOrientationShift(shift);
+  const startLabel = normalizeTimeForInput(shift.start) || shift.start;
+  const endLabel = normalizeTimeForInput(shift.end) || shift.end;
+  const pauseMinutes = pauseHoursToMinutes(shift.pause);
+  const timeRange = `${startLabel}-${endLabel}`;
+  const dayLabel = formatLongFrenchDate(shift.date);
+  const hoursLabel = `${Number(shift.hours || 0)
+    .toFixed(2)
+    .replace(/\.00$/, "")
+    .replace(/(\.\d)0$/, "$1")} h`;
+  const statusLabel = cancelled
+    ? "Quart annule"
+    : orientation
+      ? "Orientation"
+      : shift.status === "draft"
+        ? "Brouillon"
+        : "Publie";
+
+  const colors = cancelled
+    ? {
+        background: "#fff1f3",
+        border: "#fecdd3",
+        accent: "#f43f5e",
+        text: "#881337",
+        meta: "#9f1239",
+      }
+    : orientation
+      ? {
+          background: "#fff7ed",
+          border: "#fdba74",
+          accent: "#f59e0b",
+          text: "#9a3412",
+          meta: "#b45309",
+        }
+      : shift.status === "draft"
+        ? {
+            background: "var(--surface2)",
+            border: "var(--border)",
+            accent: "var(--text3)",
+            text: "var(--text1)",
+            meta: "var(--text3)",
+          }
+        : {
+            background: "var(--brand-l)",
+            border: "#b7ebf1",
+            accent: "var(--brand)",
+            text: "var(--text1)",
+            meta: "var(--text3)",
+          };
+
   return (
     <div
       className="shift-pill"
       onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      title={`${employee?.name || ""} ${timeRange}`.trim()}
       style={{
-        background:
-          shift.status === "draft" ? "var(--surface2)" : "var(--brand-l)",
+        background: colors.background,
+        border: `1px solid ${colors.border}`,
+        color: colors.text,
         cursor: "pointer",
+        paddingLeft: compact ? 9 : 10,
+        paddingRight: compact ? 24 : 10,
+        minHeight: compact ? 46 : undefined,
+        overflow: "visible",
+        zIndex: hovered ? 20 : 1,
       }}
     >
-      <div style={{ fontWeight: 600, fontSize: 10.5, whiteSpace: "nowrap" }}>
-        {normalizeTimeForInput(shift.start) || shift.start}–
-        {normalizeTimeForInput(shift.end) || shift.end}
+      <span
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 4,
+          bottom: 4,
+          width: 4,
+          borderRadius: 999,
+          background: colors.accent,
+        }}
+      />
+      {cancelled && (
+        <span
+          style={{
+            position: "absolute",
+            top: -6,
+            right: -6,
+            width: 18,
+            height: 18,
+            borderRadius: 999,
+            background: "#fb7185",
+            color: "#fff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 11,
+            fontWeight: 800,
+            boxShadow: "0 4px 12px rgba(244,63,94,.25)",
+          }}
+        >
+          ×
+        </span>
+      )}
+      <div
+        style={{
+          fontWeight: 700,
+          fontSize: compact ? 11 : 10.5,
+          whiteSpace: "nowrap",
+          textDecoration: cancelled ? "line-through" : "none",
+        }}
+      >
+        {timeRange}
       </div>
-      <div style={{ color: "var(--text3)", fontSize: 9 }}>
-        {shift.hours}h
-        {shift.pause > 0 && (
-          <span style={{ color: "var(--amber)" }}>
-            {" "}
-            (−{pauseHoursToMinutes(shift.pause)} min)
-          </span>
+      {showEmployee && employee?.name && (
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            marginTop: 1,
+          }}
+        >
+          {employee.name}
+        </div>
+      )}
+      <div style={{ color: colors.meta, fontSize: compact ? 9.5 : 9 }}>
+        {hoursLabel}
+        {pauseMinutes > 0 && (
+          <span style={{ color: colors.meta }}> (-{pauseMinutes} min)</span>
         )}
       </div>
+      {(orientation || cancelled) && (
+        <div
+          style={{
+            marginTop: 2,
+            fontSize: 8.5,
+            fontWeight: 700,
+            letterSpacing: ".02em",
+            textTransform: "uppercase",
+            color: colors.accent,
+          }}
+        >
+          {cancelled ? "Annule" : "Orientation"}
+        </div>
+      )}
+      {hovered && (
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "calc(100% + 10px)",
+            transform: "translateX(-50%)",
+            width: 260,
+            maxWidth: "min(260px, 90vw)",
+            background: "#fff",
+            border: "1px solid var(--border)",
+            borderRadius: 16,
+            padding: 14,
+            boxShadow: "0 18px 45px rgba(15,23,42,.18)",
+            zIndex: 40,
+            textAlign: "left",
+            pointerEvents: "none",
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>
+            {employee?.name || "Quart"}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text3)", marginBottom: 10 }}>
+            {employee?.position || "Horaire"} · {statusLabel}
+          </div>
+          <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
+            <div>
+              <div style={{ fontWeight: 700 }}>{timeRange}</div>
+              <div style={{ color: "var(--text3)" }}>{dayLabel}</div>
+            </div>
+            <div>
+              <div style={{ fontWeight: 700 }}>Total planifie : {hoursLabel}</div>
+              <div style={{ color: "var(--text3)" }}>
+                Pause non payee : {pauseMinutes} min
+              </div>
+            </div>
+            {(client?.name || shift.location) && (
+              <div>
+                <div style={{ fontWeight: 700 }}>
+                  {client?.name || shift.location}
+                </div>
+                {client?.address && (
+                  <div style={{ color: "var(--text3)" }}>{client.address}</div>
+                )}
+              </div>
+            )}
+            {(shift.notes || orientation || cancelled) && (
+              <div style={{ color: "var(--text2)" }}>
+                {cancelled
+                  ? "Quart annule. Il reste visible pour suivi, mais n'entre plus dans les totaux."
+                  : orientation
+                    ? "Quart facture en orientation (0 $/h)."
+                    : shift.notes}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

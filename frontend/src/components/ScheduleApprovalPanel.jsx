@@ -32,6 +32,20 @@ function normalizeTimeForInput(value) {
   return `${String(Number(match[1])).padStart(2, '0')}:${match[2]}`;
 }
 
+function normalizeTimeDraft(value) {
+  const raw = String(value || '')
+    .replace(/[^\d:]/g, '')
+    .slice(0, 5);
+  if (!raw) return '';
+  if (raw.includes(':')) {
+    const [hours = '', minutes = ''] = raw.split(':');
+    return `${hours.slice(0, 2)}${raw.includes(':') ? ':' : ''}${minutes.slice(0, 2)}`;
+  }
+  const digits = raw.slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 function pauseHoursToMinutes(value) {
   return Math.round(Number(value || 0) * 60);
 }
@@ -58,12 +72,17 @@ function hasOrientationFlag(shift) {
   return notes.includes(ORIENTATION_NOTE_TAG) || Boolean(shift?.is_orientation);
 }
 
+function isCancelledShift(shift) {
+  return String(shift?.status || '').trim().toLowerCase() === 'cancelled';
+}
+
 function buildShiftNotes(notes, isOrientation) {
   const clean = stripOrientationTag(notes);
   return isOrientation ? `${ORIENTATION_NOTE_TAG} ${clean}`.trim() : clean;
 }
 
 function getEffectiveShiftRate(shift, employeeRate = 0) {
+  if (isCancelledShift(shift)) return 0;
   if (shift?.is_orientation) return 0;
   const rate = Number(shift?.billable_rate || 0);
   return rate > 0 ? rate : Number(employeeRate || 0);
@@ -86,6 +105,7 @@ function normalizeEditableShift(shift) {
     is_orientation: hasOrientationFlag(shift),
     location: shift.location || '',
     client_id: shift.client_id || null,
+    status: shift.status || 'published',
     other_dep: shift.autre_dep ?? shift.other_dep ?? 0,
     pause_minutes: pauseHoursToMinutes(shift.pause),
     is_new: false,
@@ -343,6 +363,7 @@ export default function ScheduleApprovalPanel({
       deplacement: Number(shift.deplacement || 0),
       autre_dep: Number(shift.other_dep || 0),
       notes: buildShiftNotes(shift.notes || '', Boolean(shift.is_orientation)),
+      status: shift.status || 'published',
     };
   };
 
@@ -354,7 +375,6 @@ export default function ScheduleApprovalPanel({
     billable_rate: shift.is_orientation ? 0 : getFallbackRegularRate(shift, null, employee),
     garde_hours: Number(shift.garde_hours || 0),
     rappel_hours: Number(shift.rappel_hours || 0),
-    status: 'published',
     location: shift.location || '',
   });
 
@@ -369,6 +389,7 @@ export default function ScheduleApprovalPanel({
         billable_rate: Number(shift.billable_rate || employee?.rate || 0),
         garde_hours: Number(shift.garde_hours || 0),
         rappel_hours: Number(shift.rappel_hours || 0),
+        status: shift.status || 'published',
         location: shift.location || '',
       };
     }
@@ -389,6 +410,9 @@ export default function ScheduleApprovalPanel({
     if (Number(shift.rappel_hours || 0) !== Number(original.rappel_hours || 0)) {
       payload.rappel_hours = Number(shift.rappel_hours || 0);
     }
+    if (String(shift.status || 'published') !== String(original.status || 'published')) {
+      payload.status = shift.status || 'published';
+    }
 
     return payload;
   };
@@ -398,6 +422,9 @@ export default function ScheduleApprovalPanel({
     const original = originalShiftMap.get(shift.id);
     if ((shift.date || '') !== (original?.date || '')) {
       payload.date = shift.date;
+    }
+    if (String(shift.status || 'published') !== String(original?.status || 'published')) {
+      payload.status = shift.status || 'published';
     }
     return payload;
   };
@@ -543,15 +570,20 @@ export default function ScheduleApprovalPanel({
     }
   };
 
+  const activeEditableShifts = useMemo(
+    () => editableShifts.filter((shift) => !isCancelledShift(shift)),
+    [editableShifts]
+  );
+
   const accommodationEstimates = useMemo(
     () => (accommodations || [])
-      .map(a => ({ ...a, estimate: computeAccommodationEstimate(a, allEmployeeSchedules, editableShifts) }))
+      .map(a => ({ ...a, estimate: computeAccommodationEstimate(a, allEmployeeSchedules, activeEditableShifts) }))
       .filter(a => a.estimate.days > 0),
-    [accommodations, allEmployeeSchedules, editableShifts]
+    [accommodations, allEmployeeSchedules, activeEditableShifts]
   );
 
   const totals = useMemo(() => {
-    const summary = editableShifts.reduce((acc, shift) => {
+    const summary = activeEditableShifts.reduce((acc, shift) => {
       const rate = getEffectiveShiftRate(shift, employee?.rate || 0);
       acc.service += Number(shift.hours || 0) * rate;
       acc.garde += (Number(shift.garde_hours || 0) / 8) * GARDE_RATE;
@@ -576,10 +608,10 @@ export default function ScheduleApprovalPanel({
       tvq,
       total: subtotal + tps + tvq,
     };
-  }, [editableShifts, accommodationEstimates, client, employee]);
+  }, [activeEditableShifts, accommodationEstimates, client, employee]);
 
-  const plannedHours = editableShifts.reduce((sum, shift) => sum + (Number(shift.hours) || 0), 0);
-  const totalKm = editableShifts.reduce((sum, shift) => sum + (Number(shift.km) || 0), 0);
+  const plannedHours = activeEditableShifts.reduce((sum, shift) => sum + (Number(shift.hours) || 0), 0);
+  const totalKm = activeEditableShifts.reduce((sum, shift) => sum + (Number(shift.km) || 0), 0);
   const totalFrais = totals.km + totals.dep + totals.autres;
   const canGenerateInvoice = currentReview?.status === 'approved';
   const actionBusy = busy || savingAll;
@@ -724,7 +756,7 @@ export default function ScheduleApprovalPanel({
                 <table style={tableStyle}>
                   <thead>
                     <tr>
-                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'ORIENTATION', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
+                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'ANNULÉ', 'ORIENTATION', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
                         <th key={header} style={thStyle}>{header}</th>
                       ))}
                     </tr>
@@ -732,13 +764,34 @@ export default function ScheduleApprovalPanel({
                   <tbody>
                     {editableShifts.map(shift => {
                       const rowDirty = dirtyIds.has(shift.id);
+                      const rowCancelled = isCancelledShift(shift);
                       return (
-                        <tr key={shift.id}>
+                        <tr
+                          key={shift.id}
+                          style={
+                            rowCancelled
+                              ? {
+                                  background: '#fff7f7',
+                                  opacity: 0.82,
+                                }
+                              : undefined
+                          }
+                        >
                           <td style={tdStyle}><input className="input" type="date" style={getDirtyInputStyle(rowDirty)} value={shift.date || ''} onChange={e => updateEditableShift(shift.id, 'date', e.target.value)} /></td>
-                          <td style={tdStyle}><input className="input" type="time" step="60" lang="fr-CA" style={getDirtyInputStyle(rowDirty)} value={shift.start || ''} onChange={e => updateEditableShift(shift.id, 'start', e.target.value)} /></td>
-                          <td style={tdStyle}><input className="input" type="time" step="60" lang="fr-CA" style={getDirtyInputStyle(rowDirty)} value={shift.end || ''} onChange={e => updateEditableShift(shift.id, 'end', e.target.value)} /></td>
+                          <td style={tdStyle}><input className="input" type="text" inputMode="numeric" placeholder="07:00" style={getDirtyInputStyle(rowDirty)} value={shift.start || ''} onChange={e => updateEditableShift(shift.id, 'start', normalizeTimeDraft(e.target.value))} onBlur={e => updateEditableShift(shift.id, 'start', normalizeTimeForInput(e.target.value) || normalizeTimeDraft(e.target.value))} /></td>
+                          <td style={tdStyle}><input className="input" type="text" inputMode="numeric" placeholder="15:30" style={getDirtyInputStyle(rowDirty)} value={shift.end || ''} onChange={e => updateEditableShift(shift.id, 'end', normalizeTimeDraft(e.target.value))} onBlur={e => updateEditableShift(shift.id, 'end', normalizeTimeForInput(e.target.value) || normalizeTimeDraft(e.target.value))} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="1" style={getDirtyInputStyle(rowDirty)} value={shift.pause_minutes || 0} onChange={e => updateEditableShift(shift.id, 'pause_minutes', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.25" style={getDirtyInputStyle(rowDirty, true)} value={Number(shift.hours || 0).toFixed(2)} readOnly /></td>
+                          <td style={tdStyle}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: rowCancelled ? '#8b5e00' : 'var(--text2)' }}>
+                              <input
+                                type="checkbox"
+                                checked={rowCancelled}
+                                onChange={e => updateEditableShift(shift.id, 'status', e.target.checked ? 'cancelled' : 'published')}
+                              />
+                              Annulé
+                            </label>
+                          </td>
                           <td style={tdStyle}>
                             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600 }}>
                               <input
@@ -749,7 +802,7 @@ export default function ScheduleApprovalPanel({
                               Orientation
                             </label>
                           </td>
-                          <td style={tdStyle}><input className="input" type="number" step="0.01" style={getDirtyInputStyle(rowDirty, Boolean(shift.is_orientation))} value={shift.is_orientation ? 0 : (shift.billable_rate || 0)} readOnly={Boolean(shift.is_orientation)} onChange={e => updateEditableShift(shift.id, 'billable_rate', e.target.value)} /></td>
+                          <td style={tdStyle}><input className="input" type="number" step="0.01" style={getDirtyInputStyle(rowDirty, Boolean(shift.is_orientation) || rowCancelled)} value={shift.is_orientation || rowCancelled ? 0 : (shift.billable_rate || 0)} readOnly={Boolean(shift.is_orientation) || rowCancelled} onChange={e => updateEditableShift(shift.id, 'billable_rate', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.garde_hours || 0} onChange={e => updateEditableShift(shift.id, 'garde_hours', e.target.value)} /></td>
                           <td style={tdStyle}><input className="input" type="number" step="0.5" style={getDirtyInputStyle(rowDirty)} value={shift.rappel_hours || 0} onChange={e => updateEditableShift(shift.id, 'rappel_hours', e.target.value)} /></td>
                           <td style={{ ...tdStyle, width: 54, textAlign: 'center' }}>

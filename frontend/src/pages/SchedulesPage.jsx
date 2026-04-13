@@ -283,6 +283,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [viewMode, setViewMode] = useState("week");
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [filterText, setFilterText] = useState("");
+  const [clientFilter, setClientFilter] = useState("");
+  const [positionFilter, setPositionFilter] = useState("");
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
+  const [pickerMonthDate, setPickerMonthDate] = useState(new Date());
+  const [pickerSelectionIso, setPickerSelectionIso] = useState("");
   const [modal, setModal] = useState(null);
   const [employeeDossierId, setEmployeeDossierId] = useState(null);
   const [scheduleCatalogItems, setScheduleCatalogItems] = useState([]);
@@ -357,17 +362,65 @@ export default function SchedulesPage({ toast, onNavigate }) {
         : null,
     [viewMode, viewDates],
   );
+  const employeeMap = useMemo(
+    () => new Map(employees.map((employee) => [employee.id, employee])),
+    [employees],
+  );
+  const clientMap = useMemo(
+    () => new Map(clients.map((client) => [client.id, client])),
+    [clients],
+  );
+  const quickClientOptions = useMemo(
+    () =>
+      [...clients]
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+        .map((client) => ({ value: String(client.id), label: client.name })),
+    [clients],
+  );
+  const quickPositionOptions = useMemo(
+    () =>
+      [...new Set(
+        employees
+          .map((employee) => String(employee.position || "").trim())
+          .filter(Boolean),
+      )].sort((a, b) => a.localeCompare(b)),
+    [employees],
+  );
+  const matchesScheduleQuickFilters = useCallback(
+    (shift) => {
+      const employee = employeeMap.get(shift.employee_id);
+      const effectiveClientId = String(
+        shift.client_id || employee?.client_id || "",
+      );
+      if (clientFilter && effectiveClientId !== String(clientFilter)) return false;
+      if (positionFilter) {
+        const position = String(employee?.position || "").trim();
+        if (position !== positionFilter) return false;
+      }
+      return true;
+    },
+    [clientFilter, employeeMap, positionFilter],
+  );
+  const visibleSchedules = useMemo(() => {
+    const visibleDateSet = new Set(
+      viewMode === "week" ? viewISOs : calendarVisibleISOs,
+    );
+    return schedules.filter(
+      (shift) =>
+        visibleDateSet.has(shift.date) && matchesScheduleQuickFilters(shift),
+    );
+  }, [
+    calendarVisibleISOs,
+    matchesScheduleQuickFilters,
+    schedules,
+    viewISOs,
+    viewMode,
+  ]);
   const activeEmpIds = useMemo(
     () => [
-      ...new Set(
-        schedules
-          .filter((s) =>
-            (viewMode === "week" ? viewISOs : calendarVisibleISOs).includes(s.date),
-          )
-          .map((s) => s.employee_id),
-      ),
+      ...new Set(visibleSchedules.map((shift) => shift.employee_id)),
     ],
-    [calendarVisibleISOs, schedules, viewISOs, viewMode],
+    [visibleSchedules],
   );
   const activeEmps = useMemo(() => {
     let emps = employees
@@ -385,14 +438,6 @@ export default function SchedulesPage({ toast, onNavigate }) {
     }
     return emps;
   }, [employees, activeEmpIds, filterText]);
-  const employeeMap = useMemo(
-    () => new Map(employees.map((employee) => [employee.id, employee])),
-    [employees],
-  );
-  const clientMap = useMemo(
-    () => new Map(clients.map((client) => [client.id, client])),
-    [clients],
-  );
   const visibleEmployeeIds = useMemo(
     () => activeEmps.map((employee) => employee.id),
     [activeEmps],
@@ -400,7 +445,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const calendarShiftsByDate = useMemo(() => {
     const visibleSet = new Set(visibleEmployeeIds);
     const map = new Map(calendarVisibleISOs.map((iso) => [iso, []]));
-    for (const shift of schedules) {
+    for (const shift of visibleSchedules) {
       if (!map.has(shift.date) || !visibleSet.has(shift.employee_id)) continue;
       map.get(shift.date).push(shift);
     }
@@ -415,15 +460,29 @@ export default function SchedulesPage({ toast, onNavigate }) {
       );
     }
     return map;
-  }, [calendarVisibleISOs, employeeMap, schedules, visibleEmployeeIds]);
-  const navigate = (dir) =>
+  }, [calendarVisibleISOs, employeeMap, visibleEmployeeIds, visibleSchedules]);
+  const navigate = (dir) => {
+    setShowMonthPicker(false);
     setSelectedDate((d) => {
       const n = new Date(d);
       if (viewMode === "week") n.setDate(n.getDate() + dir * 7);
       else n.setMonth(n.getMonth() + dir);
       return n;
     });
-  const goToToday = () => setSelectedDate(new Date());
+  };
+  const goToToday = () => {
+    setShowMonthPicker(false);
+    setSelectedDate(new Date());
+  };
+  const pickerWeeks = useMemo(
+    () => buildCalendarWeeks(pickerMonthDate),
+    [pickerMonthDate],
+  );
+  const pickerMonthLabel = useMemo(
+    () =>
+      `${MONTHS_FULL[pickerMonthDate.getMonth()]} ${pickerMonthDate.getFullYear()}`,
+    [pickerMonthDate],
+  );
   const periodLabel = useMemo(
     () =>
       viewMode === "week" && viewDates.length >= 7
@@ -431,6 +490,33 @@ export default function SchedulesPage({ toast, onNavigate }) {
         : `${MONTHS_FULL[selectedDate.getMonth()]} ${selectedDate.getFullYear()}`,
     [viewMode, viewDates, selectedDate],
   );
+  const toggleMonthPicker = () => {
+    if (!showMonthPicker) {
+      setPickerMonthDate(new Date(selectedDate));
+      setPickerSelectionIso(fmtISO(selectedDate));
+    }
+    setShowMonthPicker((current) => !current);
+  };
+  const shiftPickerMonth = (direction) => {
+    setPickerMonthDate((current) => {
+      const next = new Date(current);
+      next.setMonth(next.getMonth() + direction);
+      return next;
+    });
+  };
+  const applyPickerSelection = () => {
+    const nextDate = pickerSelectionIso
+      ? new Date(`${pickerSelectionIso}T12:00:00`)
+      : pickerMonthDate;
+    setSelectedDate(nextDate);
+    setShowMonthPicker(false);
+  };
+  const closeMonthPicker = () => setShowMonthPicker(false);
+  const jumpPickerToToday = () => {
+    const today = new Date();
+    setSelectedDate(today);
+    setShowMonthPicker(false);
+  };
   const getWeekStart = () => currentWeekStart;
   const getWeekEnd = () => currentWeekEnd;
   useEffect(() => {
@@ -496,7 +582,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
     return [];
   };
   const getClientWeekShifts = (employeeId, clientId, fallbackClientId = null) =>
-    schedules.filter(
+    visibleSchedules.filter(
       (s) =>
         s.employee_id === employeeId &&
         viewISOs.includes(s.date) &&
@@ -1669,7 +1755,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
             gap: 8,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, position: "relative" }}>
             <button
               className="btn btn-outline btn-sm"
               onClick={goToToday}
@@ -1683,33 +1769,154 @@ export default function SchedulesPage({ toast, onNavigate }) {
             >
               <ChevronLeft size={16} />
             </button>
-            <span
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={toggleMonthPicker}
               style={{
-                fontSize: 13,
-                fontWeight: 600,
                 minWidth: 230,
-                textAlign: "center",
+                justifyContent: "center",
+                fontWeight: 700,
               }}
             >
               {periodLabel}
-            </span>
+            </button>
             <button
               className="btn btn-outline btn-sm"
               onClick={() => navigate(1)}
             >
               <ChevronRight size={16} />
             </button>
+            {showMonthPicker && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 10px)",
+                  left: 78,
+                  width: 360,
+                  maxWidth: "calc(100vw - 40px)",
+                  background: "#fff",
+                  border: "1px solid var(--border)",
+                  borderRadius: 22,
+                  boxShadow: "0 22px 50px rgba(15,23,42,.18)",
+                  padding: 18,
+                  zIndex: 80,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 14,
+                  }}
+                >
+                  <div style={{ fontSize: 15, fontWeight: 800 }}>
+                    {pickerMonthLabel}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      onClick={() => shiftPickerMonth(-1)}
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      onClick={() => shiftPickerMonth(1)}
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                </div>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+                    gap: 4,
+                    marginBottom: 10,
+                  }}
+                >
+                  {CALENDAR_HEADERS.map((label) => (
+                    <div
+                      key={`picker-${label}`}
+                      style={{
+                        textAlign: "center",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: "var(--text3)",
+                        padding: "4px 0",
+                      }}
+                    >
+                      {label}
+                    </div>
+                  ))}
+                  {pickerWeeks.flat().map((day) => {
+                    const isSelected = pickerSelectionIso === day.iso;
+                    return (
+                      <button
+                        key={`picker-day-${day.iso}`}
+                        type="button"
+                        onClick={() => setPickerSelectionIso(day.iso)}
+                        style={{
+                          border: "none",
+                          background: isSelected ? "var(--brand)" : "transparent",
+                          color: isSelected
+                            ? "#fff"
+                            : day.inCurrentMonth
+                              ? "var(--text1)"
+                              : "var(--text3)",
+                          opacity: day.inCurrentMonth ? 1 : 0.55,
+                          borderRadius: 999,
+                          height: 36,
+                          fontSize: 13,
+                          fontWeight: day.isToday ? 800 : 600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {day.date.getDate()}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 8,
+                  }}
+                >
+                  <button className="btn btn-outline btn-sm" onClick={jumpPickerToToday}>
+                    Aujourd'hui
+                  </button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button className="btn btn-outline btn-sm" onClick={closeMonthPicker}>
+                      Annuler
+                    </button>
+                    <button className="btn btn-primary btn-sm" onClick={applyPickerSelection}>
+                      OK
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             <button
               className={`btn btn-sm ${viewMode === "week" ? "btn-primary" : "btn-outline"}`}
-              onClick={() => setViewMode("week")}
+              onClick={() => {
+                setShowMonthPicker(false);
+                setViewMode("week");
+              }}
             >
               Semaine
             </button>
             <button
               className={`btn btn-sm ${viewMode === "month" ? "btn-primary" : "btn-outline"}`}
-              onClick={() => setViewMode("month")}
+              onClick={() => {
+                setShowMonthPicker(false);
+                setViewMode("month");
+              }}
             >
               Calendrier
             </button>
@@ -1724,31 +1931,79 @@ export default function SchedulesPage({ toast, onNavigate }) {
             gap: 8,
           }}
         >
-          <div style={{ position: "relative", maxWidth: 300 }}>
-            <Search
-              size={14}
-              style={{
-                position: "absolute",
-                left: 10,
-                top: "50%",
-                transform: "translateY(-50%)",
-                color: "var(--text3)",
-              }}
-            />
-            <input
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
+            <div style={{ position: "relative", maxWidth: 300 }}>
+              <Search
+                size={14}
+                style={{
+                  position: "absolute",
+                  left: 10,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  color: "var(--text3)",
+                }}
+              />
+              <input
+                className="input"
+                style={{
+                  paddingLeft: 32,
+                  padding: "7px 12px 7px 32px",
+                  fontSize: 12,
+                  minWidth: 220,
+                }}
+                placeholder="Rechercher un employé..."
+                value={filterText}
+                onChange={(e) => setFilterText(e.target.value)}
+              />
+            </div>
+            <select
               className="input"
-              style={{
-                paddingLeft: 32,
-                padding: "7px 12px 7px 32px",
-                fontSize: 12,
-              }}
-              placeholder="Rechercher un employé..."
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value)}
-            />
+              style={{ minWidth: 190, fontSize: 12 }}
+              value={clientFilter}
+              onChange={(e) => setClientFilter(e.target.value)}
+            >
+              <option value="">Tous les clients</option>
+              {quickClientOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="input"
+              style={{ minWidth: 190, fontSize: 12 }}
+              value={positionFilter}
+              onChange={(e) => setPositionFilter(e.target.value)}
+            >
+              <option value="">Tous les postes</option>
+              {quickPositionOptions.map((position) => (
+                <option key={position} value={position}>
+                  {position}
+                </option>
+              ))}
+            </select>
+            {(clientFilter || positionFilter || filterText) && (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  setFilterText("");
+                  setClientFilter("");
+                  setPositionFilter("");
+                }}
+              >
+                Reinitialiser
+              </button>
+            )}
           </div>
           <div style={{ fontSize: 12, color: "var(--text3)" }}>
-            {schedules.length} quarts · {employees.length} employés
+            {visibleSchedules.length} quarts · {activeEmps.length} employés
           </div>
         </div>
       </div>
@@ -1768,7 +2023,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
           </thead>
           <tbody>
             {activeEmps.map((e) => {
-              const periodShifts = schedules.filter(
+              const periodShifts = visibleSchedules.filter(
                 (s) => s.employee_id === e.id && viewISOs.includes(s.date),
               );
               const activePeriodShifts = periodShifts.filter(
@@ -1816,7 +2071,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                     </td>
                     {viewDates.map((d, i) => {
                       const iso = fmtISO(d);
-                      const shifts = schedules.filter(
+                      const shifts = visibleSchedules.filter(
                         (s) => s.employee_id === e.id && s.date === iso,
                       );
                       return (

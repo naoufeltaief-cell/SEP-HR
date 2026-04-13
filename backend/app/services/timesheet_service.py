@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from email.utils import parseaddr, parsedate_to_datetime
 from io import BytesIO
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -35,6 +36,8 @@ from ..models.models import (
 )
 from ..models.models_invoice import Invoice, InvoiceStatus
 from ..models.models_schedule_review import ScheduleApprovalAttachment
+
+logger = logging.getLogger(__name__)
 
 _FRENCH_MONTHS = {
     "janvier": 1,
@@ -472,11 +475,29 @@ def _extract_pdf_text_preview(file_data: bytes, max_chars: int = 2400) -> str:
         reader = PdfReader(BytesIO(file_data))
     except Exception:
         return ""
+    try:
+        if getattr(reader, "is_encrypted", False):
+            reader.decrypt("")
+    except Exception as exc:
+        logger.warning("Unable to decrypt PDF for text preview fallback: %s", exc)
+        return ""
     chunks = []
-    for page in reader.pages[:2]:
+    try:
+        pages = reader.pages
+        total_pages = len(pages)
+    except Exception as exc:
+        logger.warning("Unable to enumerate PDF pages for text preview fallback: %s", exc)
+        return ""
+    for page_index in range(min(total_pages, 2)):
+        try:
+            page = pages[page_index]
+        except Exception as exc:
+            logger.warning("Unable to access PDF page %s for text preview fallback: %s", page_index, exc)
+            break
         try:
             text = (page.extract_text() or "").strip()
-        except Exception:
+        except Exception as exc:
+            logger.warning("Unable to extract text from PDF page %s: %s", page_index, exc)
             text = ""
         if text:
             chunks.append(text)
@@ -2365,152 +2386,167 @@ async def index_recent_timesheet_email_documents(
     for message_id, docs in grouped_documents.items():
         analyzed_docs = []
         for document in docs:
-            extracted_text = extract_document_text_preview(
-                document.get("filename", ""),
-                document.get("mime_type", ""),
-                document.get("file_data", b"") or b"",
-            )
-            employee, match_reason = await match_employee_from_email(
-                db,
-                document.get("from", ""),
-                subject=document.get("subject", ""),
-                body_preview=" ".join(
-                    part for part in [document.get("body_preview", ""), extracted_text] if part
-                ),
-                attachment_names=[document.get("filename", ""), extracted_text],
-            )
-            analysis = analyze_timesheet_document(document, employee=employee, extracted_text=extracted_text)
-            ai_review = {}
-            if _should_use_ai_attachment_review(document, analysis, employee):
-                ai_review = await inspect_attachment_with_openai(
-                    document,
-                    employee_hint=getattr(employee, "name", "") if employee else "",
+            try:
+                extracted_text = extract_document_text_preview(
+                    document.get("filename", ""),
+                    document.get("mime_type", ""),
+                    document.get("file_data", b"") or b"",
                 )
-                if ai_review:
-                    augmented_text_parts = [
-                        extracted_text,
-                        ai_review.get("employee_name_seen", ""),
-                        ai_review.get("period_text_seen", ""),
-                        ai_review.get("notes", ""),
-                    ]
-                    if not employee:
-                        employee, match_reason = await match_employee_from_email(
-                            db,
-                            document.get("from", ""),
-                            subject=document.get("subject", ""),
-                            body_preview=" ".join(
-                                part
-                                for part in [
-                                    document.get("body_preview", ""),
+                employee, match_reason = await match_employee_from_email(
+                    db,
+                    document.get("from", ""),
+                    subject=document.get("subject", ""),
+                    body_preview=" ".join(
+                        part for part in [document.get("body_preview", ""), extracted_text] if part
+                    ),
+                    attachment_names=[document.get("filename", ""), extracted_text],
+                )
+                analysis = analyze_timesheet_document(document, employee=employee, extracted_text=extracted_text)
+                ai_review = {}
+                if _should_use_ai_attachment_review(document, analysis, employee):
+                    ai_review = await inspect_attachment_with_openai(
+                        document,
+                        employee_hint=getattr(employee, "name", "") if employee else "",
+                    )
+                    if ai_review:
+                        augmented_text_parts = [
+                            extracted_text,
+                            ai_review.get("employee_name_seen", ""),
+                            ai_review.get("period_text_seen", ""),
+                            ai_review.get("notes", ""),
+                        ]
+                        if not employee:
+                            employee, match_reason = await match_employee_from_email(
+                                db,
+                                document.get("from", ""),
+                                subject=document.get("subject", ""),
+                                body_preview=" ".join(
+                                    part
+                                    for part in [
+                                        document.get("body_preview", ""),
+                                        ai_review.get("employee_name_seen", ""),
+                                        ai_review.get("period_text_seen", ""),
+                                        ai_review.get("notes", ""),
+                                    ]
+                                    if part
+                                ),
+                                attachment_names=[
+                                    document.get("filename", ""),
+                                    *[part for part in augmented_text_parts if part],
+                                ],
+                                extra_texts=[
                                     ai_review.get("employee_name_seen", ""),
                                     ai_review.get("period_text_seen", ""),
-                                    ai_review.get("notes", ""),
-                                ]
-                                if part
-                            ),
-                            attachment_names=[
-                                document.get("filename", ""),
-                                *[part for part in augmented_text_parts if part],
-                            ],
-                            extra_texts=[
-                                ai_review.get("employee_name_seen", ""),
-                                ai_review.get("period_text_seen", ""),
-                            ],
+                                ],
+                            )
+                        elif ai_review.get("employee_name_seen"):
+                            refined_employee, refined_reason = await match_employee_from_email(
+                                db,
+                                document.get("from", ""),
+                                subject=document.get("subject", ""),
+                                body_preview=document.get("body_preview", ""),
+                                attachment_names=[document.get("filename", ""), extracted_text],
+                                extra_texts=[ai_review.get("employee_name_seen", "")],
+                            )
+                            if refined_employee and refined_employee.id != employee.id:
+                                employee = refined_employee
+                                match_reason = refined_reason or "nom_document"
+                        analysis = analyze_timesheet_document(
+                            document,
+                            employee=employee,
+                            extracted_text=" ".join(part for part in augmented_text_parts if part),
                         )
-                    elif ai_review.get("employee_name_seen"):
-                        refined_employee, refined_reason = await match_employee_from_email(
-                            db,
-                            document.get("from", ""),
-                            subject=document.get("subject", ""),
-                            body_preview=document.get("body_preview", ""),
-                            attachment_names=[document.get("filename", ""), extracted_text],
-                            extra_texts=[ai_review.get("employee_name_seen", "")],
-                        )
-                        if refined_employee and refined_employee.id != employee.id:
-                            employee = refined_employee
-                            match_reason = refined_reason or "nom_document"
-                    analysis = analyze_timesheet_document(
-                        document,
-                        employee=employee,
-                        extracted_text=" ".join(part for part in augmented_text_parts if part),
-                    )
-                    analysis = merge_ai_attachment_analysis(analysis, ai_review)
-            accommodation_analysis = analyze_accommodation_document(
-                document,
-                employee=employee,
-                extracted_text=extracted_text,
-            )
-            accommodation_ai_review = {}
-            if _should_use_ai_accommodation_review(document, accommodation_analysis, employee, extracted_text):
-                accommodation_ai_review = await inspect_accommodation_document_with_openai(
+                        analysis = merge_ai_attachment_analysis(analysis, ai_review)
+                accommodation_analysis = analyze_accommodation_document(
                     document,
-                    employee_hint=getattr(employee, "name", "") if employee else "",
+                    employee=employee,
                     extracted_text=extracted_text,
                 )
-                if accommodation_ai_review:
-                    accommodation_augmented_text_parts = [
-                        extracted_text,
-                        accommodation_ai_review.get("employee_name_seen", ""),
-                        accommodation_ai_review.get("period_text_seen", ""),
-                        accommodation_ai_review.get("notes", ""),
-                    ]
-                    if not employee:
-                        employee, match_reason = await match_employee_from_email(
-                            db,
-                            document.get("from", ""),
-                            subject=document.get("subject", ""),
-                            body_preview=" ".join(
-                                part
-                                for part in [
-                                    document.get("body_preview", ""),
+                accommodation_ai_review = {}
+                if _should_use_ai_accommodation_review(document, accommodation_analysis, employee, extracted_text):
+                    accommodation_ai_review = await inspect_accommodation_document_with_openai(
+                        document,
+                        employee_hint=getattr(employee, "name", "") if employee else "",
+                        extracted_text=extracted_text,
+                    )
+                    if accommodation_ai_review:
+                        accommodation_augmented_text_parts = [
+                            extracted_text,
+                            accommodation_ai_review.get("employee_name_seen", ""),
+                            accommodation_ai_review.get("period_text_seen", ""),
+                            accommodation_ai_review.get("notes", ""),
+                        ]
+                        if not employee:
+                            employee, match_reason = await match_employee_from_email(
+                                db,
+                                document.get("from", ""),
+                                subject=document.get("subject", ""),
+                                body_preview=" ".join(
+                                    part
+                                    for part in [
+                                        document.get("body_preview", ""),
+                                        accommodation_ai_review.get("employee_name_seen", ""),
+                                        accommodation_ai_review.get("period_text_seen", ""),
+                                        accommodation_ai_review.get("notes", ""),
+                                    ]
+                                    if part
+                                ),
+                                attachment_names=[
+                                    document.get("filename", ""),
+                                    *[part for part in accommodation_augmented_text_parts if part],
+                                ],
+                                extra_texts=[
                                     accommodation_ai_review.get("employee_name_seen", ""),
                                     accommodation_ai_review.get("period_text_seen", ""),
-                                    accommodation_ai_review.get("notes", ""),
-                                ]
-                                if part
-                            ),
-                            attachment_names=[
-                                document.get("filename", ""),
-                                *[part for part in accommodation_augmented_text_parts if part],
-                            ],
-                            extra_texts=[
-                                accommodation_ai_review.get("employee_name_seen", ""),
-                                accommodation_ai_review.get("period_text_seen", ""),
-                            ],
+                                ],
+                            )
+                        elif accommodation_ai_review.get("employee_name_seen"):
+                            refined_employee, refined_reason = await match_employee_from_email(
+                                db,
+                                document.get("from", ""),
+                                subject=document.get("subject", ""),
+                                body_preview=document.get("body_preview", ""),
+                                attachment_names=[document.get("filename", ""), extracted_text],
+                                extra_texts=[accommodation_ai_review.get("employee_name_seen", "")],
+                            )
+                            if refined_employee and refined_employee.id != employee.id:
+                                employee = refined_employee
+                                match_reason = refined_reason or "nom_document"
+                        accommodation_analysis = analyze_accommodation_document(
+                            document,
+                            employee=employee,
+                            extracted_text=" ".join(part for part in accommodation_augmented_text_parts if part),
                         )
-                    elif accommodation_ai_review.get("employee_name_seen"):
-                        refined_employee, refined_reason = await match_employee_from_email(
-                            db,
-                            document.get("from", ""),
-                            subject=document.get("subject", ""),
-                            body_preview=document.get("body_preview", ""),
-                            attachment_names=[document.get("filename", ""), extracted_text],
-                            extra_texts=[accommodation_ai_review.get("employee_name_seen", "")],
+                        accommodation_analysis = merge_ai_accommodation_analysis(
+                            accommodation_analysis,
+                            accommodation_ai_review,
                         )
-                        if refined_employee and refined_employee.id != employee.id:
-                            employee = refined_employee
-                            match_reason = refined_reason or "nom_document"
-                    accommodation_analysis = analyze_accommodation_document(
-                        document,
-                        employee=employee,
-                        extracted_text=" ".join(part for part in accommodation_augmented_text_parts if part),
-                    )
-                    accommodation_analysis = merge_ai_accommodation_analysis(
-                        accommodation_analysis,
-                        accommodation_ai_review,
-                    )
-            analyzed_docs.append(
-                {
-                    "document": document,
-                    "employee": employee,
-                    "match_reason": match_reason or "",
-                    "analysis": analysis,
-                    "extracted_text": extracted_text,
-                    "ai_review": ai_review,
-                    "accommodation_analysis": accommodation_analysis,
-                    "accommodation_ai_review": accommodation_ai_review,
-                }
-            )
+                analyzed_docs.append(
+                    {
+                        "document": document,
+                        "employee": employee,
+                        "match_reason": match_reason or "",
+                        "analysis": analysis,
+                        "extracted_text": extracted_text,
+                        "ai_review": ai_review,
+                        "accommodation_analysis": accommodation_analysis,
+                        "accommodation_ai_review": accommodation_ai_review,
+                    }
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Skipping email attachment during indexing after analysis failure (%s): %s",
+                    document.get("filename", ""),
+                    exc,
+                )
+                ignored_items.append(
+                    {
+                        "message_id": message_id,
+                        "filename": str(document.get("filename") or ""),
+                        "reason": f"erreur_analyse_document: {exc}",
+                    }
+                )
+                continue
 
         selected_docs = _select_timesheet_candidates(analyzed_docs)
         selected_ids = {id(item) for item in selected_docs}
@@ -3003,69 +3039,77 @@ async def summarize_recent_timesheet_documents(
     for _, docs in grouped_documents.items():
         analyzed_docs = []
         for document in docs:
-            extracted_text = extract_document_text_preview(
-                document.get("filename", ""),
-                document.get("mime_type", ""),
-                document.get("file_data", b"") or b"",
-            )
-            expected_employee = employee
-            matched_employee = None
-            match_reason = ""
-            matched_employee, match_reason = await match_employee_from_email(
-                db,
-                document.get("from", ""),
-                subject=document.get("subject", ""),
-                body_preview=" ".join(part for part in [document.get("body_preview", ""), extracted_text] if part),
-                attachment_names=[document.get("filename", ""), extracted_text],
-            )
-            analysis = analyze_timesheet_document(document, employee=matched_employee, extracted_text=extracted_text)
-            ai_review = {}
-            if _should_use_ai_attachment_review(document, analysis, matched_employee):
-                ai_review = await inspect_attachment_with_openai(
-                    document,
-                    employee_hint=(
-                        getattr(matched_employee, "name", "")
-                        or getattr(expected_employee, "name", "")
-                    ),
-                    raise_on_error=raise_on_openai_error,
+            try:
+                extracted_text = extract_document_text_preview(
+                    document.get("filename", ""),
+                    document.get("mime_type", ""),
+                    document.get("file_data", b"") or b"",
                 )
-                if ai_review:
-                    if not matched_employee:
-                        matched_employee, match_reason = await match_employee_from_email(
-                            db,
-                            document.get("from", ""),
-                            subject=document.get("subject", ""),
-                            body_preview=document.get("body_preview", ""),
-                            attachment_names=[document.get("filename", ""), extracted_text],
-                            extra_texts=[
-                                ai_review.get("employee_name_seen", ""),
-                                ai_review.get("period_text_seen", ""),
-                                ai_review.get("notes", ""),
-                            ],
-                        )
-                    elif ai_review.get("employee_name_seen"):
-                        refined_employee, refined_reason = await match_employee_from_email(
-                            db,
-                            document.get("from", ""),
-                            subject=document.get("subject", ""),
-                            body_preview=document.get("body_preview", ""),
-                            attachment_names=[document.get("filename", ""), extracted_text],
-                            extra_texts=[ai_review.get("employee_name_seen", "")],
-                        )
-                        if refined_employee and refined_employee.id != matched_employee.id:
-                            matched_employee = refined_employee
-                            match_reason = refined_reason or "nom_document"
-                    analysis = merge_ai_attachment_analysis(analysis, ai_review)
-            analyzed_docs.append(
-                {
-                    "document": document,
-                    "employee": matched_employee,
-                    "match_reason": match_reason or "",
-                    "analysis": analysis,
-                    "extracted_text": extracted_text,
-                    "ai_review": ai_review,
-                }
-            )
+                expected_employee = employee
+                matched_employee = None
+                match_reason = ""
+                matched_employee, match_reason = await match_employee_from_email(
+                    db,
+                    document.get("from", ""),
+                    subject=document.get("subject", ""),
+                    body_preview=" ".join(part for part in [document.get("body_preview", ""), extracted_text] if part),
+                    attachment_names=[document.get("filename", ""), extracted_text],
+                )
+                analysis = analyze_timesheet_document(document, employee=matched_employee, extracted_text=extracted_text)
+                ai_review = {}
+                if _should_use_ai_attachment_review(document, analysis, matched_employee):
+                    ai_review = await inspect_attachment_with_openai(
+                        document,
+                        employee_hint=(
+                            getattr(matched_employee, "name", "")
+                            or getattr(expected_employee, "name", "")
+                        ),
+                        raise_on_error=raise_on_openai_error,
+                    )
+                    if ai_review:
+                        if not matched_employee:
+                            matched_employee, match_reason = await match_employee_from_email(
+                                db,
+                                document.get("from", ""),
+                                subject=document.get("subject", ""),
+                                body_preview=document.get("body_preview", ""),
+                                attachment_names=[document.get("filename", ""), extracted_text],
+                                extra_texts=[
+                                    ai_review.get("employee_name_seen", ""),
+                                    ai_review.get("period_text_seen", ""),
+                                    ai_review.get("notes", ""),
+                                ],
+                            )
+                        elif ai_review.get("employee_name_seen"):
+                            refined_employee, refined_reason = await match_employee_from_email(
+                                db,
+                                document.get("from", ""),
+                                subject=document.get("subject", ""),
+                                body_preview=document.get("body_preview", ""),
+                                attachment_names=[document.get("filename", ""), extracted_text],
+                                extra_texts=[ai_review.get("employee_name_seen", "")],
+                            )
+                            if refined_employee and refined_employee.id != matched_employee.id:
+                                matched_employee = refined_employee
+                                match_reason = refined_reason or "nom_document"
+                        analysis = merge_ai_attachment_analysis(analysis, ai_review)
+                analyzed_docs.append(
+                    {
+                        "document": document,
+                        "employee": matched_employee,
+                        "match_reason": match_reason or "",
+                        "analysis": analysis,
+                        "extracted_text": extracted_text,
+                        "ai_review": ai_review,
+                    }
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Skipping recent timesheet document after analysis failure (%s): %s",
+                    document.get("filename", ""),
+                    exc,
+                )
+                continue
 
         selected_docs = _select_timesheet_candidates(analyzed_docs)
         for item in selected_docs:

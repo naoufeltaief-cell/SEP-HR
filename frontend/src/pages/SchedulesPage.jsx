@@ -47,6 +47,11 @@ const TVQ_RATE = 0.09975;
 const GARDE_RATE = 86.23;
 const CALENDAR_HEADERS = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
 const ORIENTATION_NOTE_TAG = "[[orientation]]";
+const POSITION_RATE_HINTS = [
+  { match: /auxiliaire/, rate: 57.18 },
+  { match: /prepose|beneficiaire|pab/, rate: 50.35 },
+  { match: /clinicienne|clinicien|infirmier|infirmiere/, rate: 86.23 },
+];
 const TIMESHEET_STATUS_MISSING = {
   key: "missing",
   label: "FDT non recue",
@@ -80,6 +85,12 @@ function stripOrientationTag(value) {
 function buildShiftNotes(notes, isOrientation) {
   const clean = stripOrientationTag(notes);
   return isOrientation ? `${ORIENTATION_NOTE_TAG} ${clean}`.trim() : clean;
+}
+
+function estimateRateFromPosition(label, fallbackRate = 0) {
+  const raw = String(label || "").toLowerCase();
+  const match = POSITION_RATE_HINTS.find((item) => item.match.test(raw));
+  return match ? match.rate : Number(fallbackRate || 0);
 }
 
 function buildCalendarWeeks(refDate) {
@@ -625,6 +636,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
     (employeeId) => getEmployeeRecord(employeeId)?.position || "",
     [getEmployeeRecord],
   );
+  const getRegularHourlyRate = useCallback(
+    (employeeId, positionLabel = "", fallbackRate = 0) => {
+      const employeeRate = Number(getEmployeeRate(employeeId) || 0);
+      if (employeeRate > 0) return employeeRate;
+      const estimated = estimateRateFromPosition(positionLabel, fallbackRate);
+      return Number(estimated || fallbackRate || 0);
+    },
+    [getEmployeeRate],
+  );
   const getValidationSummary = () => null;
   const resolveApproval = useCallback(
     async (employeeId, clientId, weekStart) => {
@@ -691,7 +711,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
           billableRate: Number(
             (base.billableRate ??
               base.billable_rate ??
-              getEmployeeRate(employeeId)) ||
+              getRegularHourlyRate(
+                employeeId,
+                base.positionLabel || getEmployeePositionLabel(employeeId),
+                0,
+              )) ||
               0,
           ),
           repeatMode: base.repeatMode || "once",
@@ -712,6 +736,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
       getEmployeeDefaultClientId,
       getEmployeePositionLabel,
       getEmployeeRate,
+      getRegularHourlyRate,
       viewDates,
     ],
   );
@@ -735,7 +760,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
       if (field === "employeeId") {
         next.data.billableRate = next.data.isOrientation
           ? 0
-          : getEmployeeRate(value);
+          : getRegularHourlyRate(
+              value,
+              next.data.positionLabel || getEmployeePositionLabel(value),
+              next.data.billableRate,
+            );
         next.data.positionLabel = getEmployeePositionLabel(value);
         if (!next.data.clientId)
           next.data.clientId = String(getEmployeeDefaultClientId(value) || "");
@@ -744,7 +773,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
       if (field === "isOrientation") {
         next.data.billableRate = value
           ? 0
-          : getEmployeeRate(next.data.employeeId);
+          : getRegularHourlyRate(
+              next.data.employeeId,
+              next.data.positionLabel,
+              next.data.billableRate,
+            );
       }
 
       if (field === "repeatMode") {
@@ -804,7 +837,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
       const normalizedNotes = buildShiftNotes(d.notes || "", isOrientation);
       const normalizedBillableRate = isOrientation
         ? 0
-        : Number(d.billableRate || getEmployeeRate(d.employeeId) || 0);
+        : Number(
+            d.billableRate ||
+              getRegularHourlyRate(
+                d.employeeId,
+                d.positionLabel || getEmployeePositionLabel(d.employeeId),
+                0,
+              ) ||
+              0,
+          );
       if (!start || !end) {
         toast?.("Heure invalide. Utilise le format 24 h HH:MM.");
         return;

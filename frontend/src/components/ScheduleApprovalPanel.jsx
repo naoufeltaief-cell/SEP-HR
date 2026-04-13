@@ -71,8 +71,7 @@ function hasOrientationFlag(shift) {
   const notes = String(shift?.notes || "");
   return (
     notes.includes(ORIENTATION_NOTE_TAG) ||
-    Boolean(shift?.is_orientation) ||
-    (!isCancelledShift(shift) && Number(shift?.billable_rate || 0) === 0)
+    Boolean(shift?.is_orientation)
   );
 }
 

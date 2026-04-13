@@ -2543,7 +2543,12 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             )
             if documents is None:
                 return "Le compte Gmail de facturation n'est pas connecte. Clique 'Reconnecter Gmail' dans Facturation pour brancher paie@soins-expert-plus.com."
-            result = await index_recent_timesheet_email_documents(db, documents, uploaded_by='chatbot')
+            result = await index_recent_timesheet_email_documents(
+                db,
+                documents,
+                uploaded_by='chatbot',
+                max_results=int(input_data.get('max_results', 10) or 10),
+            )
             await db.commit()
             return json.dumps(result, ensure_ascii=False)
         if name == 'analyze_recent_timesheet_documents':
@@ -2562,7 +2567,12 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             )
             if documents is None:
                 return "Le compte Gmail de facturation n'est pas connecte. Clique 'Reconnecter Gmail' dans Facturation pour brancher paie@soins-expert-plus.com."
-            items = await summarize_recent_timesheet_documents(db, documents, employee=employee)
+            items = await summarize_recent_timesheet_documents(
+                db,
+                documents,
+                employee=employee,
+                max_results=effective_max_results,
+            )
             if not items:
                 if employee:
                     return f"Aucune FDT recente exploitable n'a ete trouvee pour {employee.name} dans la boite paie."

@@ -1,4 +1,6 @@
 """Timesheet routes — submit, approve, reject, attachments."""
+from datetime import date
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -75,8 +77,8 @@ async def _serialize_timesheet(db: AsyncSession, ts: Timesheet) -> dict:
 @router.get("/")
 async def list_timesheets(
     employee_id: int | None = Query(default=None),
-    period_start: str | None = Query(default=None),
-    period_end: str | None = Query(default=None),
+    period_start: date | None = Query(default=None),
+    period_end: date | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):

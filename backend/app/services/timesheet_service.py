@@ -1255,9 +1255,10 @@ def _document_has_explicit_accommodation_hint(item: dict) -> bool:
     )
 
 
-def _select_timesheet_candidates(analyzed_docs: list[dict]) -> list[dict]:
+def _select_timesheet_candidates(analyzed_docs: list[dict], limit: int = 4) -> list[dict]:
     if not analyzed_docs:
         return []
+    limit = max(1, int(limit or 4))
 
     def _rank(pool: list[dict]) -> list[dict]:
         return sorted(
@@ -1285,19 +1286,19 @@ def _select_timesheet_candidates(analyzed_docs: list[dict]) -> list[dict]:
 
     confirmed = [item for item in filtered if (item.get("ai_review") or {}).get("is_timesheet") is True]
     if confirmed:
-        return _rank(confirmed)[:4]
+        return _rank(confirmed)[:limit]
 
     strong_with_hint = [
         item for item in filtered
         if (item.get("analysis") or {}).get("strong") and _document_has_explicit_timesheet_hint(item)
     ]
     if strong_with_hint:
-        return _rank(strong_with_hint)[:4]
+        return _rank(strong_with_hint)[:limit]
 
     hinted = [item for item in filtered if _document_has_explicit_timesheet_hint(item)]
     pool = hinted or filtered
     ranked = _rank(pool)
-    return ranked[:4]
+    return ranked[:limit]
 
 
 def _select_accommodation_candidates(analyzed_docs: list[dict]) -> list[dict]:
@@ -2367,6 +2368,7 @@ async def index_recent_timesheet_email_documents(
     db: AsyncSession,
     documents: list[dict],
     uploaded_by: str = "system",
+    max_results: int = 10,
 ) -> dict:
     grouped_documents: dict[str, list[dict]] = defaultdict(list)
     for document in documents or []:
@@ -2548,7 +2550,7 @@ async def index_recent_timesheet_email_documents(
                 )
                 continue
 
-        selected_docs = _select_timesheet_candidates(analyzed_docs)
+        selected_docs = _select_timesheet_candidates(analyzed_docs, limit=max_results)
         selected_ids = {id(item) for item in selected_docs}
         selected_accommodation_docs = _select_accommodation_candidates(
             [item for item in analyzed_docs if id(item) not in selected_ids]
@@ -3030,6 +3032,7 @@ async def summarize_recent_timesheet_documents(
     documents: list[dict],
     employee: Optional[Employee] = None,
     raise_on_openai_error: bool = False,
+    max_results: int = 10,
 ) -> list[dict]:
     summaries = []
     grouped_documents: dict[str, list[dict]] = defaultdict(list)
@@ -3111,7 +3114,7 @@ async def summarize_recent_timesheet_documents(
                 )
                 continue
 
-        selected_docs = _select_timesheet_candidates(analyzed_docs)
+        selected_docs = _select_timesheet_candidates(analyzed_docs, limit=max_results)
         for item in selected_docs:
             document = item["document"]
             matched_employee = item.get("employee")

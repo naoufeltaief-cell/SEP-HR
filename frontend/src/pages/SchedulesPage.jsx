@@ -70,6 +70,18 @@ function isOrientationShift(shift) {
   );
 }
 
+function stripOrientationTag(value) {
+  return String(value || "")
+    .replaceAll(ORIENTATION_NOTE_TAG, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildShiftNotes(notes, isOrientation) {
+  const clean = stripOrientationTag(notes);
+  return isOrientation ? `${ORIENTATION_NOTE_TAG} ${clean}`.trim() : clean;
+}
+
 function buildCalendarWeeks(refDate) {
   const year = refDate.getFullYear();
   const month = refDate.getMonth();
@@ -671,7 +683,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
           km: Number(base.km || 0),
           deplacement: Number(base.deplacement || 0),
           autreDep: Number((base.autreDep ?? base.autre_dep) || 0),
-          notes: base.notes || "",
+          notes: stripOrientationTag(base.notes || ""),
+          isOrientation:
+            typeof base.isOrientation === "boolean"
+              ? base.isOrientation
+              : isOrientationShift(base),
           billableRate: Number(
             (base.billableRate ??
               base.billable_rate ??
@@ -717,10 +733,18 @@ export default function SchedulesPage({ toast, onNavigate }) {
       const next = { ...current, data: { ...current.data, [field]: value } };
 
       if (field === "employeeId") {
-        next.data.billableRate = getEmployeeRate(value);
+        next.data.billableRate = next.data.isOrientation
+          ? 0
+          : getEmployeeRate(value);
         next.data.positionLabel = getEmployeePositionLabel(value);
         if (!next.data.clientId)
           next.data.clientId = String(getEmployeeDefaultClientId(value) || "");
+      }
+
+      if (field === "isOrientation") {
+        next.data.billableRate = value
+          ? 0
+          : getEmployeeRate(next.data.employeeId);
       }
 
       if (field === "repeatMode") {
@@ -776,6 +800,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
       const d = modal.data;
       const start = normalizeTimeForInput(d.start);
       const end = normalizeTimeForInput(d.end);
+      const isOrientation = Boolean(d.isOrientation);
+      const normalizedNotes = buildShiftNotes(d.notes || "", isOrientation);
+      const normalizedBillableRate = isOrientation
+        ? 0
+        : Number(d.billableRate || getEmployeeRate(d.employeeId) || 0);
       if (!start || !end) {
         toast?.("Heure invalide. Utilise le format 24 h HH:MM.");
         return;
@@ -792,10 +821,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
         km: Number(d.km || 0),
         deplacement: Number(d.deplacement || 0),
         autre_dep: Number(d.autreDep || 0),
-        notes: d.notes || "",
-        billable_rate: Number(
-          d.billableRate || getEmployeeRate(d.employeeId) || 0,
-        ),
+        notes: normalizedNotes,
+        billable_rate: normalizedBillableRate,
         status: d.status || "published",
       };
 
@@ -818,10 +845,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
           km: Number(d.km || 0),
           deplacement: Number(d.deplacement || 0),
           autre_dep: Number(d.autreDep || 0),
-          notes: d.notes || "",
-          billable_rate: Number(
-            d.billableRate || getEmployeeRate(d.employeeId) || 0,
-          ),
+          notes: normalizedNotes,
+          billable_rate: normalizedBillableRate,
           status: d.status || "published",
         };
         const recurrenceConfig = (() => {
@@ -871,15 +896,16 @@ export default function SchedulesPage({ toast, onNavigate }) {
           const originalClientId =
             originalShift.client_id == null ? null : Number(originalShift.client_id);
           const nextClientId = d.clientId ? Number(d.clientId) : null;
-          const originalNotes = String(originalShift.notes || "");
+          const originalNotes = buildShiftNotes(
+            String(originalShift.notes || ""),
+            isOrientationShift(originalShift),
+          );
           const nextPause = Number(d.pause || 0);
           const nextHours = Number(d.hours || 0);
           const nextKm = Number(d.km || 0);
           const nextDeplacement = Number(d.deplacement || 0);
           const nextAutreDep = Number(d.autreDep || 0);
-          const nextBillableRate = Number(
-            d.billableRate || getEmployeeRate(d.employeeId) || 0,
-          );
+          const nextBillableRate = normalizedBillableRate;
 
           if (d.date !== originalDate) updatePayload.date = d.date;
           if (start !== normalizedOriginalStart) updatePayload.start = start;
@@ -905,8 +931,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
           if (nextAutreDep !== Number(originalShift.autre_dep || 0)) {
             updatePayload.autre_dep = nextAutreDep;
           }
-          if (String(d.notes || "") !== originalNotes) {
-            updatePayload.notes = d.notes || "";
+          if (normalizedNotes !== originalNotes) {
+            updatePayload.notes = normalizedNotes;
           }
           if (
             nextBillableRate !== Number(originalShift.billable_rate || 0)

@@ -69,7 +69,11 @@ function estimateRateFromPosition(label, fallbackRate = 0) {
 
 function hasOrientationFlag(shift) {
   const notes = String(shift?.notes || "");
-  return notes.includes(ORIENTATION_NOTE_TAG) || Boolean(shift?.is_orientation);
+  return (
+    notes.includes(ORIENTATION_NOTE_TAG) ||
+    Boolean(shift?.is_orientation) ||
+    (!isCancelledShift(shift) && Number(shift?.billable_rate || 0) === 0)
+  );
 }
 
 function isCancelledShift(shift) {
@@ -756,7 +760,7 @@ export default function ScheduleApprovalPanel({
                 <table style={tableStyle}>
                   <thead>
                     <tr>
-                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'ANNULÉ', 'ORIENTATION', 'TAUX', 'GARDE H', 'RAPPEL H', ''].map(header => (
+                      {['DATE', 'DÉBUT', 'FIN', 'PAUSE (MIN)', 'HEURES', 'ANNULÉ', 'ORIENTATION', 'TAUX HORAIRE', 'GARDE H', 'RAPPEL H', ''].map(header => (
                         <th key={header} style={thStyle}>{header}</th>
                       ))}
                     </tr>

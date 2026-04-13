@@ -904,13 +904,15 @@ export default function ScheduleComposerModal({
                     }}
                     onSelect={(option) => {
                       onChangeField("positionLabel", option.value);
-                      onChangeField(
-                        "billableRate",
-                        estimateRateFromPosition(
-                          option.label,
-                          modal.data.billableRate,
-                        ),
-                      );
+                      if (!modal.data.isOrientation) {
+                        onChangeField(
+                          "billableRate",
+                          estimateRateFromPosition(
+                            option.label,
+                            modal.data.billableRate,
+                          ),
+                        );
+                      }
                       if (
                         option.label &&
                         option.label !== (selectedEmployee?.position || "")
@@ -950,7 +952,7 @@ export default function ScheduleComposerModal({
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gridTemplateColumns: "1fr 1fr 1fr 1fr",
                   gap: 14,
                 }}
               >
@@ -967,13 +969,29 @@ export default function ScheduleComposerModal({
                   placeholder="Choisir"
                 />
                 <LabeledInput
-                  label="Taux facturable"
+                  label="Taux horaire"
                   type="number"
                   step="0.01"
                   value={modal.data.billableRate}
                   onChange={(event) =>
                     onChangeField("billableRate", event.target.value)
                   }
+                  disabled={Boolean(modal.data.isOrientation)}
+                />
+                <LabeledSelect
+                  label="Type de quart"
+                  value={modal.data.isOrientation ? "orientation" : "regular"}
+                  onChange={(event) =>
+                    onChangeField(
+                      "isOrientation",
+                      event.target.value === "orientation",
+                    )
+                  }
+                  options={[
+                    { value: "regular", label: "Regulier" },
+                    { value: "orientation", label: "Orientation" },
+                  ]}
+                  placeholder="Choisir"
                 />
                 <div style={{ display: "flex", alignItems: "flex-end" }}>
                   <label

@@ -125,6 +125,7 @@ class ScheduleCatalogItem(Base):
     kind = Column(String(32), nullable=False, index=True)
     label = Column(String(255), nullable=False)
     hourly_rate = Column(Float, default=0)
+    billable_rate = Column(Float, default=0)
     created_by = Column(String(255), default="admin")
     created_at = Column(DateTime, default=datetime.utcnow)
     __table_args__ = (

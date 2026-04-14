@@ -84,6 +84,7 @@ class ScheduleCatalogItemCreate(BaseModel):
     kind: str
     label: str
     hourly_rate: float = 0
+    billable_rate: float = 0
 
 
 class ScheduleCatalogItemOut(BaseModel):
@@ -91,6 +92,7 @@ class ScheduleCatalogItemOut(BaseModel):
     kind: str
     label: str
     hourly_rate: float = 0
+    billable_rate: float = 0
     created_by: str
     created_at: Optional[datetime]
 
@@ -101,6 +103,7 @@ class ScheduleCatalogItemOut(BaseModel):
 class ScheduleCatalogItemUpdate(BaseModel):
     label: Optional[str] = None
     hourly_rate: Optional[float] = None
+    billable_rate: Optional[float] = None
 
 
 class ClientCreate(BaseModel):

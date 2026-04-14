@@ -31,6 +31,13 @@ def _normalize_hourly_rate(value) -> float:
         return 0.0
 
 
+def _normalize_billable_rate(value) -> float:
+    try:
+        return round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @router.get("")
 @router.get("/")
 async def list_schedule_catalog_items(
@@ -83,6 +90,7 @@ async def create_schedule_catalog_item(
         kind=kind,
         label=label,
         hourly_rate=_normalize_hourly_rate(data.hourly_rate),
+        billable_rate=_normalize_billable_rate(data.billable_rate),
         created_by=getattr(user, "email", "admin"),
     )
     db.add(item)
@@ -123,6 +131,8 @@ async def update_schedule_catalog_item(
 
     if "hourly_rate" in updates:
         item.hourly_rate = _normalize_hourly_rate(updates["hourly_rate"])
+    if "billable_rate" in updates:
+        item.billable_rate = _normalize_billable_rate(updates["billable_rate"])
 
     await db.commit()
     await db.refresh(item)

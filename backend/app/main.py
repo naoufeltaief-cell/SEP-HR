@@ -18,7 +18,9 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text("ALTER TABLE schedule_catalog_items ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION DEFAULT 0"))
+        await conn.execute(text("ALTER TABLE schedule_catalog_items ADD COLUMN IF NOT EXISTS billable_rate DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("UPDATE schedule_catalog_items SET hourly_rate = 0 WHERE hourly_rate IS NULL"))
+        await conn.execute(text("UPDATE schedule_catalog_items SET billable_rate = 0 WHERE billable_rate IS NULL"))
         await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS km DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS deplacement DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS autre_dep DOUBLE PRECISION DEFAULT 0"))

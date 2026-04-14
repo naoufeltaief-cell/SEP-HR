@@ -185,11 +185,12 @@ class ApiClient {
     const qs = new URLSearchParams(kind ? { kind } : {}).toString();
     return this.get(`/schedule-catalogs/${qs ? '?' + qs : ''}`);
   }
-  createScheduleCatalogItem(kind, label, hourlyRate = 0) {
+  createScheduleCatalogItem(kind, label, hourlyRate = 0, billableRate = 0) {
     return this.post('/schedule-catalogs/', {
       kind,
       label,
       hourly_rate: Number(hourlyRate || 0),
+      billable_rate: Number(billableRate || 0),
     });
   }
   updateScheduleCatalogItem(id, data) {

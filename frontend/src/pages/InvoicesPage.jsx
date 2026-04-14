@@ -181,6 +181,7 @@ export default function InvoicesPage() {
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [newPositionLabel, setNewPositionLabel] = useState('');
   const [newPositionRate, setNewPositionRate] = useState('');
+  const [newPositionBillableRate, setNewPositionBillableRate] = useState('');
 
   const [reportData, setReportData] = useState(null);
   const [reportType, setReportType] = useState('by-client');
@@ -422,6 +423,7 @@ export default function InvoicesPage() {
           kind: 'position',
           label,
           hourly_rate: Number(newPositionRate || 0),
+          billable_rate: Number(newPositionBillableRate || 0),
         }),
       });
       setPositionCatalog((prev) =>
@@ -431,6 +433,7 @@ export default function InvoicesPage() {
       );
       setNewPositionLabel('');
       setNewPositionRate('');
+      setNewPositionBillableRate('');
       setSuccess(`Titre ajoute: ${created.label}`);
     } catch (e) {
       setError(e.message);
@@ -444,6 +447,7 @@ export default function InvoicesPage() {
         body: JSON.stringify({
           label: item.label,
           hourly_rate: Number(item.hourly_rate || 0),
+          billable_rate: Number(item.billable_rate || 0),
         }),
       });
       setPositionCatalog((prev) =>
@@ -916,12 +920,31 @@ export default function InvoicesPage() {
           <div style={{ ...S.card, marginBottom: 18, background: '#f8fcfd', border: '1px solid #d8eef2' }}>
             <div style={{ ...S.flexBetween, marginBottom: 12 }}>
               <div>
-                <h4 style={{ ...S.sectionTitle, fontSize: 13, marginBottom: 4 }}>Titres d'emploi et taux horaires</h4>
+                <h4 style={{ ...S.sectionTitle, fontSize: 13, marginBottom: 4 }}>Titres d'emploi, taux horaires et taux facturables</h4>
                 <p style={{ margin: 0, fontSize: 12, color: '#6C757D' }}>
-                  Les titres ajoutes ici deviennent disponibles dans l'onglet Horaire quand on cree ou modifie un quart.
+                  Les titres ajoutes ici deviennent disponibles dans l'onglet Horaire. Le taux facturable reste utilise seulement par la facturation.
                 </p>
               </div>
               {catalogLoading && <span style={{ fontSize: 12, color: '#6C757D' }}>Chargement...</span>}
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(220px, 1fr) 160px 160px auto',
+                gap: 10,
+                alignItems: 'center',
+                fontSize: 11,
+                fontWeight: 700,
+                color: '#6C757D',
+                marginBottom: 8,
+                padding: '0 2px',
+              }}
+            >
+              <div>Titre d'emploi</div>
+              <div>Taux horaire</div>
+              <div>Taux facturable</div>
+              <div></div>
             </div>
 
             <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
@@ -930,7 +953,7 @@ export default function InvoicesPage() {
                   key={item.id}
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: 'minmax(220px, 1fr) 160px auto',
+                    gridTemplateColumns: 'minmax(220px, 1fr) 160px 160px auto',
                     gap: 10,
                     alignItems: 'center',
                   }}
@@ -961,6 +984,21 @@ export default function InvoicesPage() {
                       )
                     }
                   />
+                  <input
+                    type="number"
+                    step="0.01"
+                    style={S.input}
+                    value={item.billable_rate ?? 0}
+                    onChange={(e) =>
+                      setPositionCatalog((prev) =>
+                        (prev || []).map((entry) =>
+                          entry.id === item.id
+                            ? { ...entry, billable_rate: e.target.value }
+                            : entry,
+                        ),
+                      )
+                    }
+                  />
                   <button
                     style={S.btn('outline')}
                     onClick={() => updatePositionCatalogItem(item)}
@@ -979,7 +1017,7 @@ export default function InvoicesPage() {
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'minmax(220px, 1fr) 160px auto',
+                gridTemplateColumns: 'minmax(220px, 1fr) 160px 160px auto',
                 gap: 10,
                 alignItems: 'end',
               }}
@@ -1001,6 +1039,17 @@ export default function InvoicesPage() {
                   style={S.input}
                   value={newPositionRate}
                   onChange={(e) => setNewPositionRate(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Taux facturable</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  style={S.input}
+                  value={newPositionBillableRate}
+                  onChange={(e) => setNewPositionBillableRate(e.target.value)}
                   placeholder="0.00"
                 />
               </div>

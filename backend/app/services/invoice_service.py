@@ -69,7 +69,10 @@ def build_position_rate_lookup(items: list[ScheduleCatalogItem] | list[Any]) -> 
         if str(getattr(item, "kind", "")).strip().lower() != "position":
             continue
         label = _normalize_catalog_title(getattr(item, "label", ""))
-        rate = _coerce_rate(getattr(item, "hourly_rate", 0))
+        rate = _coerce_rate(
+            getattr(item, "billable_rate", 0)
+            or getattr(item, "hourly_rate", 0)
+        )
         if label and rate > 0:
             lookup[label] = rate
     return lookup
@@ -190,6 +193,10 @@ def get_schedule_billable_rate(
     if is_orientation_shift(schedule=schedule, employee_title=employee_title):
         return 0.0
 
+    title_rate = get_rate_for_title(employee_title, position_rates=position_rates)
+    if title_rate > 0:
+        return round(title_rate, 2)
+
     try:
         stored_rate = float(getattr(schedule, "billable_rate", 0) or 0)
     except (TypeError, ValueError):
@@ -198,7 +205,7 @@ def get_schedule_billable_rate(
     if stored_rate > 0:
         return round(stored_rate, 2)
 
-    return get_rate_for_title(employee_title, position_rates=position_rates)
+    return 0.0
 def schedule_pause_to_invoice_minutes(pause_value: Any) -> float:
     try:
         pause = float(pause_value or 0)

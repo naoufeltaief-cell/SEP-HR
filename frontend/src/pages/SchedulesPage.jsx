@@ -137,6 +137,30 @@ function formatLongFrenchDate(isoDate) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function useMobileBreakpoint(maxWidth = 920) {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.innerWidth <= maxWidth;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const media = window.matchMedia(`(max-width: ${maxWidth}px)`);
+    const apply = (eventOrMedia) => {
+      setIsMobile(Boolean(eventOrMedia?.matches));
+    };
+    apply(media);
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", apply);
+      return () => media.removeEventListener("change", apply);
+    }
+    media.addListener(apply);
+    return () => media.removeListener(apply);
+  }, [maxWidth]);
+
+  return isMobile;
+}
+
 function buildTimesheetStatus(timesheet) {
   if (!timesheet?.id) return TIMESHEET_STATUS_MISSING;
   if (Number(timesheet.attachment_count || 0) > 0) {
@@ -336,6 +360,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [billingLoading, setBillingLoading] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
+  const isMobile = useMobileBreakpoint(920);
 
   const reload = useCallback(async () => {
     try {
@@ -1783,7 +1808,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
           />
           Horaires
         </h1>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: isMobile ? "stretch" : "flex-end" }}>
           {viewMode === "week" && (
             <button
               className="btn btn-outline btn-sm"
@@ -1867,7 +1892,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
               className="btn btn-outline btn-sm"
               onClick={toggleMonthPicker}
               style={{
-                minWidth: 230,
+                minWidth: isMobile ? 180 : 230,
                 justifyContent: "center",
                 fontWeight: 700,
               }}
@@ -1885,7 +1910,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                 style={{
                   position: "absolute",
                   top: "calc(100% + 10px)",
-                  left: 78,
+                  left: isMobile ? 0 : 78,
                   width: 360,
                   maxWidth: "calc(100vw - 40px)",
                   background: "#fff",
@@ -2049,7 +2074,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
                   paddingLeft: 32,
                   padding: "7px 12px 7px 32px",
                   fontSize: 12,
-                  minWidth: 220,
+                  minWidth: isMobile ? 170 : 220,
+                  width: isMobile ? "100%" : undefined,
                 }}
                 placeholder="Rechercher un employé..."
                 value={filterText}
@@ -2058,7 +2084,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
             </div>
             <select
               className="input"
-              style={{ minWidth: 190, fontSize: 12 }}
+              style={{ minWidth: isMobile ? 170 : 190, fontSize: 12, width: isMobile ? "100%" : undefined }}
               value={clientFilter}
               onChange={(e) => setClientFilter(e.target.value)}
             >
@@ -2071,7 +2097,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
             </select>
             <select
               className="input"
-              style={{ minWidth: 190, fontSize: 12 }}
+              style={{ minWidth: isMobile ? 170 : 190, fontSize: 12, width: isMobile ? "100%" : undefined }}
               value={positionFilter}
               onChange={(e) => setPositionFilter(e.target.value)}
             >
@@ -2101,6 +2127,381 @@ export default function SchedulesPage({ toast, onNavigate }) {
         </div>
       </div>
       {viewMode === "week" ? (
+        isMobile ? (
+          <div style={{ display: "grid", gap: 14 }}>
+            {activeEmps.map((e) => {
+              const periodShifts = visibleSchedules.filter(
+                (s) => s.employee_id === e.id && viewISOs.includes(s.date),
+              );
+              const activePeriodShifts = periodShifts.filter(
+                (shift) => !isCancelledShift(shift),
+              );
+              const totalHrs = activePeriodShifts.reduce(
+                (sum, s) => sum + Number(s.hours || 0),
+                0,
+              );
+              const totalKm = activePeriodShifts.reduce(
+                (sum, s) => sum + Number(s.km || 0),
+                0,
+              );
+              const totalDep = activePeriodShifts.reduce(
+                (sum, s) =>
+                  sum + Number(s.deplacement || 0) + Number(s.autre_dep || 0),
+                0,
+              );
+              const totalFrais = totalDep + totalKm * RATE_KM;
+              const empClientIds = getEmployeeClientIds(e, periodShifts);
+              const timesheetStatus = getEmployeeTimesheetStatus(e.id);
+              return (
+                <div
+                  key={`mobile-employee-${e.id}`}
+                  style={{
+                    background: "#fff",
+                    border: "1px solid var(--border)",
+                    borderRadius: 20,
+                    padding: 14,
+                    boxShadow: "0 10px 24px rgba(15,23,42,.06)",
+                    display: "grid",
+                    gap: 12,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "flex-start",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        cursor: "pointer",
+                      }}
+                      onClick={() => setEmployeeDossierId(e.id)}
+                    >
+                      <Avatar name={e.name} size={38} />
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 14 }}>
+                          {e.name}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text3)" }}>
+                          {e.position || "Employe"}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div
+                        style={{
+                          fontWeight: 800,
+                          fontSize: 16,
+                          color: "var(--brand)",
+                        }}
+                      >
+                        {totalHrs.toFixed(1)} h
+                      </div>
+                      {totalFrais > 0 && (
+                        <div
+                          style={{ fontSize: 11, color: "var(--purple)" }}
+                        >
+                          {fmtMoney(totalFrais)} frais
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: "fit-content",
+                      padding: "5px 10px",
+                      borderRadius: 999,
+                      border: `1px solid ${timesheetStatus.border}`,
+                      background: timesheetStatus.background,
+                      color: timesheetStatus.color,
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {timesheetStatus.label}
+                  </div>
+
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {viewDates.map((d, i) => {
+                      const iso = fmtISO(d);
+                      const shifts = visibleSchedules.filter(
+                        (s) => s.employee_id === e.id && s.date === iso,
+                      );
+                      return (
+                        <div
+                          key={`mobile-day-${e.id}-${iso}`}
+                          style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 16,
+                            padding: 10,
+                            background: "#f9fcfd",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 8,
+                              marginBottom: shifts.length ? 8 : 0,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 12,
+                                fontWeight: 800,
+                                color: "var(--brand)",
+                              }}
+                            >
+                              {fmtDay(d)}
+                            </div>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              onClick={() => openAdd(e.id, iso)}
+                            >
+                              <Plus size={12} /> Ajouter
+                            </button>
+                          </div>
+                          {shifts.length ? (
+                            <div style={{ display: "grid", gap: 8 }}>
+                              {shifts.map((s) => (
+                                <ShiftPill
+                                  key={s.id}
+                                  shift={s}
+                                  employee={e}
+                                  client={clientMap.get(
+                                    s.client_id || e.client_id || null,
+                                  )}
+                                  onClick={() => openEdit(s)}
+                                  compact
+                                />
+                              ))}
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--text3)",
+                              }}
+                            >
+                              Aucun quart
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {empClientIds.map((cid) => {
+                      const appr = getWeekApprovalStatus(e.id, cid);
+                      const isApproved = appr && appr.status === "approved";
+                      const cl = clientMap.get(cid);
+                      const isExpanded =
+                        expandedEmp?.empId === e.id &&
+                        expandedEmp?.clientId === cid;
+                      return (
+                        <div
+                          key={`mobile-client-${e.id}-${cid}`}
+                          style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 16,
+                            background: "#fff",
+                            overflow: "hidden",
+                          }}
+                        >
+                          <div
+                            style={{
+                              padding: "10px 12px",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              gap: 8,
+                              alignItems: "center",
+                            }}
+                          >
+                            <div>
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  color: "var(--text3)",
+                                  marginBottom: 2,
+                                }}
+                              >
+                                Client
+                              </div>
+                              <div
+                                style={{ fontSize: 13, fontWeight: 700 }}
+                              >
+                                {cl?.name || "Client"}
+                              </div>
+                            </div>
+                            <div
+                              style={{
+                                display: "flex",
+                                flexWrap: "wrap",
+                                justifyContent: "flex-end",
+                                gap: 6,
+                              }}
+                            >
+                              <button
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  padding: "6px 10px",
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  border: "none",
+                                  borderRadius: 8,
+                                  cursor: "pointer",
+                                  background: isApproved
+                                    ? "#28A745"
+                                    : "#FFC107",
+                                  color: isApproved ? "#fff" : "#000",
+                                }}
+                                onClick={() =>
+                                  isApproved
+                                    ? revokeWeekCompat(e.id, cid)
+                                    : saveReviewCompat(
+                                        e.id,
+                                        cid,
+                                        e.client_id || null,
+                                        true,
+                                      )
+                                }
+                                disabled={billingLoading}
+                              >
+                                {isApproved ? "Approuve" : "Approuver"}
+                              </button>
+                              <button
+                                className={`btn btn-sm ${
+                                  isExpanded ? "btn-primary" : "btn-outline"
+                                }`}
+                                onClick={() =>
+                                  toggleBillingPanel(
+                                    e.id,
+                                    cid,
+                                    e.client_id || null,
+                                  )
+                                }
+                              >
+                                {isExpanded ? "Fermer" : "Details"}
+                              </button>
+                            </div>
+                          </div>
+                          {isExpanded && (
+                            <div
+                              style={{
+                                background: "#f0f9fa",
+                                borderTop: "1px solid var(--border)",
+                                padding: 12,
+                              }}
+                            >
+                              {billingLoading ? (
+                                <div
+                                  style={{
+                                    textAlign: "center",
+                                    padding: 20,
+                                    color: "var(--text3)",
+                                  }}
+                                >
+                                  Chargement...
+                                </div>
+                              ) : (
+                                <ApprovalPanel
+                                  employee={e}
+                                  client={clientMap.get(expandedEmp.clientId)}
+                                  shifts={getClientWeekShifts(
+                                    e.id,
+                                    expandedEmp.clientId,
+                                    expandedEmp?.fallbackClientId ||
+                                      e.client_id ||
+                                      null,
+                                  )}
+                                  allEmployeeSchedules={schedules.filter(
+                                    (s) =>
+                                      s.employee_id === e.id &&
+                                      s.status !== "cancelled",
+                                  )}
+                                  validationSummary={null}
+                                  reviewDraft={reviewDraft}
+                                  setReviewDraft={setReviewDraft}
+                                  currentReview={currentReview}
+                                  currentTimesheet={currentTimesheet}
+                                  timesheetAttachments={timesheetAttachments}
+                                  timesheetStatus={timesheetStatus}
+                                  currentInvoice={currentInvoice}
+                                  reviewAttachments={reviewAttachments}
+                                  catalogItems={scheduleCatalogItems}
+                                  busy={billingLoading}
+                                  onSave={() =>
+                                    saveReviewCompat(
+                                      e.id,
+                                      expandedEmp.clientId,
+                                      expandedEmp?.fallbackClientId ||
+                                        e.client_id ||
+                                        null,
+                                      false,
+                                    )
+                                  }
+                                  onApprove={() =>
+                                    saveReviewCompat(
+                                      e.id,
+                                      expandedEmp.clientId,
+                                      expandedEmp?.fallbackClientId ||
+                                        e.client_id ||
+                                        null,
+                                      true,
+                                    )
+                                  }
+                                  onRevoke={() =>
+                                    revokeWeekCompat(e.id, expandedEmp.clientId)
+                                  }
+                                  onGenerateInvoice={() =>
+                                    generateInvoiceCompat(
+                                      e.id,
+                                      expandedEmp.clientId,
+                                    )
+                                  }
+                                  onUpload={(ev) =>
+                                    handleReviewAttachment(
+                                      ev,
+                                      e.id,
+                                      expandedEmp.clientId,
+                                      expandedEmp?.fallbackClientId ||
+                                        e.client_id ||
+                                        null,
+                                    )
+                                  }
+                                  onDeleteAttachment={deleteReviewAttachment}
+                                  onOpenAttachment={openReviewAttachment}
+                                  onGoInvoices={() =>
+                                    onNavigate && onNavigate("invoices")
+                                  }
+                                  onRefreshParent={reload}
+                                  toast={toast}
+                                />
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
         <div className="schedule-grid">
         <table>
           <thead>
@@ -2456,7 +2857,102 @@ export default function SchedulesPage({ toast, onNavigate }) {
           </tbody>
         </table>
         </div>
+        )
       ) : (
+        isMobile ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            {calendarWeeks
+              .flat()
+              .filter(
+                (day) =>
+                  day.inCurrentMonth ||
+                  day.isToday ||
+                  (calendarShiftsByDate.get(day.iso) || []).length > 0,
+              )
+              .map((day) => {
+                const dayShifts = calendarShiftsByDate.get(day.iso) || [];
+                return (
+                  <div
+                    key={`mobile-calendar-${day.iso}`}
+                    style={{
+                      background: day.inCurrentMonth ? "#fff" : "#f5fafb",
+                      border: "1px solid var(--border)",
+                      borderRadius: 18,
+                      padding: 12,
+                      display: "grid",
+                      gap: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 8,
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 800,
+                            color: day.isToday ? "var(--brand)" : "var(--text1)",
+                          }}
+                        >
+                          {formatLongFrenchDate(day.iso)}
+                        </div>
+                        {!day.inCurrentMonth && (
+                          <div
+                            style={{ fontSize: 11, color: "var(--text3)" }}
+                          >
+                            Hors mois courant
+                          </div>
+                        )}
+                      </div>
+                      {day.isToday && (
+                        <span
+                          style={{
+                            padding: "4px 10px",
+                            borderRadius: 999,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            background: "var(--brand-xl)",
+                            color: "var(--brand)",
+                          }}
+                        >
+                          Aujourd'hui
+                        </span>
+                      )}
+                    </div>
+
+                    {dayShifts.length ? (
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {dayShifts.map((shift) => (
+                          <ShiftPill
+                            key={shift.id}
+                            shift={shift}
+                            employee={employeeMap.get(shift.employee_id)}
+                            client={clientMap.get(shift.client_id)}
+                            compact
+                            showEmployee
+                            onClick={() => openEdit(shift)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <button
+                        className="btn btn-outline btn-sm"
+                        style={{ justifyContent: "center" }}
+                        onClick={() => openAdd(null, day.iso)}
+                      >
+                        + Ajouter
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+        ) : (
         <div
           style={{
             border: "1px solid var(--border)",
@@ -2588,6 +3084,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
             })}
           </div>
         </div>
+        )
       )}
       {(modal || employeeDossierId) && (
         <Suspense fallback={null}>

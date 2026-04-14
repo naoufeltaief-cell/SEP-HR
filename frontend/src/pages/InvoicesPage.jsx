@@ -141,7 +141,30 @@ function Modal({ open, onClose, title, children }) {
   );
 }
 
+function useMobileBreakpoint(maxWidth = 920) {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth <= maxWidth;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const media = window.matchMedia(`(max-width: ${maxWidth}px)`);
+    const apply = (eventOrMedia) => setIsMobile(Boolean(eventOrMedia?.matches));
+    apply(media);
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', apply);
+      return () => media.removeEventListener('change', apply);
+    }
+    media.addListener(apply);
+    return () => media.removeListener(apply);
+  }, [maxWidth]);
+
+  return isMobile;
+}
+
 export default function InvoicesPage() {
+  const isMobile = useMobileBreakpoint(920);
   const [activeTab, setActiveTab] = useState('list');
   const [invoices, setInvoices] = useState([]);
   const [stats, setStats] = useState(null);
@@ -190,6 +213,8 @@ export default function InvoicesPage() {
   const [selected, setSelected] = useState(new Set());
   const [billingEmailStatus, setBillingEmailStatus] = useState(null);
   const [billingEmailBusy, setBillingEmailBusy] = useState(false);
+  const catalogGridTemplate = isMobile ? '1fr' : 'minmax(220px, 1fr) 160px 160px auto';
+  const manualMetaGridTemplate = isMobile ? '1fr' : '1fr 1fr 1fr 1fr';
 
   const loadInvoices = useCallback(async () => {
     setLoading(true);
@@ -769,24 +794,24 @@ export default function InvoicesPage() {
           <div style={{ ...S.flexBetween, marginBottom: 16 }}>
             <div style={S.flexRow}>
               <input
-                style={{ ...S.input, width: 220 }}
+                style={{ ...S.input, width: isMobile ? '100%' : 220, minWidth: isMobile ? 0 : 220 }}
                 placeholder="Rechercher (# facture, client, employé)..."
                 value={filterSearch}
                 onChange={e => setFilterSearch(e.target.value)}
               />
-              <select style={S.select} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+              <select style={{ ...S.select, width: isMobile ? '100%' : undefined }} value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
                 <option value="">Tous les statuts</option>
                 {Object.entries(statusConfig).map(([k, v]) => (
                   <option key={k} value={k}>{v.label}</option>
                 ))}
               </select>
-              <select style={S.select} value={filterClientId} onChange={e => setFilterClientId(e.target.value)}>
+              <select style={{ ...S.select, width: isMobile ? '100%' : undefined }} value={filterClientId} onChange={e => setFilterClientId(e.target.value)}>
                 <option value="">Tous les clients</option>
                 {clients.map(c => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
-              <select style={S.select} value={filterEmployeeId} onChange={e => setFilterEmployeeId(e.target.value)}>
+              <select style={{ ...S.select, width: isMobile ? '100%' : undefined }} value={filterEmployeeId} onChange={e => setFilterEmployeeId(e.target.value)}>
                 <option value="">Tous les employés</option>
                 {employees.map(emp => (
                   <option key={emp.id} value={emp.id}>{emp.name}</option>
@@ -847,6 +872,59 @@ export default function InvoicesPage() {
             <div style={S.empty}>Chargement...</div>
           ) : invoices.length === 0 ? (
             <div style={S.empty}>Aucune facture trouvée</div>
+          ) : isMobile ? (
+            <div style={{ display: 'grid', gap: 12 }}>
+              {invoices.map((inv) => (
+                <div
+                  key={inv.id}
+                  style={{
+                    background: '#fff',
+                    border: '1px solid #e6edf0',
+                    borderRadius: 16,
+                    padding: 14,
+                    display: 'grid',
+                    gap: 10,
+                    boxShadow: '0 10px 24px rgba(15,23,42,.05)',
+                  }}
+                >
+                  <div style={{ ...S.flexBetween, gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: '#6C757D', marginBottom: 3 }}>Facture</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: '#2A7B88' }}>{inv.number}</div>
+                    </div>
+                    <StatusBadge status={inv.status} />
+                  </div>
+                  <div style={{ fontSize: 12, color: '#495057' }}>
+                    <div style={{ fontWeight: 700 }}>{inv.client_name || 'Client'}</div>
+                    <div>{inv.employee_name || 'Employé non assigné'}</div>
+                    <div style={{ color: '#6C757D', marginTop: 3 }}>
+                      {fmtDate(inv.period_start)} → {fmtDate(inv.period_end)}
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
+                    <div style={{ background: '#f8fbfc', borderRadius: 12, padding: 10 }}>
+                      <div style={{ fontSize: 10, color: '#6C757D', textTransform: 'uppercase' }}>Total</div>
+                      <div style={{ fontWeight: 800 }}>{fmt(inv.total)}</div>
+                    </div>
+                    <div style={{ background: '#f3fbf6', borderRadius: 12, padding: 10 }}>
+                      <div style={{ fontSize: 10, color: '#6C757D', textTransform: 'uppercase' }}>Payé</div>
+                      <div style={{ fontWeight: 800, color: '#28A745' }}>{fmt(inv.amount_paid)}</div>
+                    </div>
+                    <div style={{ background: '#fff6f6', borderRadius: 12, padding: 10 }}>
+                      <div style={{ fontSize: 10, color: '#6C757D', textTransform: 'uppercase' }}>Solde</div>
+                      <div style={{ fontWeight: 800, color: inv.balance_due > 0 ? '#DC3545' : '#28A745' }}>{fmt(inv.balance_due)}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button style={S.btn('outline')} onClick={() => openDetail(inv.id)}>Voir</button>
+                    <button style={S.btn('outline')} onClick={() => openPdf(inv.id)}>PDF</button>
+                    {(inv.status === 'draft' || inv.status === 'validated' || inv.status === 'cancelled') && (
+                      <button style={S.btn('danger')} onClick={() => deleteInvoice(inv.id)}>Supprimer</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={S.table}>
@@ -931,7 +1009,7 @@ export default function InvoicesPage() {
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'minmax(220px, 1fr) 160px 160px auto',
+                gridTemplateColumns: catalogGridTemplate,
                 gap: 10,
                 alignItems: 'center',
                 fontSize: 11,
@@ -939,6 +1017,7 @@ export default function InvoicesPage() {
                 color: '#6C757D',
                 marginBottom: 8,
                 padding: '0 2px',
+                ...(isMobile ? { display: 'none' } : {}),
               }}
             >
               <div>Titre d'emploi</div>
@@ -953,7 +1032,7 @@ export default function InvoicesPage() {
                   key={item.id}
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: 'minmax(220px, 1fr) 160px 160px auto',
+                    gridTemplateColumns: catalogGridTemplate,
                     gap: 10,
                     alignItems: 'center',
                   }}
@@ -1017,7 +1096,7 @@ export default function InvoicesPage() {
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'minmax(220px, 1fr) 160px 160px auto',
+                gridTemplateColumns: catalogGridTemplate,
                 gap: 10,
                 alignItems: 'end',
               }}
@@ -1129,7 +1208,7 @@ export default function InvoicesPage() {
 
             {showManualForm && (
               <div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: manualMetaGridTemplate, gap: 10, marginBottom: 12 }}>
                   <div>
                     <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Client *</label>
                     <select style={S.select} value={manualClientId} onChange={e => setManualClientId(e.target.value)}>
@@ -1153,7 +1232,7 @@ export default function InvoicesPage() {
                     <input type="date" style={S.input} value={manualPeriodEnd} onChange={e => setManualPeriodEnd(e.target.value)} />
                   </div>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: manualMetaGridTemplate, gap: 10, marginBottom: 12 }}>
                   <div>
                     <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>No PO</label>
                     <input style={S.input} value={manualPoNumber} onChange={e => setManualPoNumber(e.target.value)} placeholder="PO-001" />

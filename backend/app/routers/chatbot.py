@@ -52,6 +52,21 @@ router = APIRouter()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
 OPENAI_REASONING_EFFORT = (os.getenv("OPENAI_REASONING_EFFORT", "high") or "high").strip().lower()
+CHATBOT_PROVIDER = (os.getenv("CHATBOT_PROVIDER", "openai") or "openai").strip().lower()
+CHATBOT_MODEL = (
+    os.getenv("CHATBOT_MODEL")
+    or ("deepseek-chat" if CHATBOT_PROVIDER == "deepseek" else OPENAI_MODEL)
+    or "gpt-5.4"
+).strip()
+CHATBOT_API_KEY = (
+    os.getenv("CHATBOT_API_KEY")
+    or (os.getenv("DEEPSEEK_API_KEY") if CHATBOT_PROVIDER == "deepseek" else OPENAI_API_KEY)
+    or ""
+).strip()
+CHATBOT_BASE_URL = (
+    os.getenv("CHATBOT_BASE_URL")
+    or ("https://api.deepseek.com" if CHATBOT_PROVIDER == "deepseek" else "https://api.openai.com")
+).strip().rstrip("/")
 CURRENT_YEAR = date.today().year
 IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
 IMAP_USER = (
@@ -146,6 +161,17 @@ RAW_TOOLS = [
     {"name": "get_business_info", "description": "Obtenir les informations business.", "input_schema": {"type": "object", "properties": {"topic": {"type": "string"}}}},
 ]
 TOOLS = [{"type": "function", "name": t["name"], "description": t["description"], "parameters": t["input_schema"], "strict": False} for t in RAW_TOOLS]
+CHAT_COMPLETION_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        },
+    }
+    for t in RAW_TOOLS
+]
 
 
 def _norm(s: str) -> str:
@@ -2762,6 +2788,18 @@ def _history_to_input(history, user_message):
     items.append({"role": 'user', "content": user_message})
     return items
 
+
+def _history_to_messages(history, user_message):
+    messages = []
+    for message in history or []:
+        role = str(message.get("role") or "user").strip().lower()
+        content = str(message.get("content") or "").strip()
+        if role not in {"system", "user", "assistant"} or not content:
+            continue
+        messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": str(user_message or "")})
+    return messages
+
 def _extract_text(data):
     if data.get('output_text'):
         return data['output_text']
@@ -2781,6 +2819,23 @@ def _extract_last_tool_output(inputs):
     return ''
 
 
+def _extract_chat_completion_text(message):
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text_value = item.get("text") or item.get("content")
+                if text_value:
+                    parts.append(str(text_value))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(part for part in parts if part).strip()
+    return ""
+
+
 def _normalized_reasoning_effort() -> str:
     effort = (OPENAI_REASONING_EFFORT or "medium").strip().lower()
     return effort if effort in {"none", "low", "medium", "high", "xhigh"} else "medium"
@@ -2791,16 +2846,45 @@ def _supports_reasoning(model_name: str) -> bool:
     return model.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
+def _chatbot_uses_deepseek() -> bool:
+    return CHATBOT_PROVIDER == "deepseek"
+
+
+def _chatbot_label() -> str:
+    return "DeepSeek" if _chatbot_uses_deepseek() else "OpenAI"
+
+
+def _chatbot_api_base(base_url: str, path: str) -> str:
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = "https://api.deepseek.com" if _chatbot_uses_deepseek() else "https://api.openai.com"
+    if normalized.endswith("/v1"):
+        return f"{normalized}{path}"
+    return f"{normalized}/v1{path}"
+
+
 def _build_openai_request_payload(system_prompt, inputs):
     payload = {
-        'model': OPENAI_MODEL,
+        'model': CHATBOT_MODEL,
         'instructions': system_prompt,
         'input': inputs,
         'tools': TOOLS,
         'parallel_tool_calls': False,
     }
-    if _supports_reasoning(OPENAI_MODEL):
+    if _supports_reasoning(CHATBOT_MODEL):
         payload['reasoning'] = {'effort': _normalized_reasoning_effort()}
+    return payload
+
+
+def _build_deepseek_request_payload(system_prompt, messages):
+    payload = {
+        "model": CHATBOT_MODEL,
+        "messages": [{"role": "system", "content": system_prompt}, *messages],
+        "tools": CHAT_COMPLETION_TOOLS,
+        "tool_choice": "auto",
+        "temperature": 0.2,
+        "stream": False,
+    }
     return payload
 
 
@@ -2924,8 +3008,15 @@ async def delete_chatbot_upload(
 
 @router.post('/chat')
 async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
-    if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail='ClÃ© API OpenAI non configurÃ©e. Ajouter OPENAI_API_KEY dans les variables d\'environnement Render.')
+    if not CHATBOT_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Clé API {_chatbot_label()} non configurée. "
+                f"Ajoute {'CHATBOT_API_KEY / DEEPSEEK_API_KEY' if _chatbot_uses_deepseek() else 'OPENAI_API_KEY'} "
+                "dans les variables d'environnement Render."
+            ),
+        )
     system_prompt, agent_name = _detect_prompt(msg.message)
     session_uploads = await _get_chat_session_uploads(db, msg.session_id)
     system_prompt = f"{system_prompt}{_chat_upload_context_text(session_uploads)}"
@@ -2940,25 +3031,74 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                 'reply': _format_timesheet_analysis_response(items, max_results=5),
                 'usage': {},
                 'agent': 'facturation',
-                'model': os.getenv("TIMESHEET_ATTACHMENT_MODEL") or OPENAI_MODEL,
-                'reasoning_effort': _normalized_reasoning_effort() if _supports_reasoning(os.getenv("TIMESHEET_ATTACHMENT_MODEL") or OPENAI_MODEL) else None,
+                'model': os.getenv("TIMESHEET_TEXT_MODEL") or os.getenv("TIMESHEET_ATTACHMENT_MODEL") or CHATBOT_MODEL,
+                'reasoning_effort': None,
             }
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    "Analyse FDT impossible avec l'API OpenAI du site: "
-                    f"{exc}. Verifie le quota/facturation de OPENAI_API_KEY sur Render."
+                    "Analyse FDT impossible avec le pipeline OCR actuel: "
+                    f"{exc}."
                 ),
             )
+    if _chatbot_uses_deepseek():
+        messages = _history_to_messages(msg.history, msg.message)
+        async with httpx.AsyncClient(timeout=120) as client:
+            try:
+                data = None
+                last_message = None
+                for _ in range(8):
+                    resp = await client.post(
+                        _chatbot_api_base(CHATBOT_BASE_URL, "/chat/completions"),
+                        headers={'Authorization': f'Bearer {CHATBOT_API_KEY}', 'Content-Type': 'application/json'},
+                        json=_build_deepseek_request_payload(system_prompt, messages),
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    choices = data.get("choices") or []
+                    last_message = ((choices[0] or {}).get("message") or {}) if choices else {}
+                    tool_calls = last_message.get("tool_calls") or []
+                    if not tool_calls:
+                        break
+                    messages.append({
+                        "role": "assistant",
+                        "content": _extract_chat_completion_text(last_message),
+                        "tool_calls": tool_calls,
+                    })
+                    for call in tool_calls:
+                        fn = call.get("function") or {}
+                        try:
+                            args = json.loads(fn.get("arguments") or '{}')
+                        except Exception:
+                            args = {}
+                        result = await execute_tool(fn.get("name", ''), args, db, msg.message, msg.session_id)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": call.get("id"),
+                            "content": result,
+                        })
+                return {
+                    'reply': _extract_chat_completion_text(last_message or {}) or "Je n'ai pas pu générer de réponse.",
+                    'usage': (data or {}).get('usage', {}),
+                    'agent': agent_name,
+                    'model': CHATBOT_MODEL,
+                    'reasoning_effort': None,
+                    'provider': 'deepseek',
+                }
+            except httpx.HTTPStatusError as e:
+                raise HTTPException(status_code=502, detail=f"Erreur API {_chatbot_label()}: {e.response.text}")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
     inputs = _history_to_input(msg.history, msg.message)
-    headers = {'Authorization': f'Bearer {OPENAI_API_KEY}', 'Content-Type': 'application/json'}
+    headers = {'Authorization': f'Bearer {CHATBOT_API_KEY}', 'Content-Type': 'application/json'}
     async with httpx.AsyncClient(timeout=120) as client:
         try:
             data = None
             for _ in range(8):
                 resp = await client.post(
-                    'https://api.openai.com/v1/responses',
+                    _chatbot_api_base(CHATBOT_BASE_URL, '/v1/responses'),
                     headers=headers,
                     json=_build_openai_request_payload(system_prompt, inputs),
                 )
@@ -2979,10 +3119,11 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                 'reply': _extract_text(data or {}) or _extract_last_tool_output(inputs) or "Je n'ai pas pu gÃ©nÃ©rer de rÃ©ponse.",
                 'usage': (data or {}).get('usage', {}),
                 'agent': agent_name,
-                'model': OPENAI_MODEL,
-                'reasoning_effort': _normalized_reasoning_effort() if _supports_reasoning(OPENAI_MODEL) else None,
+                'model': CHATBOT_MODEL,
+                'reasoning_effort': _normalized_reasoning_effort() if _supports_reasoning(CHATBOT_MODEL) else None,
+                'provider': 'openai',
             }
         except httpx.HTTPStatusError as e:
-            raise HTTPException(status_code=502, detail=f'Erreur API OpenAI: {e.response.text}')
+            raise HTTPException(status_code=502, detail=f"Erreur API {_chatbot_label()}: {e.response.text}")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

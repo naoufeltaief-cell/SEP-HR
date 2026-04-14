@@ -17,6 +17,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from PyPDF2 import PdfReader
 try:
+    import pytesseract
+except Exception:  # pragma: no cover - optional until runtime dependency is installed
+    pytesseract = None
+try:
+    from PIL import Image, ImageOps
+except Exception:  # pragma: no cover - optional until runtime dependency is installed
+    Image = None
+    ImageOps = None
+try:
     import fitz  # PyMuPDF
 except Exception:  # pragma: no cover - optional at runtime until dependency is installed
     fitz = None
@@ -119,16 +128,34 @@ _ACCOMMODATION_NEGATIVE_FILENAME_KEYWORDS = (
     "instagram",
 )
 OPENAI_API_KEY = (os.getenv("OPENAI_API_KEY") or "").strip()
+DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
+TIMESHEET_AI_PROVIDER = (
+    os.getenv("TIMESHEET_AI_PROVIDER")
+    or os.getenv("CHATBOT_PROVIDER")
+    or ("deepseek" if DEEPSEEK_API_KEY and not OPENAI_API_KEY else "openai")
+).strip().lower()
 TIMESHEET_ATTACHMENT_MODEL = (
     os.getenv("TIMESHEET_ATTACHMENT_MODEL")
     or os.getenv("OPENAI_MODEL")
     or "gpt-4o"
+).strip()
+TIMESHEET_TEXT_MODEL = (
+    os.getenv("TIMESHEET_TEXT_MODEL")
+    or ("deepseek-reasoner" if TIMESHEET_AI_PROVIDER == "deepseek" else TIMESHEET_ATTACHMENT_MODEL)
+    or "deepseek-reasoner"
 ).strip()
 TIMESHEET_ATTACHMENT_REASONING_EFFORT = (
     os.getenv("TIMESHEET_ATTACHMENT_REASONING_EFFORT")
     or os.getenv("OPENAI_REASONING_EFFORT")
     or "medium"
 ).strip().lower()
+TIMESHEET_LLM_API_KEY = (
+    DEEPSEEK_API_KEY if TIMESHEET_AI_PROVIDER == "deepseek" else OPENAI_API_KEY
+).strip()
+TIMESHEET_LLM_BASE_URL = (
+    os.getenv("TIMESHEET_LLM_BASE_URL")
+    or ("https://api.deepseek.com" if TIMESHEET_AI_PROVIDER == "deepseek" else "https://api.openai.com")
+).strip().rstrip("/")
 _VISION_ATTACHMENT_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
 _ORIENTATION_SYSTEM_TAG = "[[orientation]]"
 _DAY_LABEL_TO_INDEX = {
@@ -446,6 +473,25 @@ def _extract_openai_text(data: dict) -> str:
     return "\n".join(part for part in texts if part).strip()
 
 
+def _extract_chat_completion_text(data: dict) -> str:
+    choices = data.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if text:
+                    parts.append(str(text))
+        return "\n".join(part for part in parts if part).strip()
+    return ""
+
+
 def _parse_json_object(raw: str) -> dict:
     text = str(raw or "").strip()
     if not text:
@@ -466,6 +512,128 @@ def _parse_json_object(raw: str) -> dict:
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
+
+
+def _timesheet_uses_deepseek() -> bool:
+    return TIMESHEET_AI_PROVIDER == "deepseek"
+
+
+def _timesheet_llm_enabled() -> bool:
+    return bool(TIMESHEET_LLM_API_KEY)
+
+
+def _timesheet_llm_label() -> str:
+    return "DeepSeek" if _timesheet_uses_deepseek() else "OpenAI"
+
+
+def _timesheet_api_base(path: str) -> str:
+    return f"{TIMESHEET_LLM_BASE_URL}{path}"
+
+
+def _format_llm_api_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            payload = exc.response.json()
+        except Exception:
+            payload = None
+        message = (
+            payload.get("error", {}).get("message")
+            if isinstance(payload, dict)
+            else exc.response.text
+        )
+        clean = str(message or "").strip()
+        label = _timesheet_llm_label()
+        return clean or f"Erreur API {label} ({exc.response.status_code})"
+    clean = str(exc or "").strip()
+    return clean or f"Erreur API {_timesheet_llm_label()}"
+
+
+def _ocr_image_text_preview(file_data: bytes, max_chars: int = 5000) -> str:
+    if not file_data or Image is None or pytesseract is None:
+        return ""
+    try:
+        image = Image.open(BytesIO(file_data))
+        image = ImageOps.exif_transpose(image)
+        gray = ImageOps.grayscale(image)
+        normalized = ImageOps.autocontrast(gray)
+        text = pytesseract.image_to_string(normalized, lang="fra+eng")
+        return str(text or "").strip()[:max_chars]
+    except Exception as exc:
+        logger.warning("Unable to OCR image preview: %s", exc)
+        return ""
+
+
+def _ocr_pdf_text_preview(file_data: bytes, max_chars: int = 6000) -> str:
+    pages = _render_pdf_pages_png(file_data, zoom=2.2, max_pages=3)
+    if not pages:
+        return ""
+    chunks = []
+    for page in pages:
+        text = _ocr_image_text_preview(page, max_chars=max_chars)
+        if text:
+            chunks.append(text)
+        if sum(len(chunk) for chunk in chunks) >= max_chars:
+            break
+    return "\n\n".join(chunks)[:max_chars].strip()
+
+
+async def _call_timesheet_text_model(
+    *,
+    instructions: str,
+    prompt: str,
+    max_output_tokens: int = 1800,
+    raise_on_error: bool = False,
+) -> str:
+    if not _timesheet_llm_enabled():
+        if raise_on_error:
+            raise RuntimeError(
+                f"Clé API {_timesheet_llm_label()} non configurée pour la lecture FDT."
+            )
+        return ""
+
+    headers = {
+        "Authorization": f"Bearer {TIMESHEET_LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            if _timesheet_uses_deepseek():
+                payload = {
+                    "model": TIMESHEET_TEXT_MODEL,
+                    "messages": [
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0,
+                    "stream": False,
+                }
+                response = await client.post(
+                    _timesheet_api_base("/chat/completions"),
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                return _extract_chat_completion_text(response.json()).strip()
+
+            payload = {
+                "model": TIMESHEET_ATTACHMENT_MODEL,
+                "instructions": instructions,
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                "max_output_tokens": max_output_tokens,
+            }
+            if _supports_reasoning(TIMESHEET_ATTACHMENT_MODEL):
+                payload["reasoning"] = {"effort": _normalized_reasoning_effort()}
+            response = await client.post(
+                _timesheet_api_base("/v1/responses"),
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return _extract_openai_text(response.json()).strip()
+    except Exception as exc:
+        if raise_on_error:
+            raise RuntimeError(_format_llm_api_error(exc)) from exc
+        return ""
 
 
 def _extract_pdf_text_preview(file_data: bytes, max_chars: int = 2400) -> str:
@@ -564,7 +732,12 @@ def _format_openai_api_error(exc: Exception) -> str:
 def extract_document_text_preview(filename: str = "", mime_type: str = "", file_data: bytes = b"") -> str:
     ext = _attachment_extension(filename, mime_type)
     if ext == "pdf":
-        return _extract_pdf_text_preview(file_data)
+        text = _extract_pdf_text_preview(file_data)
+        if text:
+            return text
+        return _ocr_pdf_text_preview(file_data)
+    if ext in _VISION_ATTACHMENT_EXTENSIONS or ext in {"heic", "heif"}:
+        return _ocr_image_text_preview(file_data)
     return ""
 
 
@@ -895,7 +1068,7 @@ def _should_use_ai_attachment_review(
     analysis: dict,
     employee: Optional[Employee],
 ) -> bool:
-    if not OPENAI_API_KEY:
+    if not _timesheet_llm_enabled():
         return False
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
     if ext not in _VISION_ATTACHMENT_EXTENSIONS:
@@ -922,7 +1095,7 @@ def _should_use_ai_accommodation_review(
     employee: Optional[Employee],
     extracted_text: str = "",
 ) -> bool:
-    if not OPENAI_API_KEY:
+    if not _timesheet_llm_enabled():
         return False
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
     if ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf":
@@ -944,7 +1117,7 @@ async def inspect_attachment_with_openai(
     raise_on_error: bool = False,
 ) -> dict:
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
-    if (ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf") or not OPENAI_API_KEY:
+    if (ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf"):
         return {}
 
     file_data = document.get("file_data", b"") or b""
@@ -971,6 +1144,33 @@ async def inspect_attachment_with_openai(
         "Reponds en JSON compact uniquement avec les cles: "
         "is_timesheet, confidence, employee_name_seen, period_text_seen, is_signed, notes."
     )
+    if _timesheet_uses_deepseek():
+        preview_text = extract_document_text_preview(
+            document.get("filename", ""),
+            document.get("mime_type", ""),
+            file_data,
+        )
+        if not preview_text:
+            return {}
+        try:
+            raw = await _call_timesheet_text_model(
+                instructions=(
+                    "Tu aides un commis de facturation a trier les pieces jointes recues par courriel. "
+                    "Sois prudent et n'identifie comme FDT que les vrais documents de feuille de temps. "
+                    "Retourne uniquement un JSON compact."
+                ),
+                prompt=f"{context_text}\n\nTexte OCR du document:\n{preview_text[:12000]}",
+                max_output_tokens=220,
+                raise_on_error=raise_on_error,
+            )
+            parsed = _parse_json_object(raw)
+        except Exception as exc:
+            if raise_on_error:
+                raise RuntimeError(str(exc)) from exc
+            return {}
+    else:
+        if not OPENAI_API_KEY:
+            return {}
     payload = {
         "model": TIMESHEET_ATTACHMENT_MODEL,
         "instructions": "Tu aides un commis de facturation a trier les pieces jointes recues par courriel. Sois prudent et n'identifie comme FDT que les vrais documents de feuille de temps.",
@@ -992,14 +1192,15 @@ async def inspect_attachment_with_openai(
         "Content-Type": "application/json",
     }
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            parsed = _parse_json_object(_extract_openai_text(response.json()))
+        if not _timesheet_uses_deepseek():
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/responses",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                parsed = _parse_json_object(_extract_openai_text(response.json()))
     except Exception as exc:
         if raise_on_error:
             raise RuntimeError(_format_openai_api_error(exc)) from exc
@@ -1046,7 +1247,7 @@ async def inspect_accommodation_document_with_openai(
     extracted_text: str = "",
 ) -> dict:
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
-    if not OPENAI_API_KEY or (ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf"):
+    if (ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf"):
         return {}
 
     file_data = document.get("file_data", b"") or b""
@@ -1065,6 +1266,27 @@ async def inspect_accommodation_document_with_openai(
         "Reponds en JSON compact uniquement avec les cles: "
         "is_accommodation, confidence, employee_name_seen, period_text_seen, total_cost, vendor_name, notes."
     )
+    if _timesheet_uses_deepseek():
+        preview_text = extracted_text or extract_document_text_preview(
+            document.get("filename", ""),
+            document.get("mime_type", ""),
+            file_data,
+        )
+        if not preview_text:
+            return {}
+        raw = await _call_timesheet_text_model(
+            instructions=(
+                "Tu aides un commis de facturation a trier les pieces jointes recues par courriel. "
+                "Sois prudent et n'identifie comme hebergement que les vrais justificatifs ou factures de logement. "
+                "Retourne uniquement un JSON compact."
+            ),
+            prompt=f"{context_text}\n\nTexte OCR du document:\n{preview_text[:12000]}",
+            max_output_tokens=280,
+        )
+        parsed = _parse_json_object(raw)
+    else:
+        if not OPENAI_API_KEY:
+            return {}
     if ext in _VISION_ATTACHMENT_EXTENSIONS:
         mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
         data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
@@ -1097,14 +1319,15 @@ async def inspect_accommodation_document_with_openai(
         "Content-Type": "application/json",
     }
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            parsed = _parse_json_object(_extract_openai_text(response.json()))
+        if not _timesheet_uses_deepseek():
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/responses",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                parsed = _parse_json_object(_extract_openai_text(response.json()))
     except Exception:
         return {}
 
@@ -1382,126 +1605,7 @@ def _normalize_shift_summary_item(item: dict) -> Optional[dict]:
     }
 
 
-async def extract_timesheet_shift_summary(
-    document: dict,
-    employee_hint: str = "",
-    period_hint: str = "",
-    extracted_text: str = "",
-    raise_on_error: bool = False,
-    force_timesheet: bool = False,
-) -> dict:
-    if not OPENAI_API_KEY:
-        if raise_on_error:
-            raise RuntimeError(
-                "OPENAI_API_KEY n'est pas configuree sur le serveur. "
-                "Impossible de lire la FDT avec l'API Vision."
-            )
-        return {}
-
-    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
-    content = None
-    prompt_prefix = (
-        "L'utilisateur confirme qu'il s'agit d'une FDT jointe dans le chat. "
-        "Lis le document comme une feuille de temps et extrais le maximum d'information utile sans inventer. "
-        if force_timesheet
-        else ""
-    )
-    prompt_text = (
-        f"{prompt_prefix}"
-        "Analyse cette feuille de temps de Soins Expert Plus. "
-        "Retourne uniquement un JSON compact avec les cles: "
-        "is_timesheet, employee_name, employee_title, period_text, is_signed, visible_names, shifts, notes. "
-        "visible_names doit etre une liste courte des noms lisibles sur le document. "
-        "Chaque element de shifts doit contenir: "
-        "date, day_label, start, end, pause_minutes, hours, type, unit, approver_name, notes. "
-        "Si une valeur est illisible, laisse-la vide ou a 0. "
-        "Lis attentivement chaque ligne de quart visible, y compris les pauses, le service/unite, les noms du signataire et les mentions d'orientation. "
-        "N'invente pas. Type doit etre regular, orientation ou unknown. "
-        "Si le document semble etre une vraie FDT mais que certains quarts restent partiels, indique-le dans notes. "
-        "Si une ligne est barree ou vide, n'ajoute pas de faux quart.\n\n"
-        "REGLE CRITIQUE POUR LES DATES: les dates sur les FDT sont souvent ecrites au format AA/MM/JJ (annee a 2 chiffres d'abord). "
-        "Exemple: '26/03/29' signifie le 29 mars 2026, PAS le 26 mars 2029. "
-        "Autre exemple: '26/04/1' signifie le 1er avril 2026. "
-        "Pour chaque date de quart, retourne la date au format ISO AAAA-MM-JJ dans le champ 'date'. "
-        "Confirme toujours l'annee en regardant le champ 'Semaine du X au Y' en haut du formulaire, qui montre explicitement la plage de dates. "
-        "Si tu vois 'du 26/03/29 au 26/04/4' en haut du formulaire, ca signifie 'du 2026-03-29 au 2026-04-04'.\n\n"
-        f"Expediteur: {document.get('from', '')}\n"
-        f"Objet: {document.get('subject', '')}\n"
-        f"Apercu: {document.get('body_preview', '')}\n"
-        f"Nom du fichier: {document.get('filename', '')}\n"
-        f"Employe attendu: {employee_hint or 'inconnu'}\n"
-        f"Periode attendue si connue: {period_hint or 'inconnue'}"
-    )
-
-    if ext in _VISION_ATTACHMENT_EXTENSIONS:
-        file_data = document.get("file_data", b"") or b""
-        if not file_data:
-            return {}
-        mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
-        data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
-        content = [
-            {"type": "input_text", "text": prompt_text},
-            {"type": "input_image", "image_url": data_url, "detail": "high"},
-        ]
-    elif ext == "pdf":
-        file_data = document.get("file_data", b"") or b""
-        png_pages = _render_pdf_pages_png(file_data, max_pages=3)
-        preview_text = extracted_text or extract_document_text_preview(
-            document.get("filename", ""),
-            document.get("mime_type", ""),
-            file_data,
-        )
-        if png_pages:
-            content = [{"type": "input_text", "text": prompt_text}]
-            if preview_text:
-                content.append({"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:6000]}"})
-            for idx, png_bytes in enumerate(png_pages, start=1):
-                if len(png_pages) > 1:
-                    content.append({"type": "input_text", "text": f"Page {idx} du document:"})
-                data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
-                content.append({"type": "input_image", "image_url": data_url, "detail": "high"})
-        elif preview_text:
-            content = [
-                {"type": "input_text", "text": f"{prompt_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"},
-            ]
-        else:
-            return {}
-    else:
-        return {}
-
-    payload = {
-        "model": TIMESHEET_ATTACHMENT_MODEL,
-        "instructions": (
-            "Tu aides un commis de facturation et de paie a lire des feuilles de temps. "
-            "Sois prudent, n'invente rien et extrais seulement ce qui est clairement visible ou lisible. "
-            "Quand l'utilisateur fournit explicitement une FDT, donne le meilleur effort de transcription utile pour la facturation meme si certains champs restent partiels."
-        ),
-        "input": [{"role": "user", "content": content}],
-        "max_output_tokens": 1800,
-    }
-    if _supports_reasoning(TIMESHEET_ATTACHMENT_MODEL):
-        reasoning_effort = _normalized_reasoning_effort()
-        if force_timesheet and reasoning_effort in {"none", "low", "medium"}:
-            reasoning_effort = "high"
-        payload["reasoning"] = {"effort": reasoning_effort}
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            parsed = _parse_json_object(_extract_openai_text(response.json()))
-    except Exception as exc:
-        if raise_on_error:
-            raise RuntimeError(_format_openai_api_error(exc)) from exc
-        return {}
-
+def _normalize_timesheet_summary_payload(parsed: dict) -> dict:
     shifts = []
     for shift in parsed.get("shifts") or []:
         normalized = _normalize_shift_summary_item(shift)
@@ -1542,6 +1646,147 @@ async def extract_timesheet_shift_summary(
     }
 
 
+async def extract_timesheet_shift_summary(
+    document: dict,
+    employee_hint: str = "",
+    period_hint: str = "",
+    extracted_text: str = "",
+    raise_on_error: bool = False,
+    force_timesheet: bool = False,
+) -> dict:
+    prompt_prefix = (
+        "L'utilisateur confirme qu'il s'agit d'une FDT jointe dans le chat. "
+        "Lis le document comme une feuille de temps et extrais le maximum d'information utile sans inventer. "
+        if force_timesheet
+        else ""
+    )
+    prompt_text = (
+        f"{prompt_prefix}"
+        "Analyse cette feuille de temps de Soins Expert Plus. "
+        "Retourne uniquement un JSON compact avec les cles: "
+        "is_timesheet, employee_name, employee_title, period_text, is_signed, visible_names, shifts, notes. "
+        "visible_names doit etre une liste courte des noms lisibles sur le document. "
+        "Chaque element de shifts doit contenir: "
+        "date, day_label, start, end, pause_minutes, hours, type, unit, approver_name, notes. "
+        "Si une valeur est illisible, laisse-la vide ou a 0. "
+        "Lis attentivement chaque ligne de quart visible, y compris les pauses, le service/unite, les noms du signataire et les mentions d'orientation. "
+        "N'invente pas. Type doit etre regular, orientation ou unknown. "
+        "Si le document semble etre une vraie FDT mais que certains quarts restent partiels, indique-le dans notes. "
+        "Si une ligne est barree ou vide, n'ajoute pas de faux quart.\n\n"
+        "REGLE CRITIQUE POUR LES DATES: les dates sur les FDT sont souvent ecrites au format AA/MM/JJ (annee a 2 chiffres d'abord). "
+        "Exemple: '26/03/29' signifie le 29 mars 2026, PAS le 26 mars 2029. "
+        "Autre exemple: '26/04/1' signifie le 1er avril 2026. "
+        "Pour chaque date de quart, retourne la date au format ISO AAAA-MM-JJ dans le champ 'date'. "
+        "Confirme toujours l'annee en regardant le champ 'Semaine du X au Y' en haut du formulaire, qui montre explicitement la plage de dates. "
+        "Si tu vois 'du 26/03/29 au 26/04/4' en haut du formulaire, ca signifie 'du 2026-03-29 au 2026-04-04'.\n\n"
+        f"Expediteur: {document.get('from', '')}\n"
+        f"Objet: {document.get('subject', '')}\n"
+        f"Apercu: {document.get('body_preview', '')}\n"
+        f"Nom du fichier: {document.get('filename', '')}\n"
+        f"Employe attendu: {employee_hint or 'inconnu'}\n"
+        f"Periode attendue si connue: {period_hint or 'inconnue'}"
+    )
+    file_data = document.get("file_data", b"") or b""
+    preview_text = extracted_text or extract_document_text_preview(
+        document.get("filename", ""),
+        document.get("mime_type", ""),
+        file_data,
+    )
+
+    if _timesheet_uses_deepseek():
+        if not preview_text:
+            if raise_on_error:
+                raise RuntimeError(
+                    "OCR local indisponible ou vide pour cette FDT. "
+                    "Verifie que Tesseract est bien installe sur le serveur."
+                )
+            return {}
+        raw = await _call_timesheet_text_model(
+            instructions=(
+                "Tu aides un commis de facturation et de paie a lire des feuilles de temps. "
+                "Tu recois le texte OCR d'une FDT. Sois prudent, n'invente rien, "
+                "et retourne uniquement un JSON compact."
+            ),
+            prompt=f"{prompt_text}\n\nTexte OCR du document:\n{preview_text[:16000]}",
+            max_output_tokens=1800,
+            raise_on_error=raise_on_error,
+        )
+        parsed = _parse_json_object(raw)
+        return _normalize_timesheet_summary_payload(parsed)
+
+    if not OPENAI_API_KEY:
+        if raise_on_error:
+            raise RuntimeError(
+                "OPENAI_API_KEY n'est pas configuree sur le serveur. "
+                "Impossible de lire la FDT avec l'API Vision."
+            )
+        return {}
+
+    ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
+    content = None
+    if ext in _VISION_ATTACHMENT_EXTENSIONS:
+        if not file_data:
+            return {}
+        mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
+        data_url = f"data:{mime_type};base64,{base64.b64encode(file_data).decode('ascii')}"
+        content = [
+            {"type": "input_text", "text": prompt_text},
+            {"type": "input_image", "image_url": data_url, "detail": "high"},
+        ]
+    elif ext == "pdf":
+        png_pages = _render_pdf_pages_png(file_data, max_pages=3)
+        if png_pages:
+            content = [{"type": "input_text", "text": prompt_text}]
+            if preview_text:
+                content.append({"type": "input_text", "text": f"Texte extrait du document:\n{preview_text[:6000]}"})
+            for idx, png_bytes in enumerate(png_pages, start=1):
+                if len(png_pages) > 1:
+                    content.append({"type": "input_text", "text": f"Page {idx} du document:"})
+                data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+                content.append({"type": "input_image", "image_url": data_url, "detail": "high"})
+        elif preview_text:
+            content = [{"type": "input_text", "text": f"{prompt_text}\n\nTexte extrait du document:\n{preview_text[:6000]}"}]
+        else:
+            return {}
+    else:
+        return {}
+
+    payload = {
+        "model": TIMESHEET_ATTACHMENT_MODEL,
+        "instructions": (
+            "Tu aides un commis de facturation et de paie a lire des feuilles de temps. "
+            "Sois prudent, n'invente rien et extrais seulement ce qui est clairement visible ou lisible. "
+            "Quand l'utilisateur fournit explicitement une FDT, donne le meilleur effort de transcription utile pour la facturation meme si certains champs restent partiels."
+        ),
+        "input": [{"role": "user", "content": content}],
+        "max_output_tokens": 1800,
+    }
+    if _supports_reasoning(TIMESHEET_ATTACHMENT_MODEL):
+        reasoning_effort = _normalized_reasoning_effort()
+        if force_timesheet and reasoning_effort in {"none", "low", "medium"}:
+            reasoning_effort = "high"
+        payload["reasoning"] = {"effort": reasoning_effort}
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            parsed = _parse_json_object(_extract_openai_text(response.json()))
+    except Exception as exc:
+        if raise_on_error:
+            raise RuntimeError(_format_openai_api_error(exc)) from exc
+        return {}
+
+    return _normalize_timesheet_summary_payload(parsed)
+
+
 def _summarize_explicit_timesheet_confidence(
     summary: dict,
     analysis: Optional[dict] = None,
@@ -1578,15 +1823,41 @@ async def _transcribe_timesheet_document_with_openai(
     employee_hint: str = "",
     raise_on_error: bool = False,
 ) -> str:
-    if not OPENAI_API_KEY:
-        return ""
-
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
     if ext not in _VISION_ATTACHMENT_EXTENSIONS and ext != "pdf":
         return ""
 
     file_data = document.get("file_data", b"") or b""
     if not file_data:
+        return ""
+
+    preview_text = extract_document_text_preview(
+        document.get("filename", ""),
+        document.get("mime_type", ""),
+        file_data,
+    )
+    if _timesheet_uses_deepseek():
+        if not preview_text:
+            return ""
+        return await _call_timesheet_text_model(
+            instructions=(
+                "Tu fais une transcription OCR pragmatique de feuilles de temps. "
+                "Le but est d'aider un commis a lire une FDT difficile. "
+                "Retourne du texte brut structure, pas du JSON."
+            ),
+            prompt=(
+                "Reorganise proprement le texte OCR suivant comme une transcription utile pour la facturation: "
+                "nom employe, titre, periode, puis chaque ligne de quart visible avec jour/date, heure debut, "
+                "heure fin, pause/repas, total d'heures, unite/service, signataire et mentions utiles. "
+                "N'invente rien. Si quelque chose est illisible, note simplement illisible. "
+                f"Employe attendu si connu: {employee_hint or 'inconnu'}.\n\n"
+                f"Texte OCR:\n{preview_text[:16000]}"
+            ),
+            max_output_tokens=2200,
+            raise_on_error=raise_on_error,
+        )
+
+    if not OPENAI_API_KEY:
         return ""
 
     if ext in _VISION_ATTACHMENT_EXTENSIONS:
@@ -1609,11 +1880,6 @@ async def _transcribe_timesheet_document_with_openai(
             },
         ]
     else:
-        preview_text = extract_document_text_preview(
-            document.get("filename", ""),
-            document.get("mime_type", ""),
-            file_data,
-        )
         png_pages = _render_pdf_pages_png(file_data, max_pages=3) if ext == "pdf" else []
         if png_pages:
             payload_content = [
@@ -1697,7 +1963,7 @@ async def _extract_timesheet_shift_summary_from_transcript(
     raise_on_error: bool = False,
 ) -> dict:
     text = str(transcript or "").strip()
-    if not text or not OPENAI_API_KEY:
+    if not text:
         return {}
 
     prompt_text = (
@@ -1714,76 +1980,17 @@ async def _extract_timesheet_shift_summary_from_transcript(
         f"Periode attendue si connue: {period_hint or 'inconnue'}\n\n"
         f"Transcription OCR:\n{text[:14000]}"
     )
-    payload = {
-        "model": TIMESHEET_ATTACHMENT_MODEL,
-        "instructions": (
+    raw = await _call_timesheet_text_model(
+        instructions=(
             "Tu convertis une transcription OCR de FDT en donnees structurees pour la facturation. "
-            "Sois prudent et n'invente rien."
+            "Sois prudent et n'invente rien. Retourne uniquement un JSON compact."
         ),
-        "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt_text}]}],
-        "max_output_tokens": 1800,
-    }
-    if _supports_reasoning(TIMESHEET_ATTACHMENT_MODEL):
-        reasoning_effort = _normalized_reasoning_effort()
-        if reasoning_effort in {"none", "low", "medium"}:
-            reasoning_effort = "high"
-        payload["reasoning"] = {"effort": reasoning_effort}
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            parsed = _parse_json_object(_extract_openai_text(response.json()))
-    except Exception as exc:
-        if raise_on_error:
-            raise RuntimeError(_format_openai_api_error(exc)) from exc
-        return {}
-
-    shifts = []
-    for shift in parsed.get("shifts") or []:
-        normalized = _normalize_shift_summary_item(shift)
-        if normalized:
-            shifts.append(normalized)
-
-    is_signed = parsed.get("is_signed")
-    if isinstance(is_signed, str):
-        lowered = is_signed.strip().lower()
-        if lowered in {"true", "oui", "yes"}:
-            is_signed = True
-        elif lowered in {"false", "non", "no"}:
-            is_signed = False
-        else:
-            is_signed = None
-    elif not isinstance(is_signed, bool):
-        is_signed = None
-
-    is_timesheet = parsed.get("is_timesheet")
-    if isinstance(is_timesheet, str):
-        is_timesheet = is_timesheet.strip().lower() in {"true", "oui", "yes"}
-    elif not isinstance(is_timesheet, bool):
-        is_timesheet = None
-
-    return {
-        "is_timesheet": is_timesheet,
-        "employee_name": str(parsed.get("employee_name") or "").strip(),
-        "employee_title": str(parsed.get("employee_title") or "").strip(),
-        "period_text": str(parsed.get("period_text") or "").strip(),
-        "is_signed": is_signed,
-        "visible_names": [
-            str(name).strip()
-            for name in (parsed.get("visible_names") or [])
-            if str(name).strip()
-        ][:12],
-        "shifts": shifts[:20],
-        "notes": str(parsed.get("notes") or "").strip(),
-    }
+        prompt=prompt_text,
+        max_output_tokens=1800,
+        raise_on_error=raise_on_error,
+    )
+    parsed = _parse_json_object(raw)
+    return _normalize_timesheet_summary_payload(parsed)
 
 
 async def _describe_timesheet_document_with_openai(
@@ -1792,12 +1999,38 @@ async def _describe_timesheet_document_with_openai(
     transcript: str = "",
     raise_on_error: bool = False,
 ) -> str:
-    if not OPENAI_API_KEY:
-        return ""
-
     ext = _attachment_extension(document.get("filename", ""), document.get("mime_type", ""))
     file_data = document.get("file_data", b"") or b""
     content = None
+    preview_text = transcript or extract_document_text_preview(
+        document.get("filename", ""),
+        document.get("mime_type", ""),
+        file_data,
+    )
+    if _timesheet_uses_deepseek():
+        if not preview_text:
+            return ""
+        return await _call_timesheet_text_model(
+            instructions=(
+                "Tu aides un commis a comprendre rapidement une FDT difficile a lire. "
+                "Retourne une reponse prose claire et concrete en francais."
+            ),
+            prompt=(
+                "Lis ce texte OCR comme le ferait un commis a la facturation. "
+                "Decris ce qui est visible et utile: nom employe, titre, periode, quarts ligne par ligne, pauses, "
+                "unite/service, signataires, orientation, total approximatif et anomalies utiles. "
+                "Il vaut mieux donner une lecture approximative mais utile plutot que dire seulement que c'est partiel. "
+                "N'invente pas; dis 'illisible' quand necessaire. "
+                f"Employe attendu si connu: {employee_hint or 'inconnu'}.\n\n"
+                f"Texte OCR/transcription:\n{preview_text[:16000]}"
+            ),
+            max_output_tokens=1800,
+            raise_on_error=raise_on_error,
+        )
+
+    if not OPENAI_API_KEY:
+        return ""
+
     if ext in _VISION_ATTACHMENT_EXTENSIONS and file_data:
         mime_type = _mime_type_for_ai_review(document.get("filename", ""), document.get("mime_type", ""))
         content = [
@@ -1819,11 +2052,6 @@ async def _describe_timesheet_document_with_openai(
         ]
     elif ext == "pdf" and file_data:
         png_pages = _render_pdf_pages_png(file_data, max_pages=3)
-        preview_text = transcript or extract_document_text_preview(
-            document.get("filename", ""),
-            document.get("mime_type", ""),
-            file_data,
-        )
         if png_pages:
             content = [
                 {
@@ -3285,7 +3513,7 @@ async def summarize_explicit_timesheet_documents(
 
         analysis = analyze_timesheet_document(document, employee=matched_employee, extracted_text=extracted_text)
         ai_review = {}
-        if OPENAI_API_KEY:
+        if _timesheet_llm_enabled():
             ai_review = await inspect_attachment_with_openai(
                 document,
                 employee_hint=getattr(matched_employee, "name", "") if matched_employee else "",

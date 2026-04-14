@@ -25,6 +25,20 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false  # Set manually in Render dashboard
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: CHATBOT_PROVIDER
+        value: deepseek
+      - key: CHATBOT_MODEL
+        value: deepseek-reasoner
+      - key: CHATBOT_API_KEY
+        sync: false
+      - key: CHATBOT_BASE_URL
+        value: https://api.deepseek.com
+      - key: TIMESHEET_AI_PROVIDER
+        value: deepseek
+      - key: TIMESHEET_TEXT_MODEL
+        value: deepseek-reasoner
       - key: OPENAI_API_KEY
         sync: false  # Set manually in Render dashboard
       - key: OPENAI_MODEL
@@ -78,7 +92,7 @@ services:
       - key: TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE
         value: "0.68"
       - key: TIMESHEET_ATTACHMENT_MODEL
-        value: gpt-4o
+        value: local-ocr
       - key: TIMESHEET_ATTACHMENT_REASONING_EFFORT
         value: high
     healthCheckPath: /api/health

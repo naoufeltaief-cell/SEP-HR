@@ -28,6 +28,21 @@ class PasswordSetRequest(BaseModel):
     password: str
 
 
+class PasswordForgotRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordTokenCompleteRequest(BaseModel):
+    token: str
+    password: str
+
+
+class PasswordTokenInfoResponse(BaseModel):
+    email: str
+    name: str
+    purpose: str
+
+
 # ── Employee ──
 class EmployeeCreate(BaseModel):
     name: str

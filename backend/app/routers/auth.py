@@ -13,14 +13,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from ..database import get_db
 from ..models.models import User
-from ..models.schemas import LoginRequest, MagicLinkRequest, RegisterRequest, TokenResponse, PasswordSetRequest
+from ..models.schemas import (
+    LoginRequest,
+    MagicLinkRequest,
+    RegisterRequest,
+    TokenResponse,
+    PasswordSetRequest,
+    PasswordForgotRequest,
+    PasswordTokenCompleteRequest,
+    PasswordTokenInfoResponse,
+)
 from ..services.auth_service import (
     ALGORITHM,
     SECRET_KEY,
     hash_password, verify_password, create_access_token,
     generate_magic_token, get_current_user, require_admin, MAGIC_LINK_EXPIRE_MINUTES
 )
-from ..services.email_service import send_magic_link
+from ..services.email_service import send_magic_link, send_password_reset_email
 
 router = APIRouter()
 
@@ -99,6 +108,24 @@ def _build_google_login_url(redirect_uri: str, state: str) -> str:
         "state": state,
     }
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
+
+
+def _build_user_payload(user: User) -> dict:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "role": user.role,
+        "employee_id": user.employee_id,
+    }
+
+
+def _assign_password_token(user: User, purpose: str, hours: int = 2) -> str:
+    token = generate_magic_token()
+    user.password_token = token
+    user.password_token_expires = datetime.utcnow() + timedelta(hours=hours)
+    user.password_token_purpose = purpose
+    return token
 
 
 async def _exchange_google_code(code: str, redirect_uri: str) -> dict:
@@ -193,7 +220,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     else:
         raise HTTPException(status_code=400, detail="Mot de passe requis ou utilisez le magic link")
     token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
-    return TokenResponse(access_token=token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role, "employee_id": user.employee_id})
+    return TokenResponse(access_token=token, user=_build_user_payload(user))
 
 
 @router.post("/magic-link")
@@ -227,7 +254,7 @@ async def verify_magic_link(token: str, db: AsyncSession = Depends(get_db)):
     user.magic_token_expires = None
     await db.commit()
     access_token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
-    return TokenResponse(access_token=access_token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role, "employee_id": user.employee_id})
+    return TokenResponse(access_token=access_token, user=_build_user_payload(user))
 
 
 @router.get("/google/status")
@@ -275,13 +302,7 @@ async def google_login_callback(
             return _google_popup_html(False, f"Aucun compte actif SEP-HR n'est associe a {email}.")
 
         access_token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
-        user_payload = {
-            "id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "role": user.role,
-            "employee_id": user.employee_id,
-        }
+        user_payload = _build_user_payload(user)
         return _google_popup_html(True, f"Connexion Google reussie pour {email}.", access_token, user_payload)
     except HTTPException as exc:
         return _google_popup_html(False, exc.detail)
@@ -305,11 +326,79 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(user)
     token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
-    return TokenResponse(access_token=token, user={"id": user.id, "email": user.email, "name": user.name, "role": user.role, "employee_id": user.employee_id})
+    return TokenResponse(access_token=token, user=_build_user_payload(user))
+
+
+@router.post("/forgot-password")
+async def forgot_password(req: PasswordForgotRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == req.email.lower().strip()))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        return {"message": "Si ce courriel existe, un lien de reinitialisation a ete envoye."}
+
+    token = _assign_password_token(user, "reset", hours=2)
+    await db.commit()
+    try:
+        await send_password_reset_email(user.email, token, user.name, db=db)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Impossible d'envoyer le lien de reinitialisation: {exc}",
+        ) from exc
+
+    return {"message": "Si ce courriel existe, un lien de reinitialisation a ete envoye."}
+
+
+@router.get("/password-token-info", response_model=PasswordTokenInfoResponse)
+async def password_token_info(token: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.password_token == token))
+    user = result.scalar_one_or_none()
+    if (
+        not user
+        or not user.password_token_expires
+        or user.password_token_expires < datetime.utcnow()
+        or not user.password_token_purpose
+    ):
+        raise HTTPException(status_code=401, detail="Lien de mot de passe invalide ou expire")
+
+    return PasswordTokenInfoResponse(
+        email=user.email,
+        name=user.name,
+        purpose=user.password_token_purpose,
+    )
+
+
+@router.post("/complete-password", response_model=TokenResponse)
+async def complete_password(req: PasswordTokenCompleteRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.password_token == req.token))
+    user = result.scalar_one_or_none()
+    if (
+        not user
+        or not user.password_token_expires
+        or user.password_token_expires < datetime.utcnow()
+        or not user.password_token_purpose
+    ):
+        raise HTTPException(status_code=401, detail="Lien de mot de passe invalide ou expire")
+
+    if len(req.password or "") < 8:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit contenir au moins 8 caracteres")
+
+    user.password_hash = hash_password(req.password)
+    user.password_token = None
+    user.password_token_expires = None
+    user.password_token_purpose = None
+    user.magic_token = None
+    user.magic_token_expires = None
+    await db.commit()
+
+    access_token = create_access_token({"sub": user.id, "role": user.role, "email": user.email})
+    return TokenResponse(access_token=access_token, user=_build_user_payload(user))
 
 
 @router.post("/set-password")
 async def set_password(req: PasswordSetRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    if len(req.password or "") < 8:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit contenir au moins 8 caracteres")
     user.password_hash = hash_password(req.password)
     await db.commit()
     return {"message": "Mot de passe mis à jour"}

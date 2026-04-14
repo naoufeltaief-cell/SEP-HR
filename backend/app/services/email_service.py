@@ -29,6 +29,20 @@ AUTH_SMTP_USER = AUTH_SMTP_USER_RAW or SMTP_USER
 AUTH_SMTP_PASS = AUTH_SMTP_PASS_RAW or SMTP_PASS
 
 
+def _frontend_auth_link(**params) -> str:
+    from urllib.parse import urlencode
+
+    query = urlencode(
+        {
+            key: value
+            for key, value in params.items()
+            if value is not None and value != ""
+        }
+    )
+    base = FRONTEND_URL.rstrip("/")
+    return f"{base}?{query}" if query else base
+
+
 async def _send_auth_email(
     db: AsyncSession | None,
     to: str,
@@ -62,7 +76,7 @@ async def _send_auth_email(
 
 async def send_magic_link(email: str, token: str, name: str = "", db: AsyncSession | None = None):
     """Send magic link email for passwordless login"""
-    link = f"{FRONTEND_URL}?magic_token={token}"
+    link = _frontend_auth_link(magic_token=token)
     subject = "Connexion — Soins Expert Plus"
     html = f"""
     <div style="font-family:system-ui;max-width:500px;margin:auto;padding:30px">
@@ -108,10 +122,12 @@ async def send_employee_portal_invitation(
     token: str,
     name: str = "",
     expires_hours: int = 72,
+    purpose: str = "setup",
     db: AsyncSession | None = None,
 ):
-    """Send employee portal invitation with a magic sign-in link."""
-    link = f"{FRONTEND_URL}?magic_token={token}"
+    """Send employee portal invitation with a password setup or reset link."""
+    link = _frontend_auth_link(password_token=token, password_mode=purpose)
+    action_label = "Creer mon mot de passe" if purpose == "setup" else "Choisir un nouveau mot de passe"
     subject = "Acces au portail employe — Soins Expert Plus"
     html = f"""
     <div style="font-family:system-ui;max-width:560px;margin:auto;padding:30px">
@@ -120,20 +136,52 @@ async def send_employee_portal_invitation(
             <p style="color:#6b7280;margin-top:8px">Portail employe</p>
         </div>
         <p>Bonjour{' ' + name if name else ''},</p>
-        <p>Votre acces au portail employe est pret. Vous pourrez y consulter votre horaire publie.</p>
+        <p>Votre acces au portail employe est pret. Vous pourrez y consulter votre horaire, saisir votre FDT et joindre vos documents signes.</p>
         <div style="text-align:center;margin:30px 0">
             <a href="{link}" style="background:#1d4ed8;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:16px">
-                Acceder a mon portail
+                {action_label}
             </a>
         </div>
         <p style="font-size:13px;color:#6b7280">
-            Ce lien de connexion est valide pendant {expires_hours} heure(s). Aucun mot de passe temporaire n'est envoye.
+            Ce lien est valide pendant {expires_hours} heure(s). Vous pourrez ensuite vous connecter avec votre courriel et votre mot de passe.
         </p>
         <p style="font-size:13px;color:#6b7280">
-            Si le lien expire, vous pourrez toujours utiliser l'option de connexion par courriel sur la page d'accueil.
+            Si vous oubliez votre mot de passe plus tard, la page de connexion vous permettra de le reinitialiser.
         </p>
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
         <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus — 9437-7827 Quebec Inc.</p>
+    </div>
+    """
+    await _send_auth_email(db, email, subject, html)
+
+
+async def send_password_reset_email(
+    email: str,
+    token: str,
+    name: str = "",
+    expires_hours: int = 2,
+    db: AsyncSession | None = None,
+):
+    link = _frontend_auth_link(password_token=token, password_mode="reset")
+    subject = "Reinitialisation du mot de passe â€” Soins Expert Plus"
+    html = f"""
+    <div style="font-family:system-ui;max-width:560px;margin:auto;padding:30px">
+        <div style="text-align:center;margin-bottom:20px">
+            <h2 style="color:#1d4ed8;margin:0">Soins Expert Plus</h2>
+            <p style="color:#6b7280;margin-top:8px">Reinitialisation du mot de passe</p>
+        </div>
+        <p>Bonjour{' ' + name if name else ''},</p>
+        <p>Nous avons recu une demande pour reinitialiser votre mot de passe du portail employe.</p>
+        <div style="text-align:center;margin:30px 0">
+            <a href="{link}" style="background:#1d4ed8;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:16px">
+                Choisir un nouveau mot de passe
+            </a>
+        </div>
+        <p style="font-size:13px;color:#6b7280">
+            Ce lien est valide pendant {expires_hours} heure(s). Si vous n'etes pas a l'origine de cette demande, ignorez ce courriel.
+        </p>
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+        <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus â€” 9437-7827 Quebec Inc.</p>
     </div>
     """
     await _send_auth_email(db, email, subject, html)

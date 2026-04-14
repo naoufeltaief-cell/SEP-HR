@@ -44,14 +44,25 @@ def _serialize_portal_access(portal_user: User | None) -> dict:
             "email": "",
             "user_id": None,
             "invitation_pending": False,
+            "password_enabled": False,
         }
     return {
         "enabled": True,
         "email": portal_user.email or "",
         "user_id": portal_user.id,
         "invitation_pending": bool(
-            portal_user.magic_token and portal_user.magic_token_expires and portal_user.magic_token_expires >= datetime.utcnow()
+            (
+                portal_user.password_token
+                and portal_user.password_token_expires
+                and portal_user.password_token_expires >= datetime.utcnow()
+            )
+            or (
+                portal_user.magic_token
+                and portal_user.magic_token_expires
+                and portal_user.magic_token_expires >= datetime.utcnow()
+            )
         ),
+        "password_enabled": bool(portal_user.password_hash),
     }
 
 
@@ -134,12 +145,15 @@ async def _provision_employee_portal_access(
         updated = True
 
     invite_token = None
+    invite_purpose = "setup"
     if invite:
         invite_token = generate_magic_token()
-        portal_user.magic_token = invite_token
-        portal_user.magic_token_expires = datetime.utcnow() + timedelta(
+        invite_purpose = "setup" if not portal_user.password_hash else "reset"
+        portal_user.password_token = invite_token
+        portal_user.password_token_expires = datetime.utcnow() + timedelta(
             hours=PORTAL_INVITE_EXPIRE_HOURS
         )
+        portal_user.password_token_purpose = invite_purpose
 
     return {
         "portal_user": portal_user,
@@ -147,6 +161,7 @@ async def _provision_employee_portal_access(
         "updated": updated,
         "invited": bool(invite_token),
         "invite_token": invite_token,
+        "invite_purpose": invite_purpose,
     }
 
 
@@ -163,6 +178,7 @@ async def _send_portal_invite_or_capture_error(
     email: str,
     invite_token: str | None,
     name: str,
+    purpose: str = "setup",
 ) -> str | None:
     if not invite_token:
         return None
@@ -172,6 +188,7 @@ async def _send_portal_invite_or_capture_error(
             invite_token,
             name,
             expires_hours=PORTAL_INVITE_EXPIRE_HOURS,
+            purpose=purpose,
             db=db,
         )
         return None
@@ -260,6 +277,7 @@ async def create_employee(
         emp.email,
         provision["invite_token"],
         emp.name,
+        provision.get("invite_purpose", "setup"),
     )
     return {
         **EmployeeOut.model_validate(emp).model_dump(),
@@ -298,6 +316,7 @@ async def update_employee(
         emp.email,
         provision["invite_token"],
         emp.name,
+        provision.get("invite_purpose", "setup"),
     )
     return {
         **EmployeeOut.model_validate(emp).model_dump(),
@@ -363,6 +382,7 @@ async def invite_employee_access(
         emp.email,
         provision["invite_token"],
         emp.name,
+        provision.get("invite_purpose", "setup"),
     )
     if portal_invite_error:
         raise HTTPException(status_code=502, detail=portal_invite_error)

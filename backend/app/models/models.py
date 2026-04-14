@@ -32,6 +32,9 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     magic_token = Column(String, nullable=True)
     magic_token_expires = Column(DateTime, nullable=True)
+    password_token = Column(String, nullable=True)
+    password_token_expires = Column(DateTime, nullable=True)
+    password_token_purpose = Column(String, nullable=True)
 
 
 class BillingEmailConnection(Base):

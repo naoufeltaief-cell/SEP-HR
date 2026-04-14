@@ -152,6 +152,9 @@ class ApiClient {
   login(email, password) { return this.post('/auth/login', { email, password }); }
   requestMagicLink(email) { return this.post('/auth/magic-link', { email }); }
   verifyMagicLink(token) { return this.post(`/auth/magic-verify?token=${token}`, {}); }
+  requestPasswordReset(email) { return this.post('/auth/forgot-password', { email }); }
+  getPasswordTokenInfo(token) { return this.get(`/auth/password-token-info?token=${encodeURIComponent(token)}`); }
+  completePasswordToken(token, password) { return this.post('/auth/complete-password', { token, password }); }
   getGoogleLoginStatus() { return this.get('/auth/google/status'); }
   startGoogleLogin() { return this.get('/auth/google/start'); }
   register(data) { return this.post('/auth/register', data); }

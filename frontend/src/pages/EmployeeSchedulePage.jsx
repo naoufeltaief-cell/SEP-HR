@@ -13,6 +13,18 @@ import api from '../utils/api';
 import { Badge } from '../components/UI';
 import { fmtDay, fmtISO, getWeekDates } from '../utils/helpers';
 
+function useMobileBreakpoint(maxWidth = 768) {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth <= maxWidth);
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= maxWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [maxWidth]);
+
+  return isMobile;
+}
+
 function timeToMin(value) {
   if (!value) return 0;
   const [hours, minutes] = String(value).split(':').map(Number);
@@ -65,7 +77,17 @@ function buildDraftRow(schedule, existingShift = null) {
   };
 }
 
+function FieldInput({ label, children, fullWidth = false }) {
+  return (
+    <div style={{ display: 'grid', gap: 4, gridColumn: fullWidth ? '1 / -1' : 'auto' }}>
+      <label style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 600 }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
 export default function EmployeeSchedulePage({ user, toast }) {
+  const isMobile = useMobileBreakpoint();
   const [employee, setEmployee] = useState(null);
   const [schedules, setSchedules] = useState([]);
   const [timesheets, setTimesheets] = useState([]);
@@ -370,12 +392,21 @@ export default function EmployeeSchedulePage({ user, toast }) {
           </div>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(7, minmax(0, 1fr))', gap: 10 }}>
           {weekDates.map((date) => {
             const iso = fmtISO(date);
             const daySchedules = weekSchedules.filter((shift) => shift.date === iso);
             return (
-              <div key={iso} style={{ background: 'var(--brand-xl)', border: '1px solid var(--border)', borderRadius: 14, padding: 12, minHeight: 150 }}>
+              <div
+                key={iso}
+                style={{
+                  background: 'var(--brand-xl)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 14,
+                  padding: 12,
+                  minHeight: isMobile ? 0 : 150,
+                }}
+              >
                 <div style={{ fontSize: 12, color: 'var(--brand)', fontWeight: 700, marginBottom: 10 }}>
                   {fmtDay(date)}
                 </div>
@@ -384,7 +415,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                     <div key={shift.id} style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 10px', marginBottom: 8 }}>
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{shift.start} - {shift.end}</div>
                       <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 4 }}>{shift.location || 'Lieu a confirmer'}</div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: 11, color: 'var(--text3)' }}>{Number(shift.hours || 0).toFixed(2)} h</span>
                         <Badge status={shift.status || 'published'} />
                       </div>
@@ -425,82 +456,135 @@ export default function EmployeeSchedulePage({ user, toast }) {
               </div>
             )}
 
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 920 }}>
-                <thead>
-                  <tr>
-                    {['Date', 'Planifie', 'Debut reel', 'Fin reelle', 'Pause (min)', 'Heures', 'Garde h', 'Rappel h', 'Lieu'].map((label) => (
-                      <th key={label} style={{ background: '#3f8391', color: '#fff', padding: '10px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700 }}>
-                        {label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {draftRows.map((row, index) => (
-                    <tr key={row.scheduleId || `${row.date}-${index}`}>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{row.date}</td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                        <div style={{ fontWeight: 700, fontSize: 12 }}>{row.scheduledStart || '--:--'} - {row.scheduledEnd || '--:--'}</div>
-                        <div style={{ fontSize: 11, color: 'var(--text3)' }}>{Number(row.scheduledHours || 0).toFixed(2)} h</div>
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+            {!isMobile ? (
+              <>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 920 }}>
+                    <thead>
+                      <tr>
+                        {['Date', 'Planifie', 'Debut reel', 'Fin reelle', 'Pause (min)', 'Heures', 'Garde h', 'Rappel h', 'Lieu'].map((label) => (
+                          <th key={label} style={{ background: '#3f8391', color: '#fff', padding: '10px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700 }}>
+                            {label}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {draftRows.map((row, index) => (
+                        <tr key={row.scheduleId || `${row.date}-${index}`}>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{row.date}</td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <div style={{ fontWeight: 700, fontSize: 12 }}>{row.scheduledStart || '--:--'} - {row.scheduledEnd || '--:--'}</div>
+                            <div style={{ fontSize: 11, color: 'var(--text3)' }}>{Number(row.scheduledHours || 0).toFixed(2)} h</div>
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="time" value={row.startActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'startActual', event.target.value)} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="time" value={row.endActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'endActual', event.target.value)} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="number" min="0" value={row.pauseMin} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'pauseMin', Number(event.target.value || 0))} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="number" min="0" step="0.25" value={row.hoursWorked} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'hoursWorked', Number(event.target.value || 0))} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="number" min="0" step="0.25" value={row.gardeHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'gardeHours', Number(event.target.value || 0))} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="number" min="0" step="0.25" value={row.rappelHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'rappelHours', Number(event.target.value || 0))} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: 12 }}>{row.location || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div style={{ marginTop: 14, overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 760 }}>
+                    <thead>
+                      <tr>
+                        {['Date', 'Kilometrage', 'Deplacement h', 'Autre depense $', 'Lieu'].map((label) => (
+                          <th key={label} style={{ background: '#3f8391', color: '#fff', padding: '10px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700 }}>
+                            {label}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {draftRows.map((row, index) => (
+                        <tr key={`${row.scheduleId || `${row.date}-${index}`}-expenses`}>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{row.date}</td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="number" min="0" step="1" value={row.km} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'km', Number(event.target.value || 0))} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="number" min="0" step="0.25" value={row.deplacement} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'deplacement', Number(event.target.value || 0))} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                            <input className="input" type="number" min="0" step="0.01" value={row.autreDep} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'autreDep', Number(event.target.value || 0))} />
+                          </td>
+                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: 12 }}>{row.location || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <div style={{ display: 'grid', gap: 12 }}>
+                {draftRows.map((row, index) => (
+                  <div key={row.scheduleId || `${row.date}-${index}`} style={{ border: '1px solid var(--border)', borderRadius: 14, background: '#fff', padding: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>{row.date}</div>
+                        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                          Planifie: {row.scheduledStart || '--:--'} - {row.scheduledEnd || '--:--'} ({Number(row.scheduledHours || 0).toFixed(2)} h)
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'right' }}>{row.location || 'Lieu a confirmer'}</div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <FieldInput label="Debut reel">
                         <input className="input" type="time" value={row.startActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'startActual', event.target.value)} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                      </FieldInput>
+                      <FieldInput label="Fin reelle">
                         <input className="input" type="time" value={row.endActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'endActual', event.target.value)} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                      </FieldInput>
+                      <FieldInput label="Pause (min)">
                         <input className="input" type="number" min="0" value={row.pauseMin} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'pauseMin', Number(event.target.value || 0))} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                      </FieldInput>
+                      <FieldInput label="Heures">
                         <input className="input" type="number" min="0" step="0.25" value={row.hoursWorked} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'hoursWorked', Number(event.target.value || 0))} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                      </FieldInput>
+                      <FieldInput label="Garde h">
                         <input className="input" type="number" min="0" step="0.25" value={row.gardeHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'gardeHours', Number(event.target.value || 0))} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                      </FieldInput>
+                      <FieldInput label="Rappel h">
                         <input className="input" type="number" min="0" step="0.25" value={row.rappelHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'rappelHours', Number(event.target.value || 0))} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: 12 }}>{row.location || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </FieldInput>
+                    </div>
 
-            <div style={{ marginTop: 14, overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 760 }}>
-                <thead>
-                  <tr>
-                    {['Date', 'Kilometrage', 'Deplacement h', 'Autre depense $', 'Lieu'].map((label) => (
-                      <th key={label} style={{ background: '#3f8391', color: '#fff', padding: '10px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700 }}>
-                        {label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {draftRows.map((row, index) => (
-                    <tr key={`${row.scheduleId || `${row.date}-${index}`}-expenses`}>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{row.date}</td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <FieldInput label="Kilometrage">
                         <input className="input" type="number" min="0" step="1" value={row.km} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'km', Number(event.target.value || 0))} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                      </FieldInput>
+                      <FieldInput label="Deplacement h">
                         <input className="input" type="number" min="0" step="0.25" value={row.deplacement} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'deplacement', Number(event.target.value || 0))} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
+                      </FieldInput>
+                      <FieldInput label="Autre depense $" fullWidth>
                         <input className="input" type="number" min="0" step="0.01" value={row.autreDep} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'autreDep', Number(event.target.value || 0))} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: 12 }}>{row.location || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                      </FieldInput>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
-            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr', gap: 12 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>Notes pour cette semaine</label>
                 <textarea
@@ -555,7 +639,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                       <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>Aucun document joint pour cette FDT.</div>
                     )}
                     {weekSignedDocuments.map((attachment) => (
-                      <div key={attachment.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                      <div key={attachment.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {attachment.original_filename || attachment.filename}
@@ -564,7 +648,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                             {attachment.created_at?.slice(0, 10) || '-'} • {attachment.source === 'email' ? 'Courriel' : 'Portail'}
                           </div>
                         </div>
-                        <div style={{ display: 'flex', gap: 6 }}>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           <button
                             className="btn btn-outline btn-sm"
                             onClick={() => api.openTimesheetAttachment(weekTimesheet.id, attachment.id, attachment.original_filename || attachment.filename || 'fdt')}
@@ -603,7 +687,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
         </div>
         {upcomingSchedules.length ? (
           upcomingSchedules.map((shift) => (
-            <div key={shift.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--border)', fontSize: 13 }}>
+            <div key={shift.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--border)', fontSize: 13, gap: 10, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontWeight: 700 }}>{shift.date} | {shift.start} - {shift.end}</div>
                 <div style={{ color: 'var(--text3)', marginTop: 3 }}>{shift.location || 'Lieu a confirmer'}</div>
@@ -646,7 +730,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                   </div>
                 </div>
                 {isExpanded && (
-                  <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                  <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
                     <div style={{ background: 'var(--brand-xl)', borderRadius: 12, padding: 12 }}>
                       <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>Quarts declares</div>
                       {(timesheet.shifts || []).map((shift) => (
@@ -670,7 +754,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                         <div style={{ fontSize: 12, color: 'var(--text3)' }}>Aucun document joint.</div>
                       )}
                       {attachments.map((attachment) => (
-                        <div key={attachment.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
+                        <div key={attachment.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {attachment.original_filename || attachment.filename}

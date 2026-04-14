@@ -13,6 +13,7 @@ import InvoicesPage from './pages/InvoicesPage';
 import AccommodationsPage from './pages/AccommodationsPage';
 import EmployeeSchedulePage from './pages/EmployeeSchedulePage';
 import api from './utils/api';
+import { LogOut } from 'lucide-react';
 
 export default function App() {
   const { user, loading, logout } = useAuth();
@@ -64,6 +65,26 @@ export default function App() {
     'my-schedule': <EmployeeSchedulePage toast={toast} user={user} />,
   };
   const pages = user?.role === 'admin' ? adminPages : employeePages;
+
+  if (user?.role === 'employee') {
+    return (
+      <div className="employee-app-shell">
+        <header className="employee-topbar">
+          <div>
+            <div className="employee-topbar-title">Soins Expert Plus</div>
+            <div className="employee-topbar-subtitle">Portail employe</div>
+          </div>
+          <button className="btn btn-outline btn-sm employee-topbar-logout" onClick={logout}>
+            <LogOut size={15} /> Deconnexion
+          </button>
+        </header>
+        <main className="employee-main-content">
+          {pages[page] || pages['my-schedule']}
+        </main>
+        <ToastContainer toasts={toasts} />
+      </div>
+    );
+  }
 
   return (
     <div className="app-layout">

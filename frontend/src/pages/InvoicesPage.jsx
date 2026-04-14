@@ -177,6 +177,10 @@ export default function InvoicesPage() {
 
   const [clients, setClients] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [positionCatalog, setPositionCatalog] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [newPositionLabel, setNewPositionLabel] = useState('');
+  const [newPositionRate, setNewPositionRate] = useState('');
 
   const [reportData, setReportData] = useState(null);
   const [reportType, setReportType] = useState('by-client');
@@ -219,6 +223,18 @@ export default function InvoicesPage() {
     try { setEmployees(await apiFetch('/employees/')); } catch (_) {}
   }, []);
 
+  const loadPositionCatalog = useCallback(async () => {
+    try {
+      setCatalogLoading(true);
+      const items = await apiFetch('/schedule-catalogs/?kind=position');
+      setPositionCatalog((items || []).sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''))));
+    } catch (_) {
+      setPositionCatalog([]);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, []);
+
   const loadBillingEmailStatus = useCallback(async () => {
     try {
       setBillingEmailStatus(await apiFetch('/billing-email/status'));
@@ -230,6 +246,7 @@ export default function InvoicesPage() {
     loadStats();
     loadClients();
     loadEmployees();
+    loadPositionCatalog();
     loadBillingEmailStatus();
   }, []);
 
@@ -388,6 +405,54 @@ export default function InvoicesPage() {
     } catch (e) {
       try { popup.close(); } catch (_) {}
       setBillingEmailBusy(false);
+      setError(e.message);
+    }
+  };
+
+  const createPositionCatalogItem = async () => {
+    const label = String(newPositionLabel || '').trim();
+    if (!label) {
+      setError("Entre un titre d'emploi");
+      return;
+    }
+    try {
+      const created = await apiFetch('/schedule-catalogs/', {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'position',
+          label,
+          hourly_rate: Number(newPositionRate || 0),
+        }),
+      });
+      setPositionCatalog((prev) =>
+        [...(prev || []), created].sort((a, b) =>
+          String(a.label || '').localeCompare(String(b.label || '')),
+        ),
+      );
+      setNewPositionLabel('');
+      setNewPositionRate('');
+      setSuccess(`Titre ajoute: ${created.label}`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const updatePositionCatalogItem = async (item) => {
+    try {
+      const updated = await apiFetch(`/schedule-catalogs/${item.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          label: item.label,
+          hourly_rate: Number(item.hourly_rate || 0),
+        }),
+      });
+      setPositionCatalog((prev) =>
+        (prev || [])
+          .map((entry) => (entry.id === updated.id ? updated : entry))
+          .sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''))),
+      );
+      setSuccess(`Taux mis a jour pour ${updated.label}`);
+    } catch (e) {
       setError(e.message);
     }
   };
@@ -848,6 +913,103 @@ export default function InvoicesPage() {
             Génère automatiquement 1 facture par employé par client pour la période sélectionnée, à partir des horaires et FDT soumises.
           </p>
 
+          <div style={{ ...S.card, marginBottom: 18, background: '#f8fcfd', border: '1px solid #d8eef2' }}>
+            <div style={{ ...S.flexBetween, marginBottom: 12 }}>
+              <div>
+                <h4 style={{ ...S.sectionTitle, fontSize: 13, marginBottom: 4 }}>Titres d'emploi et taux horaires</h4>
+                <p style={{ margin: 0, fontSize: 12, color: '#6C757D' }}>
+                  Les titres ajoutes ici deviennent disponibles dans l'onglet Horaire quand on cree ou modifie un quart.
+                </p>
+              </div>
+              {catalogLoading && <span style={{ fontSize: 12, color: '#6C757D' }}>Chargement...</span>}
+            </div>
+
+            <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
+              {(positionCatalog || []).map((item) => (
+                <div
+                  key={item.id}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(220px, 1fr) 160px auto',
+                    gap: 10,
+                    alignItems: 'center',
+                  }}
+                >
+                  <input
+                    style={S.input}
+                    value={item.label || ''}
+                    onChange={(e) =>
+                      setPositionCatalog((prev) =>
+                        (prev || []).map((entry) =>
+                          entry.id === item.id ? { ...entry, label: e.target.value } : entry,
+                        ),
+                      )
+                    }
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    style={S.input}
+                    value={item.hourly_rate ?? 0}
+                    onChange={(e) =>
+                      setPositionCatalog((prev) =>
+                        (prev || []).map((entry) =>
+                          entry.id === item.id
+                            ? { ...entry, hourly_rate: e.target.value }
+                            : entry,
+                        ),
+                      )
+                    }
+                  />
+                  <button
+                    style={S.btn('outline')}
+                    onClick={() => updatePositionCatalogItem(item)}
+                  >
+                    Enregistrer
+                  </button>
+                </div>
+              ))}
+              {!positionCatalog.length && !catalogLoading && (
+                <div style={{ fontSize: 12, color: '#6C757D' }}>
+                  Aucun titre configure pour l'instant.
+                </div>
+              )}
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(220px, 1fr) 160px auto',
+                gap: 10,
+                alignItems: 'end',
+              }}
+            >
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Nouveau titre d'emploi</label>
+                <input
+                  style={S.input}
+                  value={newPositionLabel}
+                  onChange={(e) => setNewPositionLabel(e.target.value)}
+                  placeholder="Ex. Agent(e) de relations humaines"
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Taux horaire</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  style={S.input}
+                  value={newPositionRate}
+                  onChange={(e) => setNewPositionRate(e.target.value)}
+                  placeholder="0.00"
+                />
+              </div>
+              <button style={S.btn('primary', 'md')} onClick={createPositionCatalogItem}>
+                Ajouter le titre
+              </button>
+            </div>
+          </div>
+
           <div style={{ ...S.flexRow, marginBottom: 16 }}>
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Début période (Dimanche)</label>
@@ -871,7 +1033,7 @@ export default function InvoicesPage() {
             <ul style={{ margin: '8px 0 0 16px', lineHeight: 1.8 }}>
               <li>1 facture par employé par client pour la période</li>
               <li>Les doublons (même employé + même période) sont ignorés</li>
-              <li>Taux: Inf. 86.23$/h, Inf. aux. 57.18$/h, PAB 50.35$/h</li>
+              <li>Les taux horaires suivent d'abord le catalogue des titres d'emploi configuré ci-dessus</li>
               <li>Garde: 8h = 1h facturable à 86.23$/h</li>
               <li>Km: 0.525$/km (max 750km), Déplacement: heures × taux</li>
               <li>Clients exemptés TPS/TVQ: Inuulitsivik, Conseil Cri</li>

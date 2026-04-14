@@ -185,8 +185,15 @@ class ApiClient {
     const qs = new URLSearchParams(kind ? { kind } : {}).toString();
     return this.get(`/schedule-catalogs/${qs ? '?' + qs : ''}`);
   }
-  createScheduleCatalogItem(kind, label) {
-    return this.post('/schedule-catalogs/', { kind, label });
+  createScheduleCatalogItem(kind, label, hourlyRate = 0) {
+    return this.post('/schedule-catalogs/', {
+      kind,
+      label,
+      hourly_rate: Number(hourlyRate || 0),
+    });
+  }
+  updateScheduleCatalogItem(id, data) {
+    return this.put(`/schedule-catalogs/${id}`, data);
   }
   publishAll() { return this.post('/schedules/publish-all', {}); }
   approveWeek(data) { return this.post('/schedules/approve-week', data); }

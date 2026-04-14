@@ -1,5 +1,5 @@
 """
-Soins Expert Plus — Dual Agent System
+Soins Expert Plus â€” Dual Agent System
 OpenAI Responses API + business tools.
 """
 import os
@@ -36,7 +36,7 @@ from ..services.automation_service import (
     send_weekly_timesheet_reminder,
 )
 from ..services.email_service import _send_email, BILLING_SENDER_EMAIL
-from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, get_schedule_billable_rate, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
+from ..services.invoice_service import generate_invoice_number, recalculate_invoice, is_tax_exempt, get_rate_for_title, get_schedule_billable_rate, get_position_rate_lookup, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS, schedule_pause_to_invoice_minutes, build_shift_expense_description
 from ..services.timesheet_service import (
     build_accommodation_documents_summary,
     build_timesheet_documents_summary,
@@ -87,30 +87,30 @@ CHATBOT_MAX_FILE_SIZE = 15 * 1024 * 1024
 
 BUSINESS_KNOWLEDGE = """
 TAUX DE FACTURATION PAR TITRE D'EMPLOI:
-- Infirmier(ère) / Infirmier(ère) Clinicien(ne): 86.23 $/h
-- Infirmier(ère) auxiliaire: 57.18 $/h
-- Préposé(e) aux bénéficiaires (PAB): 50.35 $/h
-- Éducateur(trice): Variable selon entente
+- Infirmier(Ã¨re) / Infirmier(Ã¨re) Clinicien(ne): 86.23 $/h
+- Infirmier(Ã¨re) auxiliaire: 57.18 $/h
+- PrÃ©posÃ©(e) aux bÃ©nÃ©ficiaires (PAB): 50.35 $/h
+- Ã‰ducateur(trice): Variable selon entente
 - Agent administratif: Variable selon entente
 
-RÈGLES DE FACTURATION:
-- Période de facturation: Dimanche au Samedi
+RÃˆGLES DE FACTURATION:
+- PÃ©riode de facturation: Dimanche au Samedi
 - Garde: 8 heures de garde = 1 heure facturable au taux de 86.23$/h
-- Kilométrage: 0.525 $/km (max 750 km aller, 1500 km aller-retour)
-- Déplacement: Max 8 heures par déplacement, facturable une seule fois par assignation
-- Exception CISSS Gaspésie: déplacement remboursé une seule fois par assignation
-- Hébergement: coût total / nombre total de quarts travaillés sur la période d'hébergement, puis multiplié par les quarts de la période facturée
-- TPS: 5% (numéro: 714564891RT0001)
-- TVQ: 9.975% (numéro: 1225765936TQ0001)
-- Clients exemptés de taxes: Centre de Santé Inuulitsivik, Conseil Cri de la Santé
+- KilomÃ©trage: 0.525 $/km (max 750 km aller, 1500 km aller-retour)
+- DÃ©placement: Max 8 heures par dÃ©placement, facturable une seule fois par assignation
+- Exception CISSS GaspÃ©sie: dÃ©placement remboursÃ© une seule fois par assignation
+- HÃ©bergement: coÃ»t total / nombre total de quarts travaillÃ©s sur la pÃ©riode d'hÃ©bergement, puis multipliÃ© par les quarts de la pÃ©riode facturÃ©e
+- TPS: 5% (numÃ©ro: 714564891RT0001)
+- TVQ: 9.975% (numÃ©ro: 1225765936TQ0001)
+- Clients exemptÃ©s de taxes: Centre de SantÃ© Inuulitsivik, Conseil Cri de la SantÃ©
 """
 
 RAW_TOOLS = [
-    {"name": "search_employees", "description": "Rechercher des employés par nom, poste ou email.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+    {"name": "search_employees", "description": "Rechercher des employÃ©s par nom, poste ou email.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
     {"name": "search_clients", "description": "Rechercher des clients par nom.", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
-    {"name": "get_employee_schedule", "description": "Obtenir l'horaire d'un employé pour une période donnée.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}, "required": []}},
-    {"name": "generate_invoice_for_employee", "description": "Générer une facture brouillon à partir des horaires d'un employé pour une période donnée. Utiliser quand on te demande explicitement de générer une facture.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}}, "required": ["period_start", "period_end"]}},
-    {"name": "read_recent_emails", "description": "Lire les courriels récents de la boîte de réception.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "folder": {"type": "string", "default": "INBOX"}}}},
+    {"name": "get_employee_schedule", "description": "Obtenir l'horaire d'un employÃ© pour une pÃ©riode donnÃ©e.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}, "required": []}},
+    {"name": "generate_invoice_for_employee", "description": "GÃ©nÃ©rer une facture brouillon Ã  partir des horaires d'un employÃ© pour une pÃ©riode donnÃ©e. Utiliser quand on te demande explicitement de gÃ©nÃ©rer une facture.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}}, "required": ["period_start", "period_end"]}},
+    {"name": "read_recent_emails", "description": "Lire les courriels rÃ©cents de la boÃ®te de rÃ©ception.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "folder": {"type": "string", "default": "INBOX"}}}},
     {"name": "generate_current_invoice_for_employee", "description": "Generer une facture brouillon pour la periode actuelle de facturation d'un employe.", "input_schema": {"type": "object", "properties": {"employee_name": {"type": "string"}, "employee_id": {"type": "integer"}, "client_name": {"type": "string"}, "client_id": {"type": "integer"}}, "required": []}},
     {"name": "get_invoice_details", "description": "Retrouver une facture et retourner ses lignes modifiables. Utiliser avant de modifier une facture brouillon existante.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "draft_only": {"type": "boolean", "default": False}}, "required": []}},
     {"name": "update_invoice_service_line", "description": "Modifier un quart deja present dans une facture brouillon existante. Utiliser quand l'utilisateur veut changer une pause, une heure, un taux, debut/fin ou supprimer un quart directement dans la facture et non dans l'horaire.", "input_schema": {"type": "object", "properties": {"invoice_id": {"type": "string"}, "invoice_number": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "schedule_id": {"type": "string"}, "date": {"type": "string"}, "current_start": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_min": {"type": "number"}, "hours": {"type": "number"}, "rate": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}, "delete": {"type": "boolean", "default": False}}, "required": []}},
@@ -128,10 +128,10 @@ RAW_TOOLS = [
     {"name": "create_schedule_shift", "description": "Creer un quart dans l'horaire. Les heures doivent etre en format 24 h HH:MM.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": ["date", "start", "end"]}},
     {"name": "update_schedule_shift", "description": "Modifier un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}, "date": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "pause_minutes": {"type": "number"}, "pause_hours": {"type": "number"}, "hours": {"type": "number"}, "location": {"type": "string"}, "billable_rate": {"type": "number"}, "status": {"type": "string"}, "notes": {"type": "string"}, "km": {"type": "number"}, "deplacement": {"type": "number"}, "autre_dep": {"type": "number"}, "garde_hours": {"type": "number"}, "rappel_hours": {"type": "number"}}, "required": []}},
     {"name": "delete_schedule_shift", "description": "Supprimer un quart existant. Utiliser schedule_id en priorite. Sinon identifier le quart avec employe + current_date + current_start.", "input_schema": {"type": "object", "properties": {"schedule_id": {"type": "string"}, "employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}, "current_date": {"type": "string"}, "current_start": {"type": "string"}, "current_end": {"type": "string"}}, "required": []}},
-    {"name": "get_candidates", "description": "Lister les employés actifs, avec filtres par titre/région, pour soumission ou assignation.", "input_schema": {"type": "object", "properties": {"title_filter": {"type": "string"}, "region_filter": {"type": "string"}}}},
-    {"name": "get_invoices_summary", "description": "Obtenir un résumé des factures avec filtre optionnel par statut ou client.", "input_schema": {"type": "object", "properties": {"status_filter": {"type": "string"}, "client_id": {"type": "integer"}}}},
-    {"name": "get_reports", "description": "Obtenir les rapports facturation par client, employé ou période.", "input_schema": {"type": "object", "properties": {"report_type": {"type": "string", "enum": ["by-client", "by-employee", "by-period"]}}, "required": ["report_type"]}},
-    {"name": "get_accommodations", "description": "Obtenir la liste des hébergements actifs pour les employés.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}}},
+    {"name": "get_candidates", "description": "Lister les employÃ©s actifs, avec filtres par titre/rÃ©gion, pour soumission ou assignation.", "input_schema": {"type": "object", "properties": {"title_filter": {"type": "string"}, "region_filter": {"type": "string"}}}},
+    {"name": "get_invoices_summary", "description": "Obtenir un rÃ©sumÃ© des factures avec filtre optionnel par statut ou client.", "input_schema": {"type": "object", "properties": {"status_filter": {"type": "string"}, "client_id": {"type": "integer"}}}},
+    {"name": "get_reports", "description": "Obtenir les rapports facturation par client, employÃ© ou pÃ©riode.", "input_schema": {"type": "object", "properties": {"report_type": {"type": "string", "enum": ["by-client", "by-employee", "by-period"]}}, "required": ["report_type"]}},
+    {"name": "get_accommodations", "description": "Obtenir la liste des hÃ©bergements actifs pour les employÃ©s.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}}}},
     {"name": "create_accommodation_record", "description": "Ajouter un hebergement pour un employe.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "total_cost": {"type": "number"}, "days_worked": {"type": "integer"}, "cost_per_day": {"type": "number"}, "notes": {"type": "string"}}, "required": ["start_date", "end_date", "total_cost"]}},
     {"name": "reconcile_timesheet_invoice", "description": "Concilier une FDT avec la facture de la meme periode et retourner un niveau de confiance.", "input_schema": {"type": "object", "properties": {"employee_id": {"type": "integer"}, "employee_name": {"type": "string"}, "period_start": {"type": "string"}, "period_end": {"type": "string"}, "invoice_id": {"type": "string"}, "client_id": {"type": "integer"}, "client_name": {"type": "string"}}, "required": []}},
     {"name": "index_recent_timesheet_emails", "description": "Indexer les pieces jointes recues dans la boite paie et classer les vraies FDT ainsi que les documents d'hebergement au bon employe.", "input_schema": {"type": "object", "properties": {"max_results": {"type": "integer", "default": 10}, "search": {"type": "string"}, "unread_only": {"type": "boolean", "default": False}}, "required": []}},
@@ -159,19 +159,19 @@ _MATCH_STOPWORDS = {"de", "du", "des", "la", "le", "les", "l", "d", "et"}
 _FRENCH_MONTHS = {
     "janvier": 1,
     "fevrier": 2,
-    "février": 2,
+    "fÃ©vrier": 2,
     "mars": 3,
     "avril": 4,
     "mai": 5,
     "juin": 6,
     "juillet": 7,
     "aout": 8,
-    "août": 8,
+    "aoÃ»t": 8,
     "septembre": 9,
     "octobre": 10,
     "novembre": 11,
     "decembre": 12,
-    "décembre": 12,
+    "dÃ©cembre": 12,
 }
 
 
@@ -549,7 +549,7 @@ async def _build_invoice_from_schedules(
     scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == employee.id, Schedule.date >= ps, Schedule.date <= pe, Schedule.status != 'cancelled').order_by(Schedule.date))
     scheds = scheds_r.scalars().all()
     if not scheds:
-        return {"error": "Aucun quart trouvé pour cette période"}
+        return {"error": "Aucun quart trouvÃ© pour cette pÃ©riode"}
     selected_client = await _find_client(db, client_id, client_name) if (client_id or client_name) else None
     if (client_id or client_name) and not selected_client:
         return {"error": "Client introuvable pour cette facture"}
@@ -576,18 +576,19 @@ async def _build_invoice_from_schedules(
         effective_client = cr.scalar_one_or_none()
         scheds = [s for s in scheds if not getattr(s, 'client_id', None) or s.client_id == employee.client_id]
     else:
-        return {"error": f"Client ambigu pour cette période: {client_ids}"}
+        return {"error": f"Client ambigu pour cette pÃ©riode: {client_ids}"}
     if not effective_client:
-        return {"error": "Aucun client associé trouvé pour cette période"}
+        return {"error": "Aucun client associÃ© trouvÃ© pour cette pÃ©riode"}
     existing = await db.execute(select(Invoice).where(Invoice.employee_id == employee.id, Invoice.client_id == effective_client.id, Invoice.period_start == ps, Invoice.period_end == pe, Invoice.status != 'cancelled'))
     existing = existing.scalar_one_or_none()
     if existing:
-        return {"id": existing.id, "number": existing.number, "status": existing.status, "total": existing.total, "client_name": existing.client_name, "employee_name": existing.employee_name, "message": "Facture déjà existante"}
-    rate = get_rate_for_title(employee.position or 'Infirmier(ère)')
+        return {"id": existing.id, "number": existing.number, "status": existing.status, "total": existing.total, "client_name": existing.client_name, "employee_name": existing.employee_name, "message": "Facture dÃ©jÃ  existante"}
+    position_rates = await get_position_rate_lookup(db)
+    rate = get_rate_for_title(employee.position or 'Infirmier(Ã¨re)', position_rates=position_rates)
     include_tax = not is_tax_exempt(effective_client.name)
     lines, expense_lines = [], []
     for s in scheds:
-        rate = get_schedule_billable_rate(s, employee.position or '')
+        rate = get_schedule_billable_rate(s, employee.position or '', position_rates=position_rates)
         hours = round((getattr(s, 'hours', 0) or 0), 2)
         garde_h = getattr(s, 'garde_hours', 0) or 0
         rappel_h = getattr(s, 'rappel_hours', 0) or 0
@@ -596,18 +597,18 @@ async def _build_invoice_from_schedules(
         km_val = getattr(s, 'km', 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)
-            expense_lines.append({"type": "km", "description": f"Kilométrage ({s.date})", "quantity": capped, "rate": KM_RATE, "amount": round(capped * KM_RATE, 2)})
+            expense_lines.append({"type": "km", "description": f"KilomÃ©trage ({s.date})", "quantity": capped, "rate": KM_RATE, "amount": round(capped * KM_RATE, 2)})
         depl_val = getattr(s, 'deplacement', 0) or 0
         if depl_val:
             capped = min(float(depl_val), MAX_DEPLACEMENT_HOURS)
-            expense_lines.append({"type": "deplacement", "description": f"Déplacement ({s.date})", "quantity": capped, "rate": rate, "amount": round(capped * rate, 2)})
+            expense_lines.append({"type": "deplacement", "description": f"DÃ©placement ({s.date})", "quantity": capped, "rate": rate, "amount": round(capped * rate, 2)})
         autre_val = getattr(s, 'autre_dep', 0) or 0
         if autre_val:
             expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
     expense_lines = []
     for s in scheds:
         shift_notes = getattr(s, 'notes', '') or ''
-        rate = get_schedule_billable_rate(s, employee.position or '')
+        rate = get_schedule_billable_rate(s, employee.position or '', position_rates=position_rates)
         km_val = getattr(s, 'km', 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)
@@ -635,7 +636,7 @@ async def _build_invoice_from_schedules(
         total_cost = float(getattr(a, 'total_cost', 0) or 0)
         denom = len(full_span_worked) or int(getattr(a, 'days_worked', 0) or 0) or 1
         cpd = round(total_cost / denom, 2) if total_cost else float(getattr(a, 'cost_per_day', 0) or 0)
-        accommodation_lines.append({"employee": employee.name or '', "period": f"{max(ps, a.start_date).isoformat()} → {min(pe, a.end_date).isoformat()}", "days": len(billed_span_worked), "cost_per_day": cpd, "amount": round(cpd * len(billed_span_worked), 2)})
+        accommodation_lines.append({"employee": employee.name or '', "period": f"{max(ps, a.start_date).isoformat()} â†’ {min(pe, a.end_date).isoformat()}", "days": len(billed_span_worked), "cost_per_day": cpd, "amount": round(cpd * len(billed_span_worked), 2)})
     inv = Invoice(number=await generate_invoice_number(db), date=date.today(), period_start=ps, period_end=pe, client_id=effective_client.id, client_name=effective_client.name, client_address=getattr(effective_client, 'address', '') or '', client_email=getattr(effective_client, 'email', '') or '', client_phone=getattr(effective_client, 'phone', '') or '', employee_id=employee.id, employee_name=employee.name or '', employee_title=employee.position or '', include_tax=include_tax, status='draft', lines=lines, accommodation_lines=accommodation_lines, expense_lines=expense_lines, extra_lines=[])
     inv = recalculate_invoice(inv)
     db.add(inv)
@@ -894,7 +895,7 @@ def _format_timesheet_analysis_response(items: list[dict], max_results: int = 5)
             if item.get("is_signed") is False
             else "signature non confirmee"
         )
-        lines.append(f"{idx}. {employee_label} — {item.get('filename', 'document')}")
+        lines.append(f"{idx}. {employee_label} â€” {item.get('filename', 'document')}")
         if item.get("employee_title"):
             lines.append(f"   Titre: {item.get('employee_title')}")
         if item.get("period_start") and item.get("period_end"):
@@ -1058,9 +1059,9 @@ def _format_requested_period_workflow_response(result: dict) -> str:
     return "\n".join(lines)
 
 
-# ──────────────────────────────────────────────
-# FDT → Schedule diff/apply helper
-# ──────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# FDT â†’ Schedule diff/apply helper
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _normalize_fdt_shift(raw_shift: dict) -> dict | None:
     """Normalize a shift dict returned by the vision model into canonical
@@ -1082,7 +1083,7 @@ def _normalize_fdt_shift(raw_shift: dict) -> dict | None:
     is_cancelled = (
         raw_type == "cancelled"
         or "barre" in _norm(raw_notes)
-        or "barré" in raw_notes.lower()
+        or "barrÃ©" in raw_notes.lower()
         or "annul" in _norm(raw_notes)
         or "non travaille" in _norm(raw_notes)
     )
@@ -1181,11 +1182,11 @@ def _schedule_diff_from_fdt(fdt_shifts: list[dict], existing_schedules: list) ->
                     "existing_end": getattr(target, "end", "") or "",
                     "existing_hours": float(getattr(target, "hours", 0) or 0),
                 })
-            # If no existing schedule matches, nothing to cancel — silently skip
+            # If no existing schedule matches, nothing to cancel â€” silently skip
             continue
 
         if not candidates_unused:
-            # No matching schedule — this is a new shift
+            # No matching schedule â€” this is a new shift
             creates.append({
                 "date": fdt_shift["date"].isoformat(),
                 "start": fdt_shift["start"],
@@ -1238,7 +1239,7 @@ def _schedule_diff_from_fdt(fdt_shifts: list[dict], existing_schedules: list) ->
                 "unit": fdt_shift["unit"],
             })
 
-    # Any schedule not matched by any FDT shift is an "orphan" — existing in
+    # Any schedule not matched by any FDT shift is an "orphan" â€” existing in
     # the schedule but not covered by the FDT. Flag for human review.
     orphans: list[dict] = []
     for sched in existing_schedules:
@@ -1272,8 +1273,8 @@ def _format_schedule_diff(
 ) -> str:
     """Format the diff as a human-readable summary for the chat."""
     period_str = f"{period_start.strftime('%d/%m/%Y')} au {period_end.strftime('%d/%m/%Y')}"
-    header = "📋 Diff FDT → Horaire" if dry_run else "✅ Horaire mis a jour depuis la FDT"
-    lines = [f"{header} — {employee_name}"]
+    header = "ðŸ“‹ Diff FDT â†’ Horaire" if dry_run else "âœ… Horaire mis a jour depuis la FDT"
+    lines = [f"{header} â€” {employee_name}"]
     if client_name:
         lines.append(f"Client: {client_name}")
     lines.append(f"Periode: {period_str}")
@@ -1285,33 +1286,33 @@ def _format_schedule_diff(
     orphans = diff.get("orphans") or []
     unchanged = diff.get("unchanged") or []
 
-    lines.append(f"➕ CREER ({len(creates)}):")
+    lines.append(f"âž• CREER ({len(creates)}):")
     for c in creates:
         lines.append(
             f"  - {c['date']}: {c['start'] or '?'}-{c['end'] or '?'}"
-            f" pause {c['pause_minutes']}min → {c['hours']}h"
+            f" pause {c['pause_minutes']}min â†’ {c['hours']}h"
             + (f" | {c['unit']}" if c['unit'] else "")
             + (f" | signataire {c['approver_name']}" if c['approver_name'] else "")
         )
 
-    lines.append(f"✏️ MODIFIER ({len(updates)}):")
+    lines.append(f"âœï¸ MODIFIER ({len(updates)}):")
     for u in updates:
         old_desc = f"{u['existing_start'] or '?'}-{u['existing_end'] or '?'} pause {int(round(u['existing_pause_hours']*60))}min ({u['existing_hours']}h)"
         new_desc = f"{u['new_start'] or '?'}-{u['new_end'] or '?'} pause {u['new_pause_minutes']}min ({u['new_hours']}h)"
-        lines.append(f"  - {u['date']}: {old_desc} → {new_desc}")
+        lines.append(f"  - {u['date']}: {old_desc} â†’ {new_desc}")
 
-    lines.append(f"🚫 ANNULER ({len(cancellations)}):")
+    lines.append(f"ðŸš« ANNULER ({len(cancellations)}):")
     for x in cancellations:
         lines.append(
             f"  - {x['date']}: marquer comme non-travaille (case barree sur FDT)."
             f" Existant: {x['existing_start']}-{x['existing_end']} ({x['existing_hours']}h)"
         )
 
-    lines.append(f"⚠️ ORPHELINS ({len(orphans)}) — presents dans l'horaire mais absents de la FDT, verification humaine requise:")
+    lines.append(f"âš ï¸ ORPHELINS ({len(orphans)}) â€” presents dans l'horaire mais absents de la FDT, verification humaine requise:")
     for o in orphans:
-        lines.append(f"  - {o['date']}: {o['start']}-{o['end']} ({o['hours']}h) — schedule_id {o['schedule_id']}")
+        lines.append(f"  - {o['date']}: {o['start']}-{o['end']} ({o['hours']}h) â€” schedule_id {o['schedule_id']}")
 
-    lines.append(f"✅ INCHANGES ({len(unchanged)})")
+    lines.append(f"âœ… INCHANGES ({len(unchanged)})")
 
     total_after = (
         sum(c['hours'] for c in creates)
@@ -1345,8 +1346,8 @@ async def _apply_timesheet_to_schedule_internal(
 ) -> str:
     """Core logic for apply_timesheet_to_schedule tool.
 
-    Orchestrates: find FDT doc → analyze → resolve employee/client →
-    load existing schedules → build diff → optionally apply → return
+    Orchestrates: find FDT doc â†’ analyze â†’ resolve employee/client â†’
+    load existing schedules â†’ build diff â†’ optionally apply â†’ return
     human-readable summary.
     """
     # 1. Find the target FDT document in the session
@@ -1642,23 +1643,23 @@ def _message_requests_chat_upload_analysis(
         "brouillon",
         "generer",
         "genere",
-        "générer",
-        "génère",
+        "gÃ©nÃ©rer",
+        "gÃ©nÃ¨re",
         "compar",
         "concil",
         "ecart",
-        "écart",
+        "Ã©cart",
     ]
     challenge_words = [
         "pourquoi",
         "alors que",
         "je viens de voir",
         "tu as genere",
-        "tu as généré",
+        "tu as gÃ©nÃ©rÃ©",
         "seulement",
         "pas tous",
         "incoher",
-        "incohér",
+        "incohÃ©r",
     ]
     analysis_intent = any(word in m for word in analysis_words)
     current_timesheet_reference = any(word in m for word in timesheet_words + upload_reference_words)
@@ -1745,7 +1746,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
         if name == 'get_employee_schedule':
             emp = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
             if not emp:
-                return "Employé introuvable"
+                return "EmployÃ© introuvable"
             q = select(Schedule).where(Schedule.employee_id == emp.id)
             if input_data.get('start_date'):
                 q = q.where(Schedule.date >= input_data['start_date'])
@@ -1769,7 +1770,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
         if name == 'generate_invoice_for_employee':
             emp = await _find_employee(db, input_data.get('employee_id'), input_data.get('employee_name'))
             if not emp:
-                return "Employé introuvable pour génération de facture"
+                return "EmployÃ© introuvable pour gÃ©nÃ©ration de facture"
             period_start = input_data.get('period_start')
             period_end = input_data.get('period_end')
             if not period_start or not period_end:
@@ -1970,7 +1971,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             cost_per_day = float(input_data.get('cost_per_day') or 0)
             new_line = {
                 "employee": invoice.employee_name or "",
-                "period": f"{invoice.period_start.isoformat()} → {invoice.period_end.isoformat()}",
+                "period": f"{invoice.period_start.isoformat()} â†’ {invoice.period_end.isoformat()}",
                 "days": len(worked_days),
                 "cost_per_day": round(cost_per_day, 2),
                 "amount": round(len(worked_days) * cost_per_day, 2),
@@ -2058,7 +2059,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                     dry_run=dry_run,
                 )
             except Exception as exc:
-                return f"Erreur application FDT → horaire: {exc}"
+                return f"Erreur application FDT â†’ horaire: {exc}"
         if name == 'attach_chat_documents_to_invoice':
             invoice, error = await _find_invoice(
                 db,
@@ -2258,7 +2259,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                     raise RuntimeError(
                         f"Envoi Gmail impossible: {gmail_error}. Secours SMTP echoue aussi: {smtp_exc}"
                     ) from smtp_exc
-            return f"Courriel envoyé à {input_data['to']}: {input_data['subject']}"
+            return f"Courriel envoyÃ© Ã  {input_data['to']}: {input_data['subject']}"
         if name == 'create_email_draft':
             cc_emails = _parse_recipient_input(input_data.get('cc'), input_data.get('cc_list'))
             bcc_emails = _parse_recipient_input(input_data.get('bcc'), input_data.get('bcc_list'))
@@ -2435,7 +2436,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             if rtype == 'by-client':
                 agg = {}
                 for i in invs:
-                    key = i.client_name or 'Non assigné'
+                    key = i.client_name or 'Non assignÃ©'
                     agg.setdefault(key, {"client_name": key, "total": 0, "count": 0, "outstanding": 0})
                     agg[key]["total"] += float(i.total or 0)
                     agg[key]["outstanding"] += float(i.balance_due or 0)
@@ -2444,7 +2445,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             if rtype == 'by-employee':
                 agg = {}
                 for i in invs:
-                    key = i.employee_name or 'Non assigné'
+                    key = i.employee_name or 'Non assignÃ©'
                     agg.setdefault(key, {"employee_name": key, "total": 0, "count": 0})
                     agg[key]["total"] += float(i.total or 0)
                     agg[key]["count"] += 1
@@ -2585,7 +2586,7 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
                 if item.get('period_start') and item.get('period_end'):
                     period_bits.append(f"{item.get('period_start')} au {item.get('period_end')}")
                 signature = "signee" if item.get('is_signed') is True else "signature a verifier" if item.get('is_signed') is False else "signature non confirmee"
-                lines.append(f"{idx}. {employee_label} — {item.get('filename', 'document')}")
+                lines.append(f"{idx}. {employee_label} â€” {item.get('filename', 'document')}")
                 if period_bits:
                     lines.append(f"   Periode: {'; '.join(period_bits)}")
                 lines.append(f"   Signature: {signature}")
@@ -2678,9 +2679,9 @@ async def execute_tool(name: str, input_data: dict, db: AsyncSession, user_messa
             pass
         return f"Erreur outil {name}: {str(e)}"
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les horaires, les courriels, les hébergements, les rapports et générer des factures brouillon à partir des données déjà dans la plateforme. Quand on te demande de générer une facture, utilise l'outil generate_invoice_for_employee. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
-AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu as l'autorité nécessaire pour consulter les employés actifs, lire les courriels, proposer des candidats et créer des quarts de travail. Réponds en français québécois professionnel.\n\n" + BUSINESS_KNOWLEDGE
-GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as accès aux outils de facturation, recrutement, courriels et rapports. Utilise les outils dès qu'une action ou une donnée système est demandée. Réponds en français.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu as l'autoritÃ© nÃ©cessaire pour consulter les horaires, les courriels, les hÃ©bergements, les rapports et gÃ©nÃ©rer des factures brouillon Ã  partir des donnÃ©es dÃ©jÃ  dans la plateforme. Quand on te demande de gÃ©nÃ©rer une facture, utilise l'outil generate_invoice_for_employee. RÃ©ponds en franÃ§ais quÃ©bÃ©cois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu as l'autoritÃ© nÃ©cessaire pour consulter les employÃ©s actifs, lire les courriels, proposer des candidats et crÃ©er des quarts de travail. RÃ©ponds en franÃ§ais quÃ©bÃ©cois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as accÃ¨s aux outils de facturation, recrutement, courriels et rapports. Utilise les outils dÃ¨s qu'une action ou une donnÃ©e systÃ¨me est demandÃ©e. RÃ©ponds en franÃ§ais.\n\n" + BUSINESS_KNOWLEDGE
 
 AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter ou surveiller les courriels entrants et preparer les brouillons, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
@@ -2688,11 +2689,11 @@ GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acce
 
 def _detect_prompt(message: str):
     m = message.lower()
-    if any(kw in m for kw in ['factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impay', 'conciliation', 'courriel', 'email', 'gmail', 'brouillon', 'draft', 'hebergement', 'hébergement', 'rappel', 'document']):
+    if any(kw in m for kw in ['factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impay', 'conciliation', 'courriel', 'email', 'gmail', 'brouillon', 'draft', 'hebergement', 'hÃ©bergement', 'rappel', 'document']):
         return AGENT_FACTURATION_PROMPT, 'facturation'
     if any(kw in m for kw in ['candidat', 'recrutement', 'besoin', 'soumission', 'disponib', 'assignation', 'placement', 'horaire', 'quart']):
         return AGENT_RECRUTEMENT_PROMPT, 'recrutement'
-    if any(kw in m for kw in ['factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impayé', 'conciliation']):
+    if any(kw in m for kw in ['factur', 'fdt', 'feuille de temps', 'paie', 'paiement', 'impayÃ©', 'conciliation']):
         return AGENT_FACTURATION_PROMPT, 'facturation'
     if any(kw in m for kw in ['candidat', 'recrutement', 'besoin', 'soumission', 'disponib', 'assignation', 'placement']):
         return AGENT_RECRUTEMENT_PROMPT, 'recrutement'
@@ -2726,7 +2727,7 @@ def _detect_prompt(message: str):
     return GENERAL_PROMPT, 'general'
 
 
-AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. REGLE ABSOLUE FDT → FACTURE: Si l'utilisateur joint une FDT dans le chat et te demande de generer une facture a partir de cette FDT, tu NE DOIS JAMAIS appeler generate_current_invoice_for_employee ni generate_invoice_for_employee directement. Au lieu de ca, tu dois OBLIGATOIREMENT suivre ce workflow en 4 etapes: (1) appeler analyze_chat_session_documents pour extraire les quarts reels de la FDT; (2) afficher a l'utilisateur un tableau clair avec date, heure debut, heure fin, pause en minutes et le nom du client/etablissement extrait, et demander explicitement sa confirmation avant toute modification; (3) apres confirmation, appeler apply_timesheet_to_schedule avec dry_run=true pour afficher le diff, attendre que l'utilisateur valide le diff, puis rappeler apply_timesheet_to_schedule avec dry_run=false pour appliquer; (4) seulement ensuite, appeler generate_invoice_for_employee avec period_start et period_end EXACTEMENT egales a la periode couverte par la FDT (que apply_timesheet_to_schedule te retourne), pas la periode courante du systeme. IMPORTANT: la periode de la facture doit toujours correspondre a la vraie periode du document FDT, jamais a la periode de facturation courante quand les deux different. Ne jamais pretendre avoir genere une facture a partir d'une FDT quand tu as en fait utilise l'horaire existant sans appliquer la FDT dessus d'abord. REGLE DATES FDT: les dates ecrites sur les FDT sont souvent au format AA/MM/JJ ou JJ/MM/AA. Exemple '26/03/29' signifie le 29 mars 2026, pas le 26 mars 2029. Toujours confirmer l'annee avec le champ 'Semaine du X au Y' en haut du formulaire. REGLE CONFIANCE: si une FDT contient un ou plusieurs champs illisibles ou si tu as un doute sur les heures, les dates ou les pauses, NE genere PAS la facture. Explique plutot les champs incertains et demande une verification humaine avant toute action. Mieux vaut demander que faire faux. Quand on te demande de consulter ou modifier une facture brouillon existante directement dans la facture et non dans l'horaire, utilise get_invoice_details puis update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line selon le besoin. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter les FDT recues a la suite du rappel hebdomadaire, d'identifier les dernieres FDT de la semaine demandee, de modifier l'horaire selon ces FDT puis de generer les brouillons de facture, utilise process_requested_period_timesheets plutot que process_incoming_timesheet_emails. Cet outil doit rester ta voie principale pour le workflow recurrent du dimanche et de la semaine suivante. Quand on te demande seulement de surveiller les courriels entrants et classer les pieces jointes, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire, quelle periode de FDT ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
+AGENT_FACTURATION_PROMPT = "Tu es l'Agent de Facturation de Soins Expert Plus. Tu peux consulter la boite paie, lire les courriels recents, indexer les FDT recues, consulter et modifier les horaires, ajouter des hebergements, envoyer ou preparer le rappel hebdomadaire de FDT, generer des factures brouillon et concilier une FDT avec la facture correspondante. Tu dois raisonner comme un vrai commis de facturation et de paie qui agit dans le meilleur interet de l'entreprise: ne retiens pas les pieces jointes sans rapport, privilegie les vraies FDT, et explique clairement quand une verification humaine est encore necessaire. Les demandes concernant FDT, courriels paie, rappels du dimanche, pieces jointes, pauses, signatures, quarts visibles sur une FDT, brouillons Gmail et automatisation restent du cote facturation meme si le mot quart apparait. Quand on te demande de creer une facture pour la periode actuelle, utilise l'outil generate_current_invoice_for_employee. Pour une periode precise, utilise l'outil generate_invoice_for_employee. REGLE ABSOLUE FDT â†’ FACTURE: Si l'utilisateur joint une FDT dans le chat et te demande de generer une facture a partir de cette FDT, tu NE DOIS JAMAIS appeler generate_current_invoice_for_employee ni generate_invoice_for_employee directement. Au lieu de ca, tu dois OBLIGATOIREMENT suivre ce workflow en 4 etapes: (1) appeler analyze_chat_session_documents pour extraire les quarts reels de la FDT; (2) afficher a l'utilisateur un tableau clair avec date, heure debut, heure fin, pause en minutes et le nom du client/etablissement extrait, et demander explicitement sa confirmation avant toute modification; (3) apres confirmation, appeler apply_timesheet_to_schedule avec dry_run=true pour afficher le diff, attendre que l'utilisateur valide le diff, puis rappeler apply_timesheet_to_schedule avec dry_run=false pour appliquer; (4) seulement ensuite, appeler generate_invoice_for_employee avec period_start et period_end EXACTEMENT egales a la periode couverte par la FDT (que apply_timesheet_to_schedule te retourne), pas la periode courante du systeme. IMPORTANT: la periode de la facture doit toujours correspondre a la vraie periode du document FDT, jamais a la periode de facturation courante quand les deux different. Ne jamais pretendre avoir genere une facture a partir d'une FDT quand tu as en fait utilise l'horaire existant sans appliquer la FDT dessus d'abord. REGLE DATES FDT: les dates ecrites sur les FDT sont souvent au format AA/MM/JJ ou JJ/MM/AA. Exemple '26/03/29' signifie le 29 mars 2026, pas le 26 mars 2029. Toujours confirmer l'annee avec le champ 'Semaine du X au Y' en haut du formulaire. REGLE CONFIANCE: si une FDT contient un ou plusieurs champs illisibles ou si tu as un doute sur les heures, les dates ou les pauses, NE genere PAS la facture. Explique plutot les champs incertains et demande une verification humaine avant toute action. Mieux vaut demander que faire faux. Quand on te demande de consulter ou modifier une facture brouillon existante directement dans la facture et non dans l'horaire, utilise get_invoice_details puis update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line selon le besoin. Quand on te demande de concilier une FDT et une facture, utilise reconcile_timesheet_invoice et mentionne clairement le niveau de confiance. Quand on te demande d'indexer les FDT recues par courriel, utilise index_recent_timesheet_emails. Quand on te demande de lister les dernieres vraies FDT recues ou d'analyser les quarts, pauses ou signatures visibles sur les FDT, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand on te demande de traiter les FDT recues a la suite du rappel hebdomadaire, d'identifier les dernieres FDT de la semaine demandee, de modifier l'horaire selon ces FDT puis de generer les brouillons de facture, utilise process_requested_period_timesheets plutot que process_incoming_timesheet_emails. Cet outil doit rester ta voie principale pour le workflow recurrent du dimanche et de la semaine suivante. Quand on te demande seulement de surveiller les courriels entrants et classer les pieces jointes, utilise process_incoming_timesheet_emails. Quand on te demande le rappel hebdomadaire du dimanche, utilise send_weekly_timesheet_reminder. Quand on te demande un test, un brouillon Gmail ou un envoi de masse en brouillon pour ce rappel, utilise draft_weekly_timesheet_reminder. Quand on te demande quel jour, quelle heure, quel fuseau horaire, quelle periode de FDT ou quels courriels sont configures pour les taches du dimanche, utilise get_automation_config. Quand on te demande un resume des documents FDT ou hebergement par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Quand on te demande de modifier un quart, utilise les outils create_schedule_shift, update_schedule_shift ou delete_schedule_shift. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft. N'utilise jamais send_email pour un brouillon. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_RECRUTEMENT_PROMPT = "Tu es l'Agent de Recrutement de Soins Expert Plus. Tu peux consulter les employes actifs, lire les courriels, proposer des candidats et creer, modifier ou supprimer des quarts de travail. Reponds en francais quebecois professionnel.\n\n" + BUSINESS_KNOWLEDGE
 GENERAL_PROMPT = "Tu es l'assistant intelligent de Soins Expert Plus. Tu as acces aux outils de facturation, recrutement, courriels, hebergements, horaires et FDT. Utilise les outils des qu'une action ou une donnee systeme est demandee. Si l'utilisateur demande une modification de quart, un ajout d'hebergement, une lecture de courriel paie, l'indexation de FDT recues, le traitement automatique des courriels entrants, la generation d'une facture, une conciliation FDT-facture ou l'envoi du rappel hebdomadaire de FDT, execute l'action demandee puis resume le resultat. Agis comme un commis de facturation prudent: ignore les pieces jointes qui ne sont pas pertinentes et dis clairement quand une verification visuelle reste necessaire. Pour lister les dernieres vraies FDT recues ou analyser les quarts, pauses et signatures visibles, utilise analyze_recent_timesheet_documents plutot que read_recent_emails. Quand l'utilisateur parle de la periode actuelle de facturation, utilise l'outil generate_current_invoice_for_employee. Quand l'utilisateur demande de modifier directement une facture brouillon existante, utilise les outils get_invoice_details, update_invoice_service_line, add_invoice_expense_line, delete_invoice_expense_line, add_invoice_accommodation_per_worked_day ou delete_invoice_accommodation_line au lieu de modifier l'horaire. Quand l'utilisateur demande un niveau de confiance, utilise reconcile_timesheet_invoice et cite clairement le niveau eleve, moyen ou faible. Quand l'utilisateur demande d'identifier les dernieres FDT recues pour la semaine demandee par le rappel hebdomadaire, de mettre a jour l'horaire en fonction de leur analyse ou de generer ensuite les brouillons de facture, utilise process_requested_period_timesheets. Quand l'utilisateur demande seulement de traiter ou surveiller les courriels entrants, utilise process_incoming_timesheet_emails. Quand l'utilisateur demande un rappel hebdomadaire en brouillon Gmail ou un test d'envoi de masse en brouillon, utilise draft_weekly_timesheet_reminder. Quand l'utilisateur demande le jour, l'heure, le fuseau horaire, la periode visee ou les destinataires du rappel du dimanche, utilise get_automation_config. Quand l'utilisateur demande un resume documentaire par semaine ou par mois, utilise get_timesheet_documents_summary ou get_accommodation_documents_summary. Si l'utilisateur donne une date explicite comme 06 avril, 2026-04-06 ou 06/04, preserve exactement ce jour dans l'outil. Pour supprimer un quart, utilise delete_schedule_shift. Si un seul quart existe cette journee pour cet employe, la date suffit. Sinon preserve aussi l'heure de debut. Si l'utilisateur demande seulement un brouillon de reponse, redige le texte dans le chat. S'il demande explicitement de creer, enregistrer ou mettre ce message dans les brouillons Gmail, utilise create_email_draft et ne l'envoie pas. Si un outil retourne une erreur, cite clairement la vraie erreur et la prochaine action concrete a faire, sans la diluer. Reponds en francais.\n\n" + BUSINESS_KNOWLEDGE
 AGENT_FACTURATION_PROMPT += "\nQuand l'utilisateur demande d'examiner les FDT recues dans les dernieres 24, 48 ou 72 heures, utilise process_requested_period_timesheets avec une recherche Gmail explicite comme newer_than:1d, newer_than:2d ou newer_than:3d. Pour les demandes du type 'identifie les 10 dernieres FDT recues puis modifie l'horaire', commence TOUJOURS par un passage de revue avec apply_schedule_changes=false et generate_invoices=false. Montre les ecarts entre FDT et horaire, demande l'approbation humaine, puis seulement apres accord explicite relance process_requested_period_timesheets avec apply_schedule_changes=true. Ne presente jamais l'horaire existant comme si c'etait la FDT analysee."
@@ -2924,7 +2925,7 @@ async def delete_chatbot_upload(
 @router.post('/chat')
 async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     if not OPENAI_API_KEY:
-        raise HTTPException(status_code=500, detail='Clé API OpenAI non configurée. Ajouter OPENAI_API_KEY dans les variables d\'environnement Render.')
+        raise HTTPException(status_code=500, detail='ClÃ© API OpenAI non configurÃ©e. Ajouter OPENAI_API_KEY dans les variables d\'environnement Render.')
     system_prompt, agent_name = _detect_prompt(msg.message)
     session_uploads = await _get_chat_session_uploads(db, msg.session_id)
     system_prompt = f"{system_prompt}{_chat_upload_context_text(session_uploads)}"
@@ -2975,7 +2976,7 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                     result = await execute_tool(call.get('name', ''), args, db, msg.message, msg.session_id)
                     inputs.append({'type': 'function_call_output', 'call_id': call.get('call_id'), 'output': result})
             return {
-                'reply': _extract_text(data or {}) or _extract_last_tool_output(inputs) or "Je n'ai pas pu générer de réponse.",
+                'reply': _extract_text(data or {}) or _extract_last_tool_output(inputs) or "Je n'ai pas pu gÃ©nÃ©rer de rÃ©ponse.",
                 'usage': (data or {}).get('usage', {}),
                 'agent': agent_name,
                 'model': OPENAI_MODEL,

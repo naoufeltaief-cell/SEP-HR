@@ -1,5 +1,5 @@
 """
-Soins Expert Plus — Invoice Router (Phase 1 Complete Rewrite)
+Soins Expert Plus â€” Invoice Router (Phase 1 Complete Rewrite)
 All endpoints for invoicing, payments, credit notes, reports, anomalies, PDF.
 """
 
@@ -35,7 +35,7 @@ from ..services.invoice_service import (
     duplicate_invoice, get_client_invoice_summary,
     schedule_pause_to_invoice_minutes, invoice_pause_to_schedule_hours,
     build_shift_expense_description, get_schedule_billable_rate,
-    COMPANY_INFO
+    get_position_rate_lookup, get_rate_for_title, COMPANY_INFO
 )
 from ..services.invoice_delivery import email_invoice_and_mark_sent
 from ..services.invoice_pdf import generate_invoice_pdf, generate_credit_note_pdf
@@ -43,13 +43,13 @@ from ..services.invoice_pdf import generate_invoice_pdf, generate_credit_note_pd
 router = APIRouter()
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # SERIALIZATION HELPER (avoids async lazy-loading crash)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 def _serialize_invoice_summary(inv):
-    """Lightweight serializer for list view — no lines, no relations."""
+    """Lightweight serializer for list view â€” no lines, no relations."""
     try:
         return {
             "id": inv.id, "number": getattr(inv, "number", ""),
@@ -79,7 +79,7 @@ def _serialize_invoice_summary(inv):
 
 
 def _serialize_invoice(inv, include_relations=False):
-    """Full serializer for single invoice view — includes lines + optionally relations."""
+    """Full serializer for single invoice view â€” includes lines + optionally relations."""
     try:
         d = {
             "id": inv.id, "number": getattr(inv, "number", ""),
@@ -155,9 +155,9 @@ def _serialize_invoice(inv, include_relations=False):
     return d
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # INVOICE CRUD
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.get("")
@@ -248,7 +248,7 @@ async def invoice_stats(
 
 @router.get("/debug-list")
 async def debug_list_invoices(db: AsyncSession = Depends(get_db)):
-    """Debug endpoint — no auth required — returns first 3 invoices as summary."""
+    """Debug endpoint â€” no auth required â€” returns first 3 invoices as summary."""
     try:
         result = await db.execute(
             select(Invoice).order_by(desc(Invoice.created_at)).limit(3)
@@ -257,7 +257,7 @@ async def debug_list_invoices(db: AsyncSession = Depends(get_db)):
         return {
             "count": len(invoices),
             "invoices": [_serialize_invoice_summary(inv) for inv in invoices],
-            "debug": "OK — if you see this, the list serializer works",
+            "debug": "OK â€” if you see this, the list serializer works",
         }
     except Exception as e:
         import traceback
@@ -427,7 +427,7 @@ async def report_by_employee(
             "id": inv.id, "number": inv.number,
             "client_name": inv.client_name, "total": inv.total,
             "status": inv.status,
-            "period": f"{inv.period_start} → {inv.period_end}",
+            "period": f"{inv.period_start} â†’ {inv.period_end}",
         })
 
     for e in employees.values():
@@ -475,9 +475,9 @@ async def client_detail_report(
     return summary
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # SINGLE INVOICE (after all fixed paths above!)
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.get("/{invoice_id}")
@@ -502,9 +502,9 @@ async def get_invoice(
     return _serialize_invoice(invoice, include_relations=True)
 
 
-# ──────────────────────────────────────────────
-# Schedule ↔ Invoice sync helper
-# ──────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Schedule â†” Invoice sync helper
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _sync_invoice_to_schedules(db: AsyncSession, invoice: Invoice):
     """Sync modified invoice lines back to their source Schedule records.
@@ -517,7 +517,7 @@ async def _sync_invoice_to_schedules(db: AsyncSession, invoice: Invoice):
     deplacement, and autre_dep per schedule and write them back.
 
     Lines without a ``schedule_id`` (manually-added lines) are silently
-    skipped — they have no underlying Schedule to sync to.
+    skipped â€” they have no underlying Schedule to sync to.
     """
     import logging
     _logger = logging.getLogger(__name__)
@@ -559,7 +559,7 @@ async def _sync_invoice_to_schedules(db: AsyncSession, invoice: Invoice):
     for sid in all_sids:
         sched = schedules_map.get(sid)
         if not sched:
-            _logger.warning("Schedule %s referenced by invoice %s not found — skipping sync", sid, invoice.id)
+            _logger.warning("Schedule %s referenced by invoice %s not found â€” skipping sync", sid, invoice.id)
             continue
 
         changed = False
@@ -619,7 +619,7 @@ async def create_invoice(
     user=Depends(require_admin),
 ):
     """Create a single invoice manually"""
-    client_name = "Non assigné"
+    client_name = "Non assignÃ©"
     client_address = client_email = client_phone = ""
     if data.client_id:
         cr = await db.execute(select(Client).where(Client.id == data.client_id))
@@ -683,7 +683,7 @@ async def update_invoice(
     if not invoice:
         raise HTTPException(404, "Invoice not found")
     if invoice.status not in (InvoiceStatus.DRAFT.value, InvoiceStatus.VALIDATED.value, InvoiceStatus.SENT.value):
-        raise HTTPException(400, "Modification permise seulement sur les factures brouillon, validées ou envoyées")
+        raise HTTPException(400, "Modification permise seulement sur les factures brouillon, validÃ©es ou envoyÃ©es")
 
     update_data = data.model_dump(exclude_unset=True)
 
@@ -721,7 +721,7 @@ async def update_invoice(
 
     invoice = recalculate_invoice(invoice)
 
-    # ── Sync invoice line changes back to Schedule records ──
+    # â”€â”€ Sync invoice line changes back to Schedule records â”€â”€
     await _sync_invoice_to_schedules(db, invoice)
 
     audit = InvoiceAuditLog(
@@ -756,7 +756,7 @@ async def delete_invoice(
         raise HTTPException(404, "Invoice not found")
     deletable_statuses = (InvoiceStatus.DRAFT.value, InvoiceStatus.VALIDATED.value, InvoiceStatus.CANCELLED.value)
     if invoice.status not in deletable_statuses:
-        raise HTTPException(400, "Seules les factures brouillon, validées ou annulées peuvent être supprimées")
+        raise HTTPException(400, "Seules les factures brouillon, validÃ©es ou annulÃ©es peuvent Ãªtre supprimÃ©es")
     logger.info(f"Deleting invoice {invoice.number} (status={invoice.status}, id={invoice.id}) by user={getattr(user, 'email', 'unknown')}")
     # Delete related attachments
     att_result = await db.execute(select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id))
@@ -771,12 +771,12 @@ async def delete_invoice(
         await db.delete(cn)
     await db.delete(invoice)
     await db.commit()
-    return {"message": f"Facture {invoice.number} supprimée"}
+    return {"message": f"Facture {invoice.number} supprimÃ©e"}
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # GENERATION
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.post("/generate")
@@ -805,11 +805,6 @@ async def generate_invoice_from_schedules(
     Body: { employee_id, client_id, period_start, period_end }
     Used by the approve-week workflow in SchedulesPage.
     """
-    from ..services.invoice_service import (
-        generate_invoice_number, recalculate_invoice, is_tax_exempt,
-        get_rate_for_title, GARDE_RATE, KM_RATE, MAX_KM, MAX_DEPLACEMENT_HOURS,
-    )
-
     employee_id = data.get("employee_id")
     client_id = data.get("client_id")
     ps = date.fromisoformat(data.get("period_start"))
@@ -829,18 +824,18 @@ async def generate_invoice_from_schedules(
         )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(400, "Une facture existe déjà pour cet employé/client/période")
+        raise HTTPException(400, "Une facture existe dÃ©jÃ  pour cet employÃ©/client/pÃ©riode")
 
     # Load employee
     er = await db.execute(select(Employee).where(Employee.id == employee_id))
     employee = er.scalar_one_or_none()
     if not employee:
-        raise HTTPException(404, "Employé non trouvé")
+        raise HTTPException(404, "EmployÃ© non trouvÃ©")
 
     # Load client
     cr = await db.execute(select(Client).where(Client.id == client_id))
     client = cr.scalar_one_or_none()
-    client_name = client.name if client else "Non assigné"
+    client_name = client.name if client else "Non assignÃ©"
 
     # Load schedules for this employee/client/period
     scheds_r = await db.execute(
@@ -854,15 +849,16 @@ async def generate_invoice_from_schedules(
     )
     scheds = scheds_r.scalars().all()
     if not scheds:
-        raise HTTPException(400, "Aucun quart trouvé pour cette période")
+        raise HTTPException(400, "Aucun quart trouvÃ© pour cette pÃ©riode")
 
-    rate = get_rate_for_title(employee.position or "Infirmier(ère)")
+    position_rates = await get_position_rate_lookup(db)
+    rate = get_rate_for_title(employee.position or "Infirmier(Ã¨re)", position_rates=position_rates)
     include_tax = not is_tax_exempt(client_name)
 
     # Build service lines
     service_lines = []
     for s in scheds:
-        rate = get_schedule_billable_rate(s, employee.position or "")
+        rate = get_schedule_billable_rate(s, employee.position or "", position_rates=position_rates)
         hours = getattr(s, "hours", 0) or 0
         garde_h = getattr(s, "garde_hours", 0) or 0
         rappel_h = getattr(s, "rappel_hours", 0) or 0
@@ -892,11 +888,11 @@ async def generate_invoice_from_schedules(
         km_val = getattr(s, "km", 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)
-            expense_lines.append({"type": "km", "description": f"Kilométrage ({s.date})", "quantity": capped, "rate": KM_RATE, "amount": round(capped * KM_RATE, 2)})
+            expense_lines.append({"type": "km", "description": f"KilomÃ©trage ({s.date})", "quantity": capped, "rate": KM_RATE, "amount": round(capped * KM_RATE, 2)})
         depl_val = getattr(s, "deplacement", 0) or 0
         if depl_val:
             capped = min(float(depl_val), MAX_DEPLACEMENT_HOURS)
-            expense_lines.append({"type": "deplacement", "description": f"Déplacement ({s.date})", "quantity": capped, "rate": rate, "amount": round(capped * rate, 2)})
+            expense_lines.append({"type": "deplacement", "description": f"DÃ©placement ({s.date})", "quantity": capped, "rate": rate, "amount": round(capped * rate, 2)})
         autre_val = getattr(s, "autre_dep", 0) or 0
         if autre_val:
             expense_lines.append({"type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
@@ -904,7 +900,7 @@ async def generate_invoice_from_schedules(
     expense_lines = []
     for s in scheds:
         shift_notes = getattr(s, "notes", "") or ""
-        rate = get_schedule_billable_rate(s, employee.position or "")
+        rate = get_schedule_billable_rate(s, employee.position or "", position_rates=position_rates)
         km_val = getattr(s, "km", 0) or 0
         if km_val:
             capped = min(float(km_val), MAX_KM)
@@ -936,7 +932,7 @@ async def generate_invoice_from_schedules(
             cpd = round(tc / days, 2)
         accom_lines.append({
             "employee": employee.name or "",
-            "period": f"{ps.isoformat()} → {pe.isoformat()}",
+            "period": f"{ps.isoformat()} â†’ {pe.isoformat()}",
             "days": days,
             "cost_per_day": cpd,
             "amount": round(days * cpd, 2) if cpd else tc,
@@ -973,7 +969,7 @@ async def generate_invoice_from_schedules(
         action="created",
         new_status="draft",
         user_email=getattr(user, "email", ""),
-        details=f"Généré depuis horaire approuvé — {employee.name} / {client_name} / {ps} → {pe}",
+        details=f"GÃ©nÃ©rÃ© depuis horaire approuvÃ© â€” {employee.name} / {client_name} / {ps} â†’ {pe}",
     )
     db.add(audit)
     await db.commit()
@@ -987,9 +983,9 @@ async def generate_invoice_from_schedules(
     }
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # STATUS WORKFLOW
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.post("/{invoice_id}/status")
@@ -1126,7 +1122,7 @@ async def mark_unpaid(
         raise HTTPException(404, "Facture introuvable")
     inv.status = "sent"
     await db.commit()
-    return {"message": "Facture marquée impayée"}
+    return {"message": "Facture marquÃ©e impayÃ©e"}
 
 
 @router.put("/{invoice_id}/cancel")
@@ -1141,7 +1137,7 @@ async def cancel_invoice(
         raise HTTPException(404, "Facture introuvable")
     inv.status = "cancelled"
     await db.commit()
-    return {"message": f"Facture {inv.number} annulée"}
+    return {"message": f"Facture {inv.number} annulÃ©e"}
 
 
 @router.post("/{invoice_id}/duplicate")
@@ -1158,9 +1154,9 @@ async def duplicate_invoice_endpoint(
     return _serialize_invoice(new_inv)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # PAYMENTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.post("/{invoice_id}/payments")
@@ -1235,9 +1231,9 @@ async def remove_payment(
     return {"message": "Payment deleted"}
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # CREDIT NOTES
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.post("/credit-notes")
@@ -1280,7 +1276,7 @@ async def create_credit_note(
             invoice_id=data.invoice_id,
             action=AuditAction.CREDIT_NOTE_ADDED.value,
             user_email=getattr(user, "email", ""),
-            details=f"Credit note {number}: {data.reason} — ${data.amount:.2f}",
+            details=f"Credit note {number}: {data.reason} â€” ${data.amount:.2f}",
         )
         db.add(audit)
 
@@ -1295,9 +1291,9 @@ async def create_credit_note(
             "created_at": cn.created_at.isoformat() if cn.created_at else None}
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # PDF GENERATION
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 async def _prepare_invoice_for_pdf(db: AsyncSession, invoice: Invoice) -> Invoice:
@@ -1388,9 +1384,9 @@ async def get_credit_note_pdf(
     )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # EMAIL
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.post("/{invoice_id}/email")
@@ -1419,7 +1415,7 @@ async def email_invoice(
 
 
 # AUDIT LOG
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
 @router.get("/{invoice_id}/audit-log")
@@ -1442,14 +1438,14 @@ async def get_audit_log(
     ]
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# BULK ACTIONS — moved to invoices_bulk.py to avoid route conflicts
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
+# BULK ACTIONS â€” moved to invoices_bulk.py to avoid route conflicts
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 # INVOICE ATTACHMENTS
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
 
 ALLOWED_MIME = {
     "application/pdf": "pdf",
@@ -1478,16 +1474,16 @@ async def upload_attachment(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    """Upload une pièce jointe à une facture."""
+    """Upload une piÃ¨ce jointe Ã  une facture."""
     r = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     inv = r.scalar_one_or_none()
     if not inv:
-        raise HTTPException(404, "Facture non trouvée")
+        raise HTTPException(404, "Facture non trouvÃ©e")
 
     content_type = file.content_type or ""
     ext = ALLOWED_MIME.get(content_type)
     if not ext:
-        raise HTTPException(400, f"Type non supporté: {content_type}. Acceptés: PDF, JPG, PNG, GIF")
+        raise HTTPException(400, f"Type non supportÃ©: {content_type}. AcceptÃ©s: PDF, JPG, PNG, GIF")
 
     data = await file.read()
     if len(data) > MAX_FILE_SIZE:
@@ -1522,7 +1518,7 @@ async def list_attachments(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    """Lister les pièces jointes d'une facture."""
+    """Lister les piÃ¨ces jointes d'une facture."""
     result = await db.execute(
         select(InvoiceAttachment)
         .where(InvoiceAttachment.invoice_id == invoice_id)
@@ -1547,7 +1543,7 @@ async def download_attachment(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    """Télécharger une pièce jointe."""
+    """TÃ©lÃ©charger une piÃ¨ce jointe."""
     result = await db.execute(
         select(InvoiceAttachment).where(
             InvoiceAttachment.id == att_id,
@@ -1556,7 +1552,7 @@ async def download_attachment(
     )
     att = result.scalar_one_or_none()
     if not att:
-        raise HTTPException(404, "Pièce jointe non trouvée")
+        raise HTTPException(404, "PiÃ¨ce jointe non trouvÃ©e")
 
     mime_map = {
         "pdf": "application/pdf",
@@ -1587,7 +1583,7 @@ async def delete_attachment(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    """Supprimer une pièce jointe."""
+    """Supprimer une piÃ¨ce jointe."""
     result = await db.execute(
         select(InvoiceAttachment).where(
             InvoiceAttachment.id == att_id,
@@ -1596,10 +1592,10 @@ async def delete_attachment(
     )
     att = result.scalar_one_or_none()
     if not att:
-        raise HTTPException(404, "Pièce jointe non trouvée")
+        raise HTTPException(404, "PiÃ¨ce jointe non trouvÃ©e")
     await db.delete(att)
     await db.commit()
-    return {"message": "Pièce jointe supprimée"}
+    return {"message": "PiÃ¨ce jointe supprimÃ©e"}
 
 
 @router.get("/{invoice_id}/pdf-with-attachments")
@@ -1609,11 +1605,11 @@ async def pdf_with_attachments(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    """Générer le PDF de la facture avec pièces jointes combinées."""
+    """GÃ©nÃ©rer le PDF de la facture avec piÃ¨ces jointes combinÃ©es."""
     r = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
     inv = r.scalar_one_or_none()
     if not inv:
-        raise HTTPException(404, "Facture non trouvée")
+        raise HTTPException(404, "Facture non trouvÃ©e")
 
     # Generate base invoice PDF
     inv = await _prepare_invoice_for_pdf(db, inv)

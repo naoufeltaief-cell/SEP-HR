@@ -67,6 +67,14 @@ function estimateRateFromPosition(label, fallbackRate = 0) {
   return match ? match.rate : Number(fallbackRate || 0);
 }
 
+function normalizeCatalogPositionLabel(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
 function hasOrientationFlag(shift) {
   const notes = String(shift?.notes || "");
   return (
@@ -84,11 +92,20 @@ function buildShiftNotes(notes, isOrientation) {
   return isOrientation ? `${ORIENTATION_NOTE_TAG} ${clean}`.trim() : clean;
 }
 
-function getEffectiveShiftRate(shift, employeeRate = 0) {
+function getEffectiveShiftRate(
+  shift,
+  employeeRate = 0,
+  employeePosition = '',
+  catalogRateLookup = null,
+) {
   if (isCancelledShift(shift)) return 0;
   if (shift?.is_orientation) return 0;
   const rate = Number(shift?.billable_rate || 0);
-  return rate > 0 ? rate : Number(employeeRate || 0);
+  if (rate > 0) return rate;
+  const catalogRate = Number(
+    catalogRateLookup?.get(normalizeCatalogPositionLabel(employeePosition || '')) || 0,
+  );
+  return catalogRate > 0 ? catalogRate : Number(employeeRate || 0);
 }
 
 function normalizeEditableShift(shift) {
@@ -115,10 +132,21 @@ function normalizeEditableShift(shift) {
   };
 }
 
-function getFallbackRegularRate(shift, originalShift = null, employee = null) {
+function getFallbackRegularRate(
+  shift,
+  originalShift = null,
+  employee = null,
+  catalogRateLookup = null,
+) {
+  const catalogRate = Number(
+    catalogRateLookup?.get(
+      normalizeCatalogPositionLabel(employee?.position || ''),
+    ) || 0,
+  );
   const candidates = [
     Number(shift?.billable_rate || 0),
     Number(originalShift?.billable_rate || 0),
+    catalogRate,
     Number(employee?.rate || 0),
     estimateRateFromPosition(employee?.position || '', 0),
   ];
@@ -148,6 +176,7 @@ export default function ScheduleApprovalPanel({
   client,
   shifts,
   allEmployeeSchedules,
+  catalogItems = [],
   validationSummary,
   reviewDraft,
   setReviewDraft,
@@ -255,6 +284,16 @@ export default function ScheduleApprovalPanel({
     })),
     [shifts]
   );
+  const catalogRateLookup = useMemo(() => {
+    const lookup = new Map();
+    for (const item of catalogItems || []) {
+      if (String(item?.kind || '').toLowerCase() !== 'position') continue;
+      const key = normalizeCatalogPositionLabel(item?.label || '');
+      const rate = Number(item?.hourly_rate || 0);
+      if (key && rate > 0) lookup.set(key, rate);
+    }
+    return lookup;
+  }, [catalogItems]);
 
   const employeeTimesheetRows = useMemo(() => {
     const editableMap = new Map((editableShifts || []).map((shift) => [String(shift.id), shift]));
@@ -304,7 +343,12 @@ export default function ScheduleApprovalPanel({
         if (value) {
           next.billable_rate = 0;
         } else {
-          next.billable_rate = getFallbackRegularRate(next, originalShiftMap.get(id), employee);
+          next.billable_rate = getFallbackRegularRate(
+            next,
+            originalShiftMap.get(id),
+            employee,
+            catalogRateLookup,
+          );
         }
       }
       if (field === 'start' || field === 'end' || field === 'pause_minutes') {
@@ -375,7 +419,7 @@ export default function ScheduleApprovalPanel({
     client_id: client?.id || shift.client_id || null,
     date: shift.date,
     ...buildBaseShiftPayload(shift),
-    billable_rate: shift.is_orientation ? 0 : getFallbackRegularRate(shift, null, employee),
+    billable_rate: shift.is_orientation ? 0 : getFallbackRegularRate(shift, null, employee, catalogRateLookup),
     garde_hours: Number(shift.garde_hours || 0),
     rappel_hours: Number(shift.rappel_hours || 0),
     location: shift.location || '',
@@ -389,7 +433,9 @@ export default function ScheduleApprovalPanel({
       return {
         ...payload,
         date: shift.date,
-        billable_rate: Number(shift.billable_rate || employee?.rate || 0),
+        billable_rate: shift.is_orientation
+          ? 0
+          : getFallbackRegularRate(shift, null, employee, catalogRateLookup),
         garde_hours: Number(shift.garde_hours || 0),
         rappel_hours: Number(shift.rappel_hours || 0),
         status: shift.status || 'published',
@@ -403,7 +449,7 @@ export default function ScheduleApprovalPanel({
     if ((shift.location || '') !== (original.location || '')) {
       payload.location = shift.location || '';
     }
-    const nextBillableRate = shift.is_orientation ? 0 : getFallbackRegularRate(shift, original, employee);
+    const nextBillableRate = shift.is_orientation ? 0 : getFallbackRegularRate(shift, original, employee, catalogRateLookup);
     if (Number(nextBillableRate || 0) !== Number(original.billable_rate || 0)) {
       payload.billable_rate = Number(nextBillableRate || 0);
     }
@@ -587,7 +633,12 @@ export default function ScheduleApprovalPanel({
 
   const totals = useMemo(() => {
     const summary = activeEditableShifts.reduce((acc, shift) => {
-      const rate = getEffectiveShiftRate(shift, employee?.rate || 0);
+      const rate = getEffectiveShiftRate(
+        shift,
+        employee?.rate || 0,
+        employee?.position || '',
+        catalogRateLookup,
+      );
       acc.service += Number(shift.hours || 0) * rate;
       acc.garde += (Number(shift.garde_hours || 0) / 8) * GARDE_RATE;
       acc.rappel += Number(shift.rappel_hours || 0) * rate;
@@ -611,7 +662,7 @@ export default function ScheduleApprovalPanel({
       tvq,
       total: subtotal + tps + tvq,
     };
-  }, [activeEditableShifts, accommodationEstimates, client, employee]);
+  }, [activeEditableShifts, accommodationEstimates, catalogRateLookup, client, employee]);
 
   const plannedHours = activeEditableShifts.reduce((sum, shift) => sum + (Number(shift.hours) || 0), 0);
   const totalKm = activeEditableShifts.reduce((sum, shift) => sum + (Number(shift.km) || 0), 0);

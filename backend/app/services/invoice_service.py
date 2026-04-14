@@ -1,5 +1,5 @@
 """
-Soins Expert Plus — Invoice Service (Phase 1)
+Soins Expert Plus â€” Invoice Service (Phase 1)
 Business logic for invoice generation, calculations, anomalies, workflow.
 """
 
@@ -16,16 +16,16 @@ from ..models.models_invoice import (
     Invoice, Payment, InvoiceAuditLog, CreditNote,
     InvoiceStatus, AuditAction
 )
-from ..models.models import Employee, Client, Schedule, Accommodation
+from ..models.models import Employee, Client, Schedule, Accommodation, ScheduleCatalogItem
 
 RATES = {
-    "Infirmier(ère)": 86.23,
-    "Infirmière": 86.23,
+    "Infirmier(Ã¨re)": 86.23,
+    "InfirmiÃ¨re": 86.23,
     "Infirmier": 86.23,
     "Inf. auxiliaire": 57.18,
-    "Infirmière auxiliaire": 57.18,
+    "InfirmiÃ¨re auxiliaire": 57.18,
     "PAB": 50.35,
-    "Préposé aux bénéficiaires": 50.35,
+    "PrÃ©posÃ© aux bÃ©nÃ©ficiaires": 50.35,
 }
 GARDE_RATE = 86.23
 KM_RATE = 0.525
@@ -35,17 +35,51 @@ TPS_RATE = 0.05
 TVQ_RATE = 0.09975
 TPS_NUMBER = "714564891RT0001"
 TVQ_NUMBER = "1225765936TQ0001"
-TAX_EXEMPT_CLIENTS = ["Centre de Santé Inuulitsivik", "Conseil Cri de la Santé", "Conseil Cri de la santé"]
+TAX_EXEMPT_CLIENTS = ["Centre de SantÃ© Inuulitsivik", "Conseil Cri de la SantÃ©", "Conseil Cri de la santÃ©"]
 COMPANY_INFO = {
     "name": "Soins Expert Plus",
-    "legal": "9437-7827 Québec Inc.",
-    "address": "10745 Avenue Lausanne\nMontréal QC H1H 5B4",
+    "legal": "9437-7827 QuÃ©bec Inc.",
+    "address": "10745 Avenue Lausanne\nMontrÃ©al QC H1H 5B4",
     "phone": "(438) 230-0061",
     "email": "paie@soins-expert-plus.com",
     "tps_number": TPS_NUMBER,
     "tvq_number": TVQ_NUMBER,
 }
 ORIENTATION_NOTE_TAG = "[[orientation]]"
+
+
+def _normalize_catalog_title(value: Any) -> str:
+    raw = unicodedata.normalize("NFKD", str(value or "").strip().lower())
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    raw = re.sub(r"[^a-z0-9]+", " ", raw)
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _coerce_rate(value: Any) -> float:
+    try:
+        numeric = round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+    return numeric if numeric > 0 else 0.0
+
+
+def build_position_rate_lookup(items: list[ScheduleCatalogItem] | list[Any]) -> dict[str, float]:
+    lookup: dict[str, float] = {}
+    for item in items or []:
+        if str(getattr(item, "kind", "")).strip().lower() != "position":
+            continue
+        label = _normalize_catalog_title(getattr(item, "label", ""))
+        rate = _coerce_rate(getattr(item, "hourly_rate", 0))
+        if label and rate > 0:
+            lookup[label] = rate
+    return lookup
+
+
+async def get_position_rate_lookup(db: AsyncSession) -> dict[str, float]:
+    result = await db.execute(
+        select(ScheduleCatalogItem).where(ScheduleCatalogItem.kind == "position")
+    )
+    return build_position_rate_lookup(result.scalars().all())
 
 async def generate_invoice_number(db: AsyncSession) -> str:
     """Generate next invoice number using MAX sequence to avoid duplicates after deletions.
@@ -58,7 +92,7 @@ async def generate_invoice_number(db: AsyncSession) -> str:
     prefix = f"SEP-{today.strftime('%Y%m')}"
 
     # Extract the maximum sequence number from existing invoices for this month.
-    # Invoice.number format: SEP-YYYYMM-XXXX  →  suffix starts at position len(prefix)+2
+    # Invoice.number format: SEP-YYYYMM-XXXX  â†’  suffix starts at position len(prefix)+2
     suffix_start = len(prefix) + 2  # +1 for the dash, +1 because SQL SUBSTR is 1-based
     result = await db.execute(
         select(
@@ -115,11 +149,15 @@ def calculate_taxes(subtotal: float, include_tax: bool, client_name: str = "") -
     tps = round(subtotal * TPS_RATE, 2); tvq = round(subtotal * TVQ_RATE, 2); total = round(subtotal + tps + tvq, 2)
     return tps, tvq, total
 
-def get_rate_for_title(title: str) -> float:
+def get_rate_for_title(title: str, position_rates: Optional[Dict[str, float]] = None) -> float:
+    normalized_title = _normalize_catalog_title(title)
+    if normalized_title and position_rates:
+        for key, rate in position_rates.items():
+            if key and (key in normalized_title or normalized_title in key):
+                return rate
     for key, rate in RATES.items():
         if key.lower() in (title or "").lower(): return rate
-    return RATES["Infirmier(ère)"]
-
+    return RATES["Infirmier(Ã¨re)"]
 def _normalize_hint_text(*values: Any) -> str:
     raw = " ".join(str(value or "") for value in values).lower()
     raw = unicodedata.normalize("NFKD", raw)
@@ -144,7 +182,11 @@ def is_orientation_shift(schedule: Any = None, employee_title: str = "") -> bool
 
     return False
 
-def get_schedule_billable_rate(schedule: Any, employee_title: str = "") -> float:
+def get_schedule_billable_rate(
+    schedule: Any,
+    employee_title: str = "",
+    position_rates: Optional[Dict[str, float]] = None,
+) -> float:
     if is_orientation_shift(schedule=schedule, employee_title=employee_title):
         return 0.0
 
@@ -156,8 +198,7 @@ def get_schedule_billable_rate(schedule: Any, employee_title: str = "") -> float
     if stored_rate > 0:
         return round(stored_rate, 2)
 
-    return get_rate_for_title(employee_title)
-
+    return get_rate_for_title(employee_title, position_rates=position_rates)
 def schedule_pause_to_invoice_minutes(pause_value: Any) -> float:
     try:
         pause = float(pause_value or 0)
@@ -182,8 +223,8 @@ def invoice_pause_to_schedule_hours(pause_value: Any) -> float:
 
 def build_shift_expense_description(expense_type: str, shift_date: Any = None, schedule_notes: str = "") -> str:
     base = {
-        "km": "Kilométrage",
-        "deplacement": "Déplacement",
+        "km": "KilomÃ©trage",
+        "deplacement": "DÃ©placement",
         "autre": "Autres frais",
     }.get((expense_type or "").strip().lower(), "Frais")
     note = " ".join(strip_system_note_tags(schedule_notes).split())
@@ -228,6 +269,7 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
     if all_client_ids:
         client_result = await db.execute(select(Client).where(Client.id.in_(all_client_ids)))
         clients_map = {c.id: c for c in client_result.scalars().all()}
+    position_rates = await get_position_rate_lookup(db)
 
     accom_result = await db.execute(select(Accommodation).where(and_(Accommodation.employee_id.in_(emp_ids), or_(and_(Accommodation.start_date >= period_start, Accommodation.start_date <= period_end), and_(Accommodation.end_date >= period_start, Accommodation.end_date <= period_end), and_(Accommodation.start_date <= period_start, Accommodation.end_date >= period_end)))))
     accommodations = accom_result.scalars().all()
@@ -246,12 +288,12 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
             client = clients_map.get(cid) if cid else None
             if not client and getattr(employee, 'client_id', None):
                 client = await db.scalar(select(Client).where(Client.id == employee.client_id))
-            client_name = client.name if client else "Non assigné"
+            client_name = client.name if client else "Non assignÃ©"
             include_tax = not is_tax_exempt(client_name)
-            rate = get_rate_for_title(employee.position or "Infirmier(ère)")
+            rate = get_rate_for_title(employee.position or "Infirmier(Ã¨re)", position_rates=position_rates)
             service_lines = []
             for s in sorted(scheds, key=lambda x: x.date):
-                rate = get_schedule_billable_rate(s, employee.position or "")
+                rate = get_schedule_billable_rate(s, employee.position or "", position_rates=position_rates)
                 hours = getattr(s, "hours", 0) or 0; pause = getattr(s, "pause", 0) or 0; garde_h = getattr(s, "garde_hours", 0) or 0; rappel_h = getattr(s, "rappel_hours", 0) or 0
                 garde_billable = garde_h / 8.0 if garde_h else 0
                 service_lines.append({"schedule_id": s.id, "date": s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date), "employee": employee.name or f"Emp #{emp_id}", "location": client_name, "start": getattr(s, "start", "") or "", "end": getattr(s, "end", "") or "", "pause_min": schedule_pause_to_invoice_minutes(pause), "hours": round(hours, 2), "rate": rate, "service_amount": round(hours * rate, 2), "garde_hours": garde_h, "garde_amount": round(garde_billable * GARDE_RATE, 2), "rappel_hours": rappel_h, "rappel_amount": round(rappel_h * rate, 2)})
@@ -267,24 +309,24 @@ async def generate_invoices_from_timesheets(db: AsyncSession, period_start: date
                 total_cost = float(getattr(a, 'total_cost', 0) or 0)
                 denominator = len(full_span_worked) or int(getattr(a, 'days_worked', 0) or 0) or 1
                 cost_day = round(total_cost / denominator, 2) if total_cost else float(getattr(a, 'cost_per_day', 0) or 0)
-                accom_lines.append({"employee": employee.name or '', "period": f"{max(period_start, a.start_date).isoformat()} → {min(period_end, a.end_date).isoformat()}", "days": len(billed_span_worked), "cost_per_day": cost_day, "amount": round(cost_day * len(billed_span_worked), 2)})
+                accom_lines.append({"employee": employee.name or '', "period": f"{max(period_start, a.start_date).isoformat()} â†’ {min(period_end, a.end_date).isoformat()}", "days": len(billed_span_worked), "cost_per_day": cost_day, "amount": round(cost_day * len(billed_span_worked), 2)})
             expense_lines = []
             for s in scheds:
                 km_val = getattr(s, 'km', 0) or 0
                 if km_val:
                     capped_km = min(float(km_val), MAX_KM)
-                    expense_lines.append({"schedule_id": s.id, "type": "km", "description": f"Kilométrage ({s.date})", "quantity": capped_km, "rate": KM_RATE, "amount": round(capped_km * KM_RATE, 2)})
+                    expense_lines.append({"schedule_id": s.id, "type": "km", "description": f"KilomÃ©trage ({s.date})", "quantity": capped_km, "rate": KM_RATE, "amount": round(capped_km * KM_RATE, 2)})
                 depl_val = getattr(s, 'deplacement', 0) or 0
                 if depl_val:
                     capped_depl = min(float(depl_val), MAX_DEPLACEMENT_HOURS)
-                    expense_lines.append({"schedule_id": s.id, "type": "deplacement", "description": f"Déplacement ({s.date})", "quantity": capped_depl, "rate": rate, "amount": round(capped_depl * rate, 2)})
+                    expense_lines.append({"schedule_id": s.id, "type": "deplacement", "description": f"DÃ©placement ({s.date})", "quantity": capped_depl, "rate": rate, "amount": round(capped_depl * rate, 2)})
                 autre_val = getattr(s, 'autre_dep', 0) or 0
                 if autre_val:
                     expense_lines.append({"schedule_id": s.id, "type": "autre", "description": f"Autres frais ({s.date})", "quantity": 1, "rate": float(autre_val), "amount": float(autre_val)})
             expense_lines = []
             for s in scheds:
                 shift_notes = getattr(s, "notes", "") or ""
-                rate = get_schedule_billable_rate(s, employee.position or "")
+                rate = get_schedule_billable_rate(s, employee.position or "", position_rates=position_rates)
                 km_val = getattr(s, "km", 0) or 0
                 if km_val:
                     capped_km = min(float(km_val), MAX_KM)
@@ -350,16 +392,16 @@ async def detect_anomalies(db: AsyncSession) -> List[Dict]:
     anomalies = []; result = await db.execute(select(Invoice).where(Invoice.status != InvoiceStatus.CANCELLED.value)); invoices = result.scalars().all(); seen = {}
     for inv in invoices:
         key = (inv.employee_id, str(inv.period_start), str(inv.period_end))
-        if key in seen: anomalies.append({"invoice_id": inv.id, "invoice_number": inv.number, "type": "duplicate", "description": f"Doublon possible: même employé ({inv.employee_name}) et période que {seen[key]}", "severity": "error"})
+        if key in seen: anomalies.append({"invoice_id": inv.id, "invoice_number": inv.number, "type": "duplicate", "description": f"Doublon possible: mÃªme employÃ© ({inv.employee_name}) et pÃ©riode que {seen[key]}", "severity": "error"})
         else: seen[key] = inv.number
         for line in (inv.lines or []):
             hours = line.get("hours", 0)
             if hours > 16: anomalies.append({"invoice_id": inv.id, "invoice_number": inv.number, "type": "excessive_hours", "description": f"Heures excessives: {hours}h le {line.get('date', '?')} pour {inv.employee_name}", "severity": "warning"})
-        expected_rate = get_rate_for_title(inv.employee_title)
+        expected_rate = get_rate_for_title(inv.employee_title, position_rates=position_rates)
         for line in (inv.lines or []):
             line_rate = line.get("rate", 0)
-            if line_rate and abs(line_rate - expected_rate) > 0.01: anomalies.append({"invoice_id": inv.id, "invoice_number": inv.number, "type": "rate_mismatch", "description": f"Taux {line_rate}$/h ≠ standard {expected_rate}$/h pour {inv.employee_title}", "severity": "warning"}); break
-        if not inv.client_id and inv.client_name in ("", "Non assigné"): anomalies.append({"invoice_id": inv.id, "invoice_number": inv.number, "type": "no_client", "description": f"Facture sans client assigné", "severity": "error"})
+            if line_rate and abs(line_rate - expected_rate) > 0.01: anomalies.append({"invoice_id": inv.id, "invoice_number": inv.number, "type": "rate_mismatch", "description": f"Taux {line_rate}$/h â‰  standard {expected_rate}$/h pour {inv.employee_title}", "severity": "warning"}); break
+        if not inv.client_id and inv.client_name in ("", "Non assignÃ©"): anomalies.append({"invoice_id": inv.id, "invoice_number": inv.number, "type": "no_client", "description": f"Facture sans client assignÃ©", "severity": "error"})
     return anomalies
 
 async def duplicate_invoice(db: AsyncSession, source: Invoice, user_email: str = "") -> Invoice:

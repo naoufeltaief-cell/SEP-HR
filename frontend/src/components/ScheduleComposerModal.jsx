@@ -484,7 +484,14 @@ export default function ScheduleComposerModal({
   );
   const catalogPositions = (catalogItems || [])
     .filter((item) => item.kind === "position")
-    .map((item) => ({ value: item.label, label: item.label }));
+    .map((item) => ({
+      value: item.label,
+      label: item.label,
+      hourlyRate: Number(item.hourly_rate || 0),
+      meta: Number(item.hourly_rate || 0) > 0
+        ? `${Number(item.hourly_rate || 0).toFixed(2)} $/h`
+        : "",
+    }));
   const allPositions = dedupeOptions(
     [
       ...DEFAULT_POSITIONS,
@@ -493,7 +500,17 @@ export default function ScheduleComposerModal({
       modal.data.positionLabel,
     ]
       .filter(Boolean)
-      .map((label) => ({ value: label, label }))
+      .map((label) => {
+        const catalogMatch = catalogPositions.find(
+          (item) => String(item.label) === String(label),
+        );
+        return {
+          value: label,
+          label,
+          hourlyRate: Number(catalogMatch?.hourlyRate || 0),
+          meta: catalogMatch?.meta || "",
+        };
+      })
       .sort((a, b) => a.label.localeCompare(b.label)),
   );
   const employeeOptions = dedupeOptions(
@@ -896,21 +913,34 @@ export default function ScheduleComposerModal({
                     createLabel="Ajouter le poste"
                     onCreate={async (label, fallbackOption) => {
                       if (!onCreateCatalogItem) return fallbackOption;
-                      const created = await onCreateCatalogItem("position", label);
+                      const created = await onCreateCatalogItem(
+                        "position",
+                        label,
+                        Number(modal.data.billableRate || 0),
+                      );
                       return {
                         value: created?.label || fallbackOption.value,
                         label: created?.label || fallbackOption.label,
+                        hourlyRate: Number(created?.hourly_rate || 0),
+                        meta:
+                          Number(created?.hourly_rate || 0) > 0
+                            ? `${Number(created?.hourly_rate || 0).toFixed(2)} $/h`
+                            : "",
                       };
                     }}
                     onSelect={(option) => {
                       onChangeField("positionLabel", option.value);
                       if (!modal.data.isOrientation) {
+                        const nextRate =
+                          Number(option.hourlyRate || 0) > 0
+                            ? Number(option.hourlyRate || 0)
+                            : estimateRateFromPosition(
+                                option.label,
+                                modal.data.billableRate,
+                              );
                         onChangeField(
                           "billableRate",
-                          estimateRateFromPosition(
-                            option.label,
-                            modal.data.billableRate,
-                          ),
+                          nextRate,
                         );
                       }
                       if (

@@ -92,6 +92,14 @@ function estimateRateFromPosition(label, fallbackRate = 0) {
   return match ? match.rate : Number(fallbackRate || 0);
 }
 
+function normalizeCatalogPositionLabel(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
 function buildCalendarWeeks(refDate) {
   const year = refDate.getFullYear();
   const month = refDate.getMonth();
@@ -402,11 +410,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const quickPositionOptions = useMemo(
     () =>
       [...new Set(
-        employees
-          .map((employee) => String(employee.position || "").trim())
+        [
+          ...employees.map((employee) => String(employee.position || "").trim()),
+          ...scheduleCatalogItems
+            .filter((item) => String(item.kind || "").toLowerCase() === "position")
+            .map((item) => String(item.label || "").trim()),
+        ]
           .filter(Boolean),
       )].sort((a, b) => a.localeCompare(b)),
-    [employees],
+    [employees, scheduleCatalogItems],
   );
   const matchesScheduleQuickFilters = useCallback(
     (shift) => {
@@ -635,14 +647,29 @@ export default function SchedulesPage({ toast, onNavigate }) {
     (employeeId) => getEmployeeRecord(employeeId)?.position || "",
     [getEmployeeRecord],
   );
+  const findCatalogPositionRate = useCallback(
+    (positionLabel = "") => {
+      const normalized = normalizeCatalogPositionLabel(positionLabel);
+      if (!normalized) return 0;
+      const exact = (scheduleCatalogItems || []).find(
+        (item) =>
+          String(item.kind || "").toLowerCase() === "position" &&
+          normalizeCatalogPositionLabel(item.label) === normalized,
+      );
+      return Number(exact?.hourly_rate || 0);
+    },
+    [scheduleCatalogItems],
+  );
   const getRegularHourlyRate = useCallback(
     (employeeId, positionLabel = "", fallbackRate = 0) => {
+      const catalogRate = Number(findCatalogPositionRate(positionLabel) || 0);
+      if (catalogRate > 0) return catalogRate;
       const employeeRate = Number(getEmployeeRate(employeeId) || 0);
       if (employeeRate > 0) return employeeRate;
       const estimated = estimateRateFromPosition(positionLabel, fallbackRate);
       return Number(estimated || fallbackRate || 0);
     },
-    [getEmployeeRate],
+    [findCatalogPositionRate, getEmployeeRate],
   );
   const getValidationSummary = () => null;
   const resolveApproval = useCallback(
@@ -1011,8 +1038,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
   };
 
   const createScheduleCatalogItem = useCallback(
-    async (kind, label) => {
-      const created = await api.createScheduleCatalogItem(kind, label);
+    async (kind, label, hourlyRate = 0) => {
+      const created = await api.createScheduleCatalogItem(kind, label, hourlyRate);
       setScheduleCatalogItems((prev) => {
         const existing = (prev || []).find(
           (item) =>
@@ -2369,6 +2396,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
                                 timesheetStatus={timesheetStatus}
                                 currentInvoice={currentInvoice}
                                 reviewAttachments={reviewAttachments}
+                                catalogItems={scheduleCatalogItems}
                                 busy={billingLoading}
                                 onSave={() =>
                                   saveReviewCompat(

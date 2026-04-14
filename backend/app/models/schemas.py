@@ -83,17 +83,24 @@ class EmployeeDocumentOut(BaseModel):
 class ScheduleCatalogItemCreate(BaseModel):
     kind: str
     label: str
+    hourly_rate: float = 0
 
 
 class ScheduleCatalogItemOut(BaseModel):
     id: int
     kind: str
     label: str
+    hourly_rate: float = 0
     created_by: str
     created_at: Optional[datetime]
 
     class Config:
         from_attributes = True
+
+
+class ScheduleCatalogItemUpdate(BaseModel):
+    label: Optional[str] = None
+    hourly_rate: Optional[float] = None
 
 
 class ClientCreate(BaseModel):

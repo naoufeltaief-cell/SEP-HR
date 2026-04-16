@@ -20,6 +20,7 @@ from .billing_gmail_oauth import (
 )
 from .email_service import _send_email
 from .invoice_service import generate_invoices_from_timesheets
+from .schedule_notification_service import process_pending_schedule_change_notifications
 from .timesheet_service import (
     build_weekly_validation_queue,
     completed_billing_period,
@@ -821,6 +822,9 @@ async def send_weekly_timesheet_reminder(triggered_by: str = "system", force: bo
 
 
 async def run_pending_automations() -> None:
+    async with async_session() as db:
+        await process_pending_schedule_change_notifications(db)
+        await db.commit()
     if TIMESHEET_INBOX_MONITOR_ENABLED:
         await process_requested_period_timesheets(
             triggered_by="scheduler",

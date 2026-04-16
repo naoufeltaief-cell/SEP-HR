@@ -1,7 +1,7 @@
 """Employee routes - CRUD + notes + documents"""
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,42 @@ PORTAL_INVITE_EXPIRE_HOURS = 72
 
 def _normalize_email(value: str) -> str:
     return str(value or "").strip().lower()
+
+
+def _serialize_employment_status(employee: Employee) -> dict:
+    deactivated_at = getattr(employee, "deactivated_at", None)
+    reactivated_at = getattr(employee, "reactivated_at", None)
+    status = "active"
+    if not bool(employee.is_active):
+        status = "inactive"
+    elif reactivated_at and (not deactivated_at or reactivated_at >= deactivated_at):
+        status = "reactivated"
+    return {
+        "status": status,
+        "is_active": bool(employee.is_active),
+        "deactivated_at": deactivated_at.isoformat() if deactivated_at else None,
+        "reactivated_at": reactivated_at.isoformat() if reactivated_at else None,
+    }
+
+
+def _apply_employee_activation_state(emp: Employee, is_active: bool | None):
+    if is_active is None:
+        return
+    was_active = bool(emp.is_active)
+    next_active = bool(is_active)
+    if was_active == next_active:
+        return
+    emp.is_active = next_active
+    if next_active:
+        emp.reactivated_at = datetime.utcnow()
+    else:
+        emp.deactivated_at = datetime.utcnow()
+
+
+def _parse_form_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "oui"}
 
 
 def _serialize_portal_access(portal_user: User | None) -> dict:
@@ -199,9 +235,15 @@ async def _send_portal_invite_or_capture_error(
 @router.get("")
 @router.get("/")
 async def list_employees(
+    include_inactive: bool = Query(False),
     db: AsyncSession = Depends(get_db), user=Depends(get_current_user)
 ):
-    query = select(Employee).where(Employee.is_active == True).order_by(Employee.name)
+    query = select(Employee)
+    if getattr(user, "role", "") != "admin" and not include_inactive:
+        query = query.where(Employee.is_active == True)
+    elif getattr(user, "role", "") == "admin" and not include_inactive:
+        query = query.where(Employee.is_active == True)
+    query = query.order_by(Employee.is_active.desc(), Employee.name)
     if getattr(user, "role", "") == "employee":
         if getattr(user, "employee_id", None):
             query = query.where(Employee.id == user.employee_id)
@@ -222,6 +264,7 @@ async def list_employees(
         {
             **EmployeeOut.model_validate(employee).model_dump(),
             "portal_access": _serialize_portal_access(portal_by_employee.get(employee.id)),
+            "employment_status": _serialize_employment_status(employee),
         }
         for employee in employees
     ]
@@ -242,6 +285,7 @@ async def get_employee(
     return {
         **EmployeeOut.model_validate(emp).model_dump(),
         "portal_access": _serialize_portal_access(portal_user),
+        "employment_status": _serialize_employment_status(emp),
         "notes": [
             {
                 "id": n.id,
@@ -261,6 +305,7 @@ async def create_employee(
     user=Depends(require_admin),
 ):
     emp = Employee(**data.model_dump())
+    _apply_employee_activation_state(emp, emp.is_active)
     db.add(emp)
     await db.flush()
     await db.refresh(emp)
@@ -282,6 +327,7 @@ async def create_employee(
     return {
         **EmployeeOut.model_validate(emp).model_dump(),
         "portal_access": _serialize_portal_access(provision["portal_user"]),
+        "employment_status": _serialize_employment_status(emp),
         "portal_user_created": provision["created"],
         "portal_invited": bool(provision["invited"] and not portal_invite_error),
         "portal_invite_error": portal_invite_error,
@@ -300,8 +346,11 @@ async def update_employee(
     if not emp:
         raise HTTPException(status_code=404, detail="Employe introuvable")
     previous_email = _normalize_email(emp.email)
-    for key, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    next_is_active = updates.pop("is_active", None)
+    for key, value in updates.items():
         setattr(emp, key, value)
+    _apply_employee_activation_state(emp, next_is_active)
     next_email = _normalize_email(emp.email)
     should_invite = bool(next_email) and next_email != previous_email
     provision = await _provision_employee_portal_access(
@@ -321,26 +370,50 @@ async def update_employee(
     return {
         **EmployeeOut.model_validate(emp).model_dump(),
         "portal_access": _serialize_portal_access(provision["portal_user"]),
+        "employment_status": _serialize_employment_status(emp),
         "portal_user_created": provision["created"],
         "portal_invited": bool(provision["invited"] and not portal_invite_error),
         "portal_invite_error": portal_invite_error,
     }
 
 
-@router.delete("/{eid}")
-async def deactivate_employee(
+@router.post("/{eid}/deactivate")
+async def deactivate_employee_explicit(
     eid: int, db: AsyncSession = Depends(get_db), user=Depends(require_admin)
 ):
     result = await db.execute(select(Employee).where(Employee.id == eid))
     emp = result.scalar_one_or_none()
     if not emp:
         raise HTTPException(status_code=404, detail="Employe introuvable")
-    emp.is_active = False
+    _apply_employee_activation_state(emp, False)
     portal_user = await _find_portal_user(db, emp.id)
     if portal_user:
         portal_user.is_active = False
     await db.commit()
-    return {"message": "Employe desactive"}
+    return {"message": "Employe desactive", "employment_status": _serialize_employment_status(emp)}
+
+
+@router.post("/{eid}/reactivate")
+async def reactivate_employee(
+    eid: int, db: AsyncSession = Depends(get_db), user=Depends(require_admin)
+):
+    result = await db.execute(select(Employee).where(Employee.id == eid))
+    emp = result.scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employe introuvable")
+    _apply_employee_activation_state(emp, True)
+    portal_user = await _find_portal_user(db, emp.id)
+    if portal_user:
+        portal_user.is_active = True
+    await db.commit()
+    return {"message": "Employe reactive", "employment_status": _serialize_employment_status(emp)}
+
+
+@router.delete("/{eid}")
+async def deactivate_employee(
+    eid: int, db: AsyncSession = Depends(get_db), user=Depends(require_admin)
+):
+    return await deactivate_employee_explicit(eid=eid, db=db, user=user)
 
 
 @router.post("/{eid}/notes", status_code=201)
@@ -409,9 +482,12 @@ async def list_employee_documents(
         .where(EmployeeDocument.employee_id == eid)
         .order_by(EmployeeDocument.created_at.desc())
     )
+    documents = result.scalars().all()
+    if getattr(user, "role", "") == "employee":
+        documents = [doc for doc in documents if bool(getattr(doc, "visible_to_employee", False))]
     return [
         EmployeeDocumentOut.model_validate(doc).model_dump()
-        for doc in result.scalars().all()
+        for doc in documents
     ]
 
 
@@ -421,6 +497,7 @@ async def upload_employee_document(
     file: UploadFile = File(...),
     category: str = Form("document"),
     description: str = Form(""),
+    visible_to_employee: str = Form("false"),
     uploaded_by: str = Form("admin"),
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
@@ -451,6 +528,7 @@ async def upload_employee_document(
         file_data=data,
         category=category,
         description=description,
+        visible_to_employee=_parse_form_bool(visible_to_employee, False),
         uploaded_by=uploaded_by or getattr(user, "email", "admin"),
     )
     db.add(document)
@@ -480,6 +558,8 @@ async def get_employee_document(
     )
     document = result.scalar_one_or_none()
     if not document:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+    if getattr(user, "role", "") == "employee" and not bool(getattr(document, "visible_to_employee", False)):
         raise HTTPException(status_code=404, detail="Document introuvable")
 
     media_type = {
@@ -519,3 +599,57 @@ async def delete_employee_document(
     await db.delete(document)
     await db.commit()
     return {"message": "Document supprime"}
+
+
+@router.put("/{eid}/documents/{doc_id}/replace")
+async def replace_employee_document(
+    eid: int,
+    doc_id: int,
+    file: UploadFile = File(...),
+    category: str = Form("document"),
+    description: str = Form(""),
+    visible_to_employee: str = Form("false"),
+    uploaded_by: str = Form("admin"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    emp_result = await db.execute(select(Employee).where(Employee.id == eid))
+    emp = emp_result.scalar_one_or_none()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employe introuvable")
+
+    result = await db.execute(
+        select(EmployeeDocument).where(
+            EmployeeDocument.id == doc_id,
+            EmployeeDocument.employee_id == eid,
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document introuvable")
+
+    content_type = file.content_type or ""
+    if content_type and content_type not in ALLOWED_MIME:
+        raise HTTPException(status_code=400, detail=f"Type non supporte: {content_type}")
+    data = await file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10 MB)")
+
+    ext = (
+        file.filename.split(".")[-1].lower()
+        if file.filename and "." in file.filename
+        else ""
+    ).strip()
+    document.filename = file.filename or document.filename
+    document.original_filename = file.filename or document.original_filename
+    document.file_type = ext or (content_type or document.file_type or "bin")
+    document.file_size = len(data)
+    document.file_data = data
+    document.category = category
+    document.description = description
+    document.visible_to_employee = _parse_form_bool(visible_to_employee, bool(getattr(document, "visible_to_employee", False)))
+    document.uploaded_by = uploaded_by or getattr(user, "email", "admin")
+    document.created_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(document)
+    return EmployeeDocumentOut.model_validate(document)

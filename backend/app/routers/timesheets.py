@@ -1,4 +1,5 @@
 """Timesheet routes — submit, approve, reject, attachments."""
+import json
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -23,6 +24,15 @@ router = APIRouter()
 
 ALLOWED_MIME = {"application/pdf", "image/jpeg", "image/png", "image/gif", "image/heic", "image/heif"}
 MAX_FILE_SIZE = 10 * 1024 * 1024
+
+
+def _validate_attachment_data(filename: str, content_type: str, data: bytes) -> None:
+    if content_type and content_type not in ALLOWED_MIME:
+        raise HTTPException(status_code=400, detail=f"Type non supporte: {content_type}")
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10 MB)")
+    if not filename:
+        raise HTTPException(status_code=400, detail="Nom de fichier invalide")
 
 
 def _ensure_timesheet_access(user, timesheet: Timesheet):
@@ -51,6 +61,7 @@ async def _serialize_timesheet(db: AsyncSession, ts: Timesheet) -> dict:
             "autre_dep": shift.autre_dep,
             "start_actual": shift.start_actual,
             "end_actual": shift.end_actual,
+            "location": shift.location or "",
         }
         for shift in shifts_result.scalars().all()
     ]
@@ -71,6 +82,27 @@ async def _serialize_timesheet(db: AsyncSession, ts: Timesheet) -> dict:
         "attachment_count": attachment_counts.get(ts.id, 0),
         "created_at": ts.created_at.isoformat() if ts.created_at else None,
     }
+
+
+async def _submit_timesheet_and_sync(db: AsyncSession, data: TimesheetCreate):
+    target, created = await upsert_submitted_timesheet(db, data)
+    await sync_timesheet_attachments_to_reviews(db, target)
+    return target, created
+
+
+async def _ensure_timesheet_has_attachment(
+    db: AsyncSession,
+    timesheet_id: str,
+) -> None:
+    result = await db.execute(
+        select(TimesheetAttachment.id).where(TimesheetAttachment.timesheet_id == timesheet_id)
+    )
+    attachment = result.scalars().first()
+    if not attachment:
+        raise HTTPException(
+            status_code=400,
+            detail="Ajoutez une piece jointe signee avant de soumettre cette FDT",
+        )
 
 
 @router.get("")
@@ -109,12 +141,56 @@ async def submit_timesheet(
         existing = await find_timesheet(db, data.employee_id, data.period_start, data.period_end)
         if existing and existing.status == "approved":
             raise HTTPException(status_code=409, detail="Cette FDT est deja approuvee et ne peut plus etre modifiee")
-    target, created = await upsert_submitted_timesheet(db, data)
-    await sync_timesheet_attachments_to_reviews(db, target)
+    target, created = await _submit_timesheet_and_sync(db, data)
+    if getattr(user, "role", "") == "employee":
+        await _ensure_timesheet_has_attachment(db, target.id)
     await db.commit()
     return {
         "id": target.id,
         "message": "FDT soumise" if created else "FDT mise à jour",
+    }
+
+
+@router.post("/submit-with-attachment", status_code=201)
+async def submit_timesheet_with_attachment(
+    payload: str = Form(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    try:
+        data = TimesheetCreate.model_validate(json.loads(payload))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Payload FDT invalide: {exc}") from exc
+
+    if getattr(user, "role", "") == "employee":
+        if not getattr(user, "employee_id", None) or user.employee_id != data.employee_id:
+            raise HTTPException(status_code=403, detail="Acces refuse a cette FDT")
+        existing = await find_timesheet(db, data.employee_id, data.period_start, data.period_end)
+        if existing and existing.status == "approved":
+            raise HTTPException(status_code=409, detail="Cette FDT est deja approuvee et ne peut plus etre modifiee")
+
+    content_type = file.content_type or ""
+    file_data = await file.read()
+    _validate_attachment_data(file.filename or "fdt", content_type, file_data)
+
+    target, created = await _submit_timesheet_and_sync(db, data)
+    await add_timesheet_attachment(
+        db,
+        timesheet_id=target.id,
+        filename=file.filename or "fdt",
+        file_data=file_data,
+        content_type=content_type,
+        category="fdt",
+        description=file.filename or "FDT signee",
+        uploaded_by=getattr(user, "email", "employee"),
+        source="manual",
+    )
+    await sync_timesheet_attachments_to_reviews(db, target)
+    await db.commit()
+    return {
+        "id": target.id,
+        "message": "FDT soumise" if created else "FDT mise Ã  jour",
     }
 
 
@@ -210,6 +286,7 @@ async def upload_timesheet_attachment(
     if content_type and content_type not in ALLOWED_MIME:
         raise HTTPException(status_code=400, detail=f"Type non supporté: {content_type}")
     data = await file.read()
+    _validate_attachment_data(file.filename or "document", content_type, data)
     if len(data) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10 MB)")
 

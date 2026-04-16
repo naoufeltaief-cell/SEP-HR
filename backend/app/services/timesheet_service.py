@@ -2303,7 +2303,7 @@ async def upsert_submitted_timesheet(db: AsyncSession, data) -> tuple[Timesheet,
             TimesheetShift(
                 id=new_id(),
                 timesheet_id=target.id,
-                schedule_id=sh.schedule_id,
+                schedule_id=getattr(sh, "schedule_id", None),
                 date=sh.date,
                 hours_worked=sh.hours_worked,
                 pause=sh.pause,
@@ -2314,6 +2314,7 @@ async def upsert_submitted_timesheet(db: AsyncSession, data) -> tuple[Timesheet,
                 autre_dep=getattr(sh, "autre_dep", 0),
                 start_actual=sh.start_actual,
                 end_actual=sh.end_actual,
+                location=getattr(sh, "location", "") or "",
             )
         )
     await db.flush()

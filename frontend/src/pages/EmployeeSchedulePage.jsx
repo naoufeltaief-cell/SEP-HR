@@ -6,7 +6,9 @@ import {
   Clock3,
   FileText,
   Paperclip,
+  Plus,
   Send,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import api from '../utils/api';
@@ -25,7 +27,7 @@ function useMobileBreakpoint(maxWidth = 768) {
   return isMobile;
 }
 
-function timeToMin(value) {
+function timeToMinutes(value) {
   if (!value) return 0;
   const [hours, minutes] = String(value).split(':').map(Number);
   return (Number(hours) || 0) * 60 + (Number(minutes) || 0);
@@ -38,33 +40,67 @@ function normalizeTime(value) {
   return `${String(Number(match[1])).padStart(2, '0')}:${match[2]}`;
 }
 
-function defaultPauseMin(schedule) {
-  const scheduledHours = Number(schedule?.hours || 0);
-  const durationMinutes = Math.max(0, timeToMin(schedule?.end) - timeToMin(schedule?.start));
-  const normalizedDuration = durationMinutes > 0 ? durationMinutes : durationMinutes + 24 * 60;
-  const pauseHours = Math.max(0, normalizedDuration / 60 - scheduledHours);
-  return Math.round(pauseHours * 60);
-}
-
 function recalcHours(startStr, endStr, pauseMin) {
-  let start = timeToMin(startStr);
-  let end = timeToMin(endStr);
+  let start = timeToMinutes(startStr);
+  let end = timeToMinutes(endStr);
   if (end <= start) end += 24 * 60;
   const totalMinutes = Math.max(0, end - start - Number(pauseMin || 0));
   return Math.round((totalMinutes / 60) * 100) / 100;
 }
 
+function hoursToDuration(hoursValue) {
+  const totalMinutes = Math.max(0, Math.round(Number(hoursValue || 0) * 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(Math.min(hours, 23)).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function durationToHours(value) {
+  if (!value) return 0;
+  const match = String(value).match(/^(\d{2}):(\d{2})$/);
+  if (!match) return 0;
+  const hours = Number(match[1]) || 0;
+  const minutes = Number(match[2]) || 0;
+  return Math.round(((hours * 60 + minutes) / 60) * 100) / 100;
+}
+
+function formatHours(value) {
+  return Number(value || 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+}
+
+function addDays(dateValue, days) {
+  const next = new Date(dateValue);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function buildBiWeekDates(anchorDate) {
+  const firstWeek = getWeekDates(anchorDate, 0);
+  const secondWeek = getWeekDates(addDays(anchorDate, 7), 0);
+  return [...firstWeek, ...secondWeek];
+}
+
+function defaultPauseMin(schedule) {
+  const scheduledHours = Number(schedule?.hours || 0);
+  const durationMinutes = Math.max(0, timeToMinutes(schedule?.end) - timeToMinutes(schedule?.start));
+  const normalizedDuration = durationMinutes > 0 ? durationMinutes : durationMinutes + 24 * 60;
+  const pauseHours = Math.max(0, normalizedDuration / 60 - scheduledHours);
+  return Math.round(pauseHours * 60);
+}
+
 function buildDraftRow(schedule, existingShift = null) {
-  const startActual = normalizeTime(existingShift?.start_actual || schedule?.start);
-  const endActual = normalizeTime(existingShift?.end_actual || schedule?.end);
+  const startActual = normalizeTime(existingShift?.start_actual || schedule?.start || '08:00');
+  const endActual = normalizeTime(existingShift?.end_actual || schedule?.end || '16:00');
   const pauseMin = Math.round(Number(existingShift?.pause || 0) * 60) || defaultPauseMin(schedule);
   return {
+    rowId: existingShift?.id || schedule?.id || `manual-${Math.random().toString(36).slice(2, 10)}`,
     scheduleId: existingShift?.schedule_id || schedule?.id || '',
+    isManual: !schedule,
     date: existingShift?.date || schedule?.date || '',
-    location: schedule?.location || '',
+    location: existingShift?.location || schedule?.location || '',
     scheduledStart: schedule?.start || '',
     scheduledEnd: schedule?.end || '',
-    scheduledHours: Number(schedule?.hours || existingShift?.hours_worked || 0),
+    scheduledHours: Number(schedule?.hours || 0),
     startActual,
     endActual,
     pauseMin,
@@ -72,9 +108,29 @@ function buildDraftRow(schedule, existingShift = null) {
     gardeHours: Number(existingShift?.garde_hours || 0),
     rappelHours: Number(existingShift?.rappel_hours || 0),
     km: Number(existingShift?.km || 0),
-    deplacement: Number(existingShift?.deplacement || 0),
     autreDep: Number(existingShift?.autre_dep || 0),
   };
+}
+
+function createManualDraftRow(defaultDate) {
+  return buildDraftRow(
+    {
+      id: '',
+      date: defaultDate,
+      start: '08:00',
+      end: '16:00',
+      hours: 8,
+      location: '',
+    },
+    {
+      date: defaultDate,
+      start_actual: '08:00',
+      end_actual: '16:00',
+      location: '',
+      hours_worked: 8,
+      pause: 0,
+    },
+  );
 }
 
 function FieldInput({ label, children, fullWidth = false }) {
@@ -91,6 +147,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
   const [employee, setEmployee] = useState(null);
   const [schedules, setSchedules] = useState([]);
   const [timesheets, setTimesheets] = useState([]);
+  const [sharedDocuments, setSharedDocuments] = useState([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [loading, setLoading] = useState(true);
   const [draftRows, setDraftRows] = useState([]);
@@ -104,14 +161,16 @@ export default function EmployeeSchedulePage({ user, toast }) {
   const reload = useCallback(async () => {
     try {
       setLoading(true);
-      const [employeeDetail, ownSchedules, ownTimesheets] = await Promise.all([
+      const [employeeDetail, ownSchedules, ownTimesheets, employeeDocs] = await Promise.all([
         user?.employee_id ? api.getEmployee(user.employee_id).catch(() => null) : Promise.resolve(null),
         api.getSchedules(),
         api.getTimesheets(),
+        user?.employee_id ? api.getEmployeeDocuments(user.employee_id).catch(() => []) : Promise.resolve([]),
       ]);
       setEmployee(employeeDetail);
       setSchedules(ownSchedules || []);
       setTimesheets(ownTimesheets || []);
+      setSharedDocuments(employeeDocs || []);
     } catch (err) {
       toast?.('Erreur: ' + err.message);
     } finally {
@@ -124,13 +183,12 @@ export default function EmployeeSchedulePage({ user, toast }) {
   }, [reload]);
 
   const weekDates = useMemo(() => getWeekDates(selectedDate, 0), [selectedDate]);
+  const biWeekDates = useMemo(() => buildBiWeekDates(selectedDate), [selectedDate]);
   const weekIsos = useMemo(() => weekDates.map(fmtISO), [weekDates]);
+  const biWeekIsos = useMemo(() => biWeekDates.map(fmtISO), [biWeekDates]);
   const weekStart = weekIsos[0];
   const weekEnd = weekIsos[6];
-  const weekLabel = useMemo(
-    () => `${fmtDay(weekDates[0])} - ${fmtDay(weekDates[6])}`,
-    [weekDates],
-  );
+  const biWeekLabel = `${fmtDay(biWeekDates[0])} - ${fmtDay(biWeekDates[biWeekDates.length - 1])}`;
 
   const scheduleById = useMemo(
     () => new Map((schedules || []).map((shift) => [shift.id, shift])),
@@ -145,31 +203,43 @@ export default function EmployeeSchedulePage({ user, toast }) {
     [schedules, weekIsos],
   );
 
+  const biWeekSchedules = useMemo(
+    () =>
+      schedules
+        .filter((shift) => biWeekIsos.includes(shift.date))
+        .sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`)),
+    [biWeekIsos, schedules],
+  );
+
   const weekTimesheet = useMemo(
     () =>
       (timesheets || []).find(
         (timesheet) =>
-          timesheet.period_start === weekStart && timesheet.period_end === weekEnd,
+          String(timesheet.period_start || '') === String(weekStart) &&
+          String(timesheet.period_end || '') === String(weekEnd),
       ) || null,
     [timesheets, weekEnd, weekStart],
   );
 
   const canEditWeekTimesheet = weekTimesheet?.status !== 'approved';
 
-  const loadTimesheetAttachments = useCallback(async (timesheetId) => {
-    if (!timesheetId) return [];
-    try {
-      setLoadingAttachmentIds((prev) => ({ ...prev, [timesheetId]: true }));
-      const attachments = await api.getTimesheetAttachments(timesheetId);
-      setAttachmentsByTimesheet((prev) => ({ ...prev, [timesheetId]: attachments || [] }));
-      return attachments || [];
-    } catch (err) {
-      toast?.('Erreur: ' + err.message);
-      return [];
-    } finally {
-      setLoadingAttachmentIds((prev) => ({ ...prev, [timesheetId]: false }));
-    }
-  }, [toast]);
+  const loadTimesheetAttachments = useCallback(
+    async (timesheetId) => {
+      if (!timesheetId) return [];
+      try {
+        setLoadingAttachmentIds((prev) => ({ ...prev, [timesheetId]: true }));
+        const attachments = await api.getTimesheetAttachments(timesheetId);
+        setAttachmentsByTimesheet((prev) => ({ ...prev, [timesheetId]: attachments || [] }));
+        return attachments || [];
+      } catch (err) {
+        toast?.('Erreur: ' + err.message);
+        return [];
+      } finally {
+        setLoadingAttachmentIds((prev) => ({ ...prev, [timesheetId]: false }));
+      }
+    },
+    [toast],
+  );
 
   useEffect(() => {
     if (weekTimesheet?.id && attachmentsByTimesheet[weekTimesheet.id] == null) {
@@ -179,38 +249,76 @@ export default function EmployeeSchedulePage({ user, toast }) {
 
   useEffect(() => {
     const timesheetShiftMap = new Map(
-      (weekTimesheet?.shifts || []).map((shift) => [shift.schedule_id, shift]),
+      (weekTimesheet?.shifts || []).map((shift) => [shift.schedule_id || `manual-${shift.id}`, shift]),
     );
     let nextRows = weekSchedules.map((schedule) =>
       buildDraftRow(schedule, timesheetShiftMap.get(schedule.id)),
     );
 
-    if (!nextRows.length && (weekTimesheet?.shifts || []).length) {
-      nextRows = (weekTimesheet.shifts || []).map((shift) =>
-        buildDraftRow(scheduleById.get(shift.schedule_id), shift),
-      );
-    }
+    const manualRows = (weekTimesheet?.shifts || [])
+      .filter((shift) => !shift.schedule_id || !scheduleById.get(shift.schedule_id))
+      .map((shift) => buildDraftRow(null, shift));
 
+    nextRows = [...nextRows, ...manualRows];
     setDraftRows(nextRows);
     setWeekNotes(weekTimesheet?.notes || '');
     setPendingSignedFile(null);
   }, [scheduleById, weekSchedules, weekTimesheet]);
 
-  const updateDraftRow = (index, field, value) => {
-    setDraftRows((prev) => {
-      const next = [...prev];
-      const row = { ...next[index], [field]: value };
-      if (field === 'startActual' || field === 'endActual' || field === 'pauseMin') {
-        row.hoursWorked = recalcHours(row.startActual, row.endActual, row.pauseMin);
-      }
-      next[index] = row;
-      return next;
-    });
+  const weekSignedDocuments = weekTimesheet?.id ? attachmentsByTimesheet[weekTimesheet.id] || [] : [];
+  const hasAttachmentForSubmission = weekSignedDocuments.length > 0 || Boolean(pendingSignedFile);
+  const weekPlannedHours = useMemo(
+    () => weekSchedules.reduce((sum, shift) => sum + Number(shift.hours || 0), 0),
+    [weekSchedules],
+  );
+  const weekDeclaredHours = useMemo(
+    () => draftRows.reduce((sum, shift) => sum + Number(shift.hoursWorked || 0), 0),
+    [draftRows],
+  );
+  const weekDeclaredKm = useMemo(
+    () => draftRows.reduce((sum, shift) => sum + Number(shift.km || 0), 0),
+    [draftRows],
+  );
+  const weekDeclaredOtherExpenses = useMemo(
+    () => draftRows.reduce((sum, shift) => sum + Number(shift.autreDep || 0), 0),
+    [draftRows],
+  );
+  const historyTimesheets = useMemo(
+    () =>
+      (timesheets || [])
+        .sort((a, b) => `${b.period_start} ${b.created_at || ''}`.localeCompare(`${a.period_start} ${a.created_at || ''}`))
+        .slice(0, 8),
+    [timesheets],
+  );
+
+  const updateDraftRow = (rowId, field, value) => {
+    setDraftRows((prev) =>
+      prev.map((row) => {
+        if (row.rowId !== rowId) return row;
+        const next = { ...row, [field]: value };
+        if (field === 'startActual' || field === 'endActual' || field === 'pauseMin') {
+          next.hoursWorked = recalcHours(next.startActual, next.endActual, next.pauseMin);
+        }
+        return next;
+      }),
+    );
+  };
+
+  const addManualShift = () => {
+    setDraftRows((prev) => [...prev, createManualDraftRow(weekStart)]);
+  };
+
+  const removeManualShift = (rowId) => {
+    setDraftRows((prev) => prev.filter((row) => row.rowId !== rowId));
   };
 
   const submitCurrentWeekTimesheet = async () => {
     if (!user?.employee_id || !draftRows.length) {
       toast?.('Aucun quart a soumettre pour cette semaine');
+      return;
+    }
+    if (!hasAttachmentForSubmission) {
+      toast?.('Ajoute la FDT signee avant de soumettre la semaine');
       return;
     }
 
@@ -222,27 +330,28 @@ export default function EmployeeSchedulePage({ user, toast }) {
         period_end: weekEnd,
         notes: weekNotes,
         shifts: draftRows.map((shift) => ({
-          schedule_id: shift.scheduleId,
+          schedule_id: shift.scheduleId || null,
           date: shift.date,
           hours_worked: Number(shift.hoursWorked || 0),
           pause: Number(shift.pauseMin || 0) / 60,
           garde_hours: Number(shift.gardeHours || 0),
           rappel_hours: Number(shift.rappelHours || 0),
           km: Number(shift.km || 0),
-          deplacement: Number(shift.deplacement || 0),
+          deplacement: 0,
           autre_dep: Number(shift.autreDep || 0),
           start_actual: normalizeTime(shift.startActual),
           end_actual: normalizeTime(shift.endActual),
+          location: shift.location || '',
         })),
       };
 
-      const response = await api.submitTimesheet(payload);
-      const timesheetId = response?.id;
-      if (pendingSignedFile && timesheetId) {
-        await api.uploadTimesheetAttachment(timesheetId, pendingSignedFile, 'fdt', pendingSignedFile.name);
-      }
+      let response;
+      if (pendingSignedFile) response = await api.submitTimesheetWithAttachment(payload, pendingSignedFile);
+      else response = await api.submitTimesheet(payload);
+
       setPendingSignedFile(null);
       toast?.(weekTimesheet ? 'FDT mise a jour' : 'FDT soumise');
+      if (response?.id) await loadTimesheetAttachments(response.id);
       await reload();
     } catch (err) {
       toast?.('Erreur: ' + err.message);
@@ -284,60 +393,12 @@ export default function EmployeeSchedulePage({ user, toast }) {
     }
   };
 
-  const moveWeek = (delta) => {
-    setSelectedDate((current) => {
-      const next = new Date(current);
-      next.setDate(next.getDate() + delta * 7);
-      return next;
-    });
+  const moveWindow = (delta) => {
+    setSelectedDate((current) => addDays(current, delta * 14));
   };
 
-  const weekPlannedHours = useMemo(
-    () => weekSchedules.reduce((sum, shift) => sum + Number(shift.hours || 0), 0),
-    [weekSchedules],
-  );
-  const weekDeclaredHours = useMemo(
-    () => draftRows.reduce((sum, shift) => sum + Number(shift.hoursWorked || 0), 0),
-    [draftRows],
-  );
-  const weekDeclaredKm = useMemo(
-    () => draftRows.reduce((sum, shift) => sum + Number(shift.km || 0), 0),
-    [draftRows],
-  );
-  const weekDeclaredDeplacement = useMemo(
-    () => draftRows.reduce((sum, shift) => sum + Number(shift.deplacement || 0), 0),
-    [draftRows],
-  );
-  const weekDeclaredOtherExpenses = useMemo(
-    () => draftRows.reduce((sum, shift) => sum + Number(shift.autreDep || 0), 0),
-    [draftRows],
-  );
-  const weekSignedDocuments = weekTimesheet?.id
-    ? attachmentsByTimesheet[weekTimesheet.id] || []
-    : [];
-  const upcomingSchedules = useMemo(
-    () =>
-      schedules
-        .filter((shift) => shift.date >= fmtISO(new Date()))
-        .sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`))
-        .slice(0, 8),
-    [schedules],
-  );
-  const historyTimesheets = useMemo(
-    () =>
-      (timesheets || [])
-        .filter((timesheet) => timesheet.id !== weekTimesheet?.id)
-        .sort((a, b) => `${b.period_start} ${b.created_at || ''}`.localeCompare(`${a.period_start} ${a.created_at || ''}`))
-        .slice(0, 6),
-    [timesheets, weekTimesheet?.id],
-  );
-
   if (loading) {
-    return (
-      <div style={{ padding: 40, textAlign: 'center', color: 'var(--text3)' }}>
-        Chargement de votre horaire...
-      </div>
-    );
+    return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text3)' }}>Chargement de votre horaire...</div>;
   }
 
   return (
@@ -370,32 +431,26 @@ export default function EmployeeSchedulePage({ user, toast }) {
             <span style={{ fontSize: 12, color: 'var(--text3)' }}>{weekSignedDocuments.length} document(s)</span>
           </div>
         </div>
-        <div className="card">
-          <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 6 }}>Frais saisis cette semaine</div>
-          <div style={{ fontWeight: 700, color: 'var(--brand-d)', fontSize: 20 }}>{weekDeclaredKm.toFixed(0)} km</div>
-          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
-            {weekDeclaredDeplacement.toFixed(2)} h dep. • {weekDeclaredOtherExpenses.toFixed(2)} $
-          </div>
-        </div>
       </div>
 
       <div className="card" style={{ marginBottom: 18 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
-          <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>Semaine du {weekLabel}</div>
+          <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>Vue calendrier 2 semaines • {biWeekLabel}</div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-outline btn-sm" onClick={() => moveWeek(-1)}>
-              <ChevronLeft size={14} /> Precedente
+            <button className="btn btn-outline btn-sm" onClick={() => moveWindow(-1)}>
+              <ChevronLeft size={14} /> Precedentes
             </button>
-            <button className="btn btn-outline btn-sm" onClick={() => moveWeek(1)}>
-              Suivante <ChevronRight size={14} />
+            <button className="btn btn-outline btn-sm" onClick={() => setSelectedDate(new Date())}>Aujourd'hui</button>
+            <button className="btn btn-outline btn-sm" onClick={() => moveWindow(1)}>
+              Suivantes <ChevronRight size={14} />
             </button>
           </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(7, minmax(0, 1fr))', gap: 10 }}>
-          {weekDates.map((date) => {
+          {biWeekDates.map((date) => {
             const iso = fmtISO(date);
-            const daySchedules = weekSchedules.filter((shift) => shift.date === iso);
+            const daySchedules = biWeekSchedules.filter((shift) => shift.date === iso);
             return (
               <div
                 key={iso}
@@ -404,21 +459,16 @@ export default function EmployeeSchedulePage({ user, toast }) {
                   border: '1px solid var(--border)',
                   borderRadius: 14,
                   padding: 12,
-                  minHeight: isMobile ? 0 : 150,
+                  minHeight: isMobile ? 0 : 146,
                 }}
               >
-                <div style={{ fontSize: 12, color: 'var(--brand)', fontWeight: 700, marginBottom: 10 }}>
-                  {fmtDay(date)}
-                </div>
+                <div style={{ fontSize: 12, color: 'var(--brand)', fontWeight: 700, marginBottom: 10 }}>{fmtDay(date)}</div>
                 {daySchedules.length ? (
                   daySchedules.map((shift) => (
                     <div key={shift.id} style={{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: '10px 10px', marginBottom: 8 }}>
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{shift.start} - {shift.end}</div>
                       <div style={{ fontSize: 12, color: 'var(--text2)', marginTop: 4 }}>{shift.location || 'Lieu a confirmer'}</div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 11, color: 'var(--text3)' }}>{Number(shift.hours || 0).toFixed(2)} h</span>
-                        <Badge status={shift.status || 'published'} />
-                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 6 }}>{formatHours(shift.hours)} h</div>
                     </div>
                   ))
                 ) : (
@@ -438,16 +488,21 @@ export default function EmployeeSchedulePage({ user, toast }) {
               Saisir ma FDT
             </div>
             <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
-              Saisissez vos heures reelles pour la semaine, puis joignez votre FDT signee.
+              Format 24 h. La FDT signee doit etre jointe avant la soumission.
             </div>
           </div>
-          {weekTimesheet && <Badge status={weekTimesheet.status} />}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {weekTimesheet && <Badge status={weekTimesheet.status} />}
+            {canEditWeekTimesheet && (
+              <button className="btn btn-outline btn-sm" onClick={addManualShift}>
+                <Plus size={14} /> Ajouter un quart manuel
+              </button>
+            )}
+          </div>
         </div>
 
         {!draftRows.length ? (
-          <div style={{ fontSize: 13, color: 'var(--text3)' }}>
-            Aucun quart publie pour cette semaine.
-          </div>
+          <div style={{ fontSize: 13, color: 'var(--text3)' }}>Aucun quart a declarer pour cette semaine.</div>
         ) : (
           <>
             {!canEditWeekTimesheet && (
@@ -456,133 +511,60 @@ export default function EmployeeSchedulePage({ user, toast }) {
               </div>
             )}
 
-            {!isMobile ? (
-              <>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 920 }}>
-                    <thead>
-                      <tr>
-                        {['Date', 'Planifie', 'Debut reel', 'Fin reelle', 'Pause (min)', 'Heures', 'Garde h', 'Rappel h', 'Lieu'].map((label) => (
-                          <th key={label} style={{ background: '#3f8391', color: '#fff', padding: '10px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700 }}>
-                            {label}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {draftRows.map((row, index) => (
-                        <tr key={row.scheduleId || `${row.date}-${index}`}>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{row.date}</td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <div style={{ fontWeight: 700, fontSize: 12 }}>{row.scheduledStart || '--:--'} - {row.scheduledEnd || '--:--'}</div>
-                            <div style={{ fontSize: 11, color: 'var(--text3)' }}>{Number(row.scheduledHours || 0).toFixed(2)} h</div>
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="time" value={row.startActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'startActual', event.target.value)} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="time" value={row.endActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'endActual', event.target.value)} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="number" min="0" value={row.pauseMin} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'pauseMin', Number(event.target.value || 0))} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="number" min="0" step="0.25" value={row.hoursWorked} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'hoursWorked', Number(event.target.value || 0))} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="number" min="0" step="0.25" value={row.gardeHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'gardeHours', Number(event.target.value || 0))} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="number" min="0" step="0.25" value={row.rappelHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'rappelHours', Number(event.target.value || 0))} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: 12 }}>{row.location || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div style={{ marginTop: 14, overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 0, minWidth: 760 }}>
-                    <thead>
-                      <tr>
-                        {['Date', 'Kilometrage', 'Deplacement h', 'Autre depense $', 'Lieu'].map((label) => (
-                          <th key={label} style={{ background: '#3f8391', color: '#fff', padding: '10px 8px', textAlign: 'left', fontSize: 11, fontWeight: 700 }}>
-                            {label}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {draftRows.map((row, index) => (
-                        <tr key={`${row.scheduleId || `${row.date}-${index}`}-expenses`}>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>{row.date}</td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="number" min="0" step="1" value={row.km} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'km', Number(event.target.value || 0))} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="number" min="0" step="0.25" value={row.deplacement} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'deplacement', Number(event.target.value || 0))} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)' }}>
-                            <input className="input" type="number" min="0" step="0.01" value={row.autreDep} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'autreDep', Number(event.target.value || 0))} />
-                          </td>
-                          <td style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: 12 }}>{row.location || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : (
-              <div style={{ display: 'grid', gap: 12 }}>
-                {draftRows.map((row, index) => (
-                  <div key={row.scheduleId || `${row.date}-${index}`} style={{ border: '1px solid var(--border)', borderRadius: 14, background: '#fff', padding: 14 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
-                      <div>
-                        <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>{row.date}</div>
-                        <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
-                          Planifie: {row.scheduledStart || '--:--'} - {row.scheduledEnd || '--:--'} ({Number(row.scheduledHours || 0).toFixed(2)} h)
-                        </div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              {draftRows.map((row) => (
+                <div key={row.rowId} style={{ border: '1px solid var(--border)', borderRadius: 14, background: '#fff', padding: 14 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>{row.date || 'Date a definir'}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 2 }}>
+                        {row.isManual
+                          ? 'Quart manuel ajoute par l\'employe'
+                          : `Planifie: ${row.scheduledStart || '--:--'} - ${row.scheduledEnd || '--:--'} (${formatHours(row.scheduledHours)} h)`}
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'right' }}>{row.location || 'Lieu a confirmer'}</div>
                     </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                      <FieldInput label="Debut reel">
-                        <input className="input" type="time" value={row.startActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'startActual', event.target.value)} />
-                      </FieldInput>
-                      <FieldInput label="Fin reelle">
-                        <input className="input" type="time" value={row.endActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'endActual', event.target.value)} />
-                      </FieldInput>
-                      <FieldInput label="Pause (min)">
-                        <input className="input" type="number" min="0" value={row.pauseMin} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'pauseMin', Number(event.target.value || 0))} />
-                      </FieldInput>
-                      <FieldInput label="Heures">
-                        <input className="input" type="number" min="0" step="0.25" value={row.hoursWorked} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'hoursWorked', Number(event.target.value || 0))} />
-                      </FieldInput>
-                      <FieldInput label="Garde h">
-                        <input className="input" type="number" min="0" step="0.25" value={row.gardeHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'gardeHours', Number(event.target.value || 0))} />
-                      </FieldInput>
-                      <FieldInput label="Rappel h">
-                        <input className="input" type="number" min="0" step="0.25" value={row.rappelHours} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'rappelHours', Number(event.target.value || 0))} />
-                      </FieldInput>
-                    </div>
-
-                    <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                      <FieldInput label="Kilometrage">
-                        <input className="input" type="number" min="0" step="1" value={row.km} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'km', Number(event.target.value || 0))} />
-                      </FieldInput>
-                      <FieldInput label="Deplacement h">
-                        <input className="input" type="number" min="0" step="0.25" value={row.deplacement} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'deplacement', Number(event.target.value || 0))} />
-                      </FieldInput>
-                      <FieldInput label="Autre depense $" fullWidth>
-                        <input className="input" type="number" min="0" step="0.01" value={row.autreDep} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(index, 'autreDep', Number(event.target.value || 0))} />
-                      </FieldInput>
-                    </div>
+                    {row.isManual && canEditWeekTimesheet ? (
+                      <button className="btn btn-outline btn-sm" onClick={() => removeManualShift(row.rowId)}>
+                        <Trash2 size={14} /> Retirer
+                      </button>
+                    ) : null}
                   </div>
-                ))}
-              </div>
-            )}
+
+                  <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+                    <FieldInput label="Date">
+                      <input className="input" type="date" value={row.date} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'date', event.target.value)} />
+                    </FieldInput>
+                    <FieldInput label="Debut reel">
+                      <input className="input" type="time" value={row.startActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'startActual', event.target.value)} />
+                    </FieldInput>
+                    <FieldInput label="Fin reelle">
+                      <input className="input" type="time" value={row.endActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'endActual', event.target.value)} />
+                    </FieldInput>
+                    <FieldInput label="Pause (min)">
+                      <input className="input" type="number" min="0" step="5" value={row.pauseMin} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'pauseMin', Number(event.target.value || 0))} />
+                    </FieldInput>
+                    <FieldInput label="Heures">
+                      <input className="input" type="number" min="0" step="0.25" value={row.hoursWorked} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'hoursWorked', Number(event.target.value || 0))} />
+                    </FieldInput>
+                    <FieldInput label="Heures de garde">
+                      <input className="input" type="time" step="300" value={hoursToDuration(row.gardeHours)} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'gardeHours', durationToHours(event.target.value))} />
+                    </FieldInput>
+                    <FieldInput label="Heures de rappel">
+                      <input className="input" type="time" step="300" value={hoursToDuration(row.rappelHours)} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'rappelHours', durationToHours(event.target.value))} />
+                    </FieldInput>
+                    <FieldInput label="Kilometrage">
+                      <input className="input" type="number" min="0" step="1" value={row.km} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'km', Number(event.target.value || 0))} />
+                    </FieldInput>
+                    <FieldInput label="Autre depense $" fullWidth={isMobile}>
+                      <input className="input" type="number" min="0" step="0.01" value={row.autreDep} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'autreDep', Number(event.target.value || 0))} />
+                    </FieldInput>
+                    <FieldInput label="Lieu" fullWidth>
+                      <input className="input" value={row.location || ''} disabled={!canEditWeekTimesheet && !row.isManual} onChange={(event) => updateDraftRow(row.rowId, 'location', event.target.value)} placeholder="Lieu ou details utiles du quart" />
+                    </FieldInput>
+                  </div>
+                </div>
+              ))}
+            </div>
 
             <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '2fr 1fr', gap: 12 }}>
               <div>
@@ -593,19 +575,19 @@ export default function EmployeeSchedulePage({ user, toast }) {
                   value={weekNotes}
                   disabled={!canEditWeekTimesheet}
                   onChange={(event) => setWeekNotes(event.target.value)}
-                  placeholder="Ex.: quart termine plus tard, rappel, pause differente, commentaire sur la FDT signee..."
+                  placeholder="Ex.: pause differente, quart ajoute manuellement, commentaire utile..."
                 />
               </div>
               <div style={{ background: 'var(--brand-xl)', border: '1px solid var(--border)', borderRadius: 14, padding: 14 }}>
-                <div style={{ fontWeight: 700, color: 'var(--brand-d)', marginBottom: 8 }}>Document signe</div>
+                <div style={{ fontWeight: 700, color: 'var(--brand-d)', marginBottom: 8 }}>FDT signee</div>
                 <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 12 }}>
-                  PDF, JPG, PNG, GIF, HEIC ou HEIF.
+                  La piece jointe est obligatoire avant la soumission.
                 </div>
 
                 {canEditWeekTimesheet && (
                   <>
                     <label className="btn btn-outline btn-sm" style={{ width: '100%', justifyContent: 'center', marginBottom: 10 }}>
-                      <Upload size={14} /> {weekTimesheet ? 'Ajouter un document signe' : 'Choisir la FDT signee'}
+                      <Upload size={14} /> {weekTimesheet ? 'Ajouter / remplacer un document signe' : 'Choisir la FDT signee'}
                       <input
                         type="file"
                         accept=".pdf,.jpg,.jpeg,.png,.gif,.heic,.heif,image/*,application/pdf"
@@ -613,30 +595,25 @@ export default function EmployeeSchedulePage({ user, toast }) {
                         onChange={(event) => {
                           const file = event.target.files?.[0];
                           if (!file) return;
-                          if (weekTimesheet?.id) {
-                            uploadSignedDocument(file);
-                          } else {
-                            setPendingSignedFile(file);
-                          }
+                          if (weekTimesheet?.id) uploadSignedDocument(file);
+                          else setPendingSignedFile(file);
                           event.target.value = '';
                         }}
                       />
                     </label>
                     {!weekTimesheet && pendingSignedFile && (
-                      <div style={{ fontSize: 12, color: 'var(--brand-d)', marginBottom: 10 }}>
-                        Fichier pret: {pendingSignedFile.name}
-                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--brand-d)', marginBottom: 10 }}>Fichier pret: {pendingSignedFile.name}</div>
                     )}
                   </>
                 )}
 
-                {weekTimesheet?.id && (
+                {weekTimesheet?.id ? (
                   <>
                     {loadingAttachmentIds[weekTimesheet.id] && (
                       <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>Chargement des documents...</div>
                     )}
                     {!loadingAttachmentIds[weekTimesheet.id] && weekSignedDocuments.length === 0 && (
-                      <div style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>Aucun document joint pour cette FDT.</div>
+                      <div style={{ fontSize: 12, color: '#b42318', marginBottom: 8 }}>Aucun document joint pour cette FDT.</div>
                     )}
                     {weekSignedDocuments.map((attachment) => (
                       <div key={attachment.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)', flexWrap: 'wrap' }}>
@@ -649,10 +626,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          <button
-                            className="btn btn-outline btn-sm"
-                            onClick={() => api.openTimesheetAttachment(weekTimesheet.id, attachment.id, attachment.original_filename || attachment.filename || 'fdt')}
-                          >
+                          <button className="btn btn-outline btn-sm" onClick={() => api.openTimesheetAttachment(weekTimesheet.id, attachment.id, attachment.original_filename || attachment.filename || 'fdt')}>
                             <Paperclip size={14} /> Ouvrir
                           </button>
                           {canEditWeekTimesheet && (
@@ -664,13 +638,17 @@ export default function EmployeeSchedulePage({ user, toast }) {
                       </div>
                     ))}
                   </>
+                ) : (
+                  <div style={{ fontSize: 12, color: hasAttachmentForSubmission ? 'var(--brand-d)' : '#b42318' }}>
+                    {hasAttachmentForSubmission ? 'Piece jointe prete pour la soumission.' : 'Aucune piece jointe selectionnee.'}
+                  </div>
                 )}
               </div>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 14 }}>
               <div style={{ fontSize: 12, color: 'var(--text3)' }}>
-                {draftRows.length} quart(s) • {weekDeclaredHours.toFixed(2)} h • {weekDeclaredKm.toFixed(0)} km • {weekDeclaredDeplacement.toFixed(2)} h dep. • {weekDeclaredOtherExpenses.toFixed(2)} $
+                {draftRows.length} quart(s) • {weekDeclaredHours.toFixed(2)} h • {weekDeclaredKm.toFixed(0)} km • {weekDeclaredOtherExpenses.toFixed(2)} $
               </div>
               <button className="btn btn-primary" disabled={!canEditWeekTimesheet || !draftRows.length || submitting} onClick={submitCurrentWeekTimesheet}>
                 <Send size={16} /> {submitting ? 'Envoi...' : weekTimesheet ? 'Mettre a jour ma FDT' : 'Soumettre ma FDT'}
@@ -682,17 +660,43 @@ export default function EmployeeSchedulePage({ user, toast }) {
 
       <div className="card" style={{ marginBottom: 18 }}>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+          <Paperclip size={16} style={{ color: 'var(--brand)' }} />
+          <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>Documents partages par l'administration</div>
+        </div>
+        {sharedDocuments.length ? (
+          <div style={{ display: 'grid', gap: 10 }}>
+            {sharedDocuments.map((document) => (
+              <div key={document.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 12, background: '#fff', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 700 }}>{document.original_filename || document.filename}</div>
+                  <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
+                    {document.description || document.category || 'Document'}
+                  </div>
+                </div>
+                <button className="btn btn-outline btn-sm" onClick={() => api.downloadEmployeeDocument(user.employee_id, document.id, document.original_filename || document.filename || 'document')}>
+                  <Paperclip size={14} /> Ouvrir
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: 'var(--text3)' }}>Aucun document partage pour le moment.</div>
+        )}
+      </div>
+
+      <div className="card" style={{ marginBottom: 18 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
           <Clock3 size={16} style={{ color: 'var(--brand)' }} />
           <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>Mes prochains quarts</div>
         </div>
-        {upcomingSchedules.length ? (
-          upcomingSchedules.map((shift) => (
+        {biWeekSchedules.length ? (
+          biWeekSchedules.map((shift) => (
             <div key={shift.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--border)', fontSize: 13, gap: 10, flexWrap: 'wrap' }}>
               <div>
                 <div style={{ fontWeight: 700 }}>{shift.date} | {shift.start} - {shift.end}</div>
                 <div style={{ color: 'var(--text3)', marginTop: 3 }}>{shift.location || 'Lieu a confirmer'}</div>
               </div>
-              <div style={{ color: 'var(--brand-d)', fontWeight: 700 }}>{Number(shift.hours || 0).toFixed(2)} h</div>
+              <div style={{ color: 'var(--brand-d)', fontWeight: 700 }}>{formatHours(shift.hours)} h</div>
             </div>
           ))
         ) : (
@@ -705,10 +709,10 @@ export default function EmployeeSchedulePage({ user, toast }) {
           <FileText size={16} style={{ color: 'var(--brand)' }} />
           <div style={{ fontWeight: 700, color: 'var(--brand-d)' }}>Historique de mes FDT</div>
         </div>
-        {timesheets.length === 0 ? (
+        {historyTimesheets.length === 0 ? (
           <div style={{ fontSize: 13, color: 'var(--text3)' }}>Aucune FDT soumise pour le moment.</div>
         ) : (
-          historyTimesheets.concat(weekTimesheet ? [weekTimesheet] : []).sort((a, b) => `${b.period_start} ${b.created_at || ''}`.localeCompare(`${a.period_start} ${a.created_at || ''}`)).map((timesheet) => {
+          historyTimesheets.map((timesheet) => {
             const isExpanded = Boolean(expandedHistory[timesheet.id]);
             const attachments = attachmentsByTimesheet[timesheet.id] || [];
             const totalHours = (timesheet.shifts || []).reduce((sum, shift) => sum + Number(shift.hours_worked || 0), 0);
@@ -739,7 +743,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                           <span style={{ textAlign: 'right' }}>
                             {Number(shift.hours_worked || 0).toFixed(2)} h
                             <span style={{ display: 'block', fontSize: 11, color: 'var(--text3)' }}>
-                              {Number(shift.km || 0).toFixed(0)} km • {Number(shift.deplacement || 0).toFixed(2)} h • {Number(shift.autre_dep || 0).toFixed(2)} $
+                              garde {formatHours(shift.garde_hours)} h • rappel {formatHours(shift.rappel_hours)} h • {Number(shift.km || 0).toFixed(0)} km • {Number(shift.autre_dep || 0).toFixed(2)} $
                             </span>
                           </span>
                         </div>
@@ -761,10 +765,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--text3)' }}>{attachment.created_at?.slice(0, 10) || '-'}</div>
                           </div>
-                          <button
-                            className="btn btn-outline btn-sm"
-                            onClick={() => api.openTimesheetAttachment(timesheet.id, attachment.id, attachment.original_filename || attachment.filename || 'fdt')}
-                          >
+                          <button className="btn btn-outline btn-sm" onClick={() => api.openTimesheetAttachment(timesheet.id, attachment.id, attachment.original_filename || attachment.filename || 'fdt')}>
                             <Paperclip size={14} /> Ouvrir
                           </button>
                         </div>

@@ -69,12 +69,17 @@ class Employee(Base):
     __tablename__ = "employees"
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False)
+    matricule = Column(String, default="", index=True)
     position = Column(String, default="")
     phone = Column(String, default="")
     email = Column(String, default="")
     rate = Column(Float, default=0)
+    salary = Column(Float, default=0)
+    perdiem = Column(Float, default=0)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
     is_active = Column(Boolean, default=True)
+    deactivated_at = Column(DateTime, nullable=True)
+    reactivated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     notes = relationship("EmployeeNote", back_populates="employee", order_by="desc(EmployeeNote.created_at)")
     documents = relationship("EmployeeDocument", back_populates="employee", cascade="all, delete-orphan", order_by="desc(EmployeeDocument.created_at)")
@@ -102,6 +107,7 @@ class EmployeeDocument(Base):
     file_data = Column(LargeBinary, nullable=False)
     category = Column(String(50), default="document")
     description = Column(Text, default="")
+    visible_to_employee = Column(Boolean, default=False)
     uploaded_by = Column(String(255), default="admin")
     created_at = Column(DateTime, default=datetime.utcnow)
     employee = relationship("Employee", back_populates="documents")
@@ -191,7 +197,7 @@ class TimesheetShift(Base):
     __tablename__ = "timesheet_shifts"
     id = Column(String, primary_key=True, default=new_id)
     timesheet_id = Column(String, ForeignKey("timesheets.id"), nullable=False)
-    schedule_id = Column(String, ForeignKey("schedules.id"), nullable=False)
+    schedule_id = Column(String, ForeignKey("schedules.id"), nullable=True)
     date = Column(Date, nullable=False)
     hours_worked = Column(Float, nullable=False)
     pause = Column(Float, default=0)
@@ -202,6 +208,7 @@ class TimesheetShift(Base):
     autre_dep = Column(Float, default=0)
     start_actual = Column(String, nullable=True)
     end_actual = Column(String, nullable=True)
+    location = Column(String, default="")
     timesheet = relationship("Timesheet", back_populates="shifts")
 
 
@@ -271,6 +278,19 @@ class ScheduleApproval(Base):
     )
     employee = relationship("Employee", backref="schedule_approvals")
     client = relationship("Client", backref="schedule_approvals")
+
+
+class ScheduleChangeNotification(Base):
+    __tablename__ = "schedule_change_notifications"
+    id = Column(String, primary_key=True, default=new_id)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False, index=True)
+    status = Column(String(20), default="pending", index=True)
+    pending_changes = Column(JSON, default=list)
+    send_after = Column(DateTime, nullable=False, index=True)
+    sent_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
 
 
 class InvoiceAttachment(Base):

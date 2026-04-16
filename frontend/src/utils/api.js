@@ -160,20 +160,35 @@ class ApiClient {
   register(data) { return this.post('/auth/register', data); }
   getMe() { return this.get('/auth/me'); }
 
-  getEmployees() { return this.get('/employees/'); }
+  getEmployees(params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.get(`/employees/${qs ? '?' + qs : ''}`);
+  }
   getEmployee(id) { return this.get(`/employees/${id}`); }
   createEmployee(data) { return this.post('/employees/', data); }
   updateEmployee(id, data) { return this.put(`/employees/${id}`, data); }
+  deactivateEmployee(id) { return this.post(`/employees/${id}/deactivate`, {}); }
+  reactivateEmployee(id) { return this.post(`/employees/${id}/reactivate`, {}); }
   inviteEmployeeAccess(id) { return this.post(`/employees/${id}/invite-access`, {}); }
   addEmployeeNote(id, data) { return this.post(`/employees/${id}/notes`, data); }
   getEmployeeDocuments(id) { return this.get(`/employees/${id}/documents`); }
-  async uploadEmployeeDocument(id, file, category = 'document', description = '') {
+  async uploadEmployeeDocument(id, file, category = 'document', description = '', visibleToEmployee = false) {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('category', category);
     formData.append('description', description);
+    formData.append('visible_to_employee', String(Boolean(visibleToEmployee)));
     formData.append('uploaded_by', this.user?.email || 'admin');
     return this.postForm(`/employees/${id}/documents`, formData);
+  }
+  async replaceEmployeeDocument(id, docId, file, category = 'document', description = '', visibleToEmployee = false) {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    formData.append('description', description);
+    formData.append('visible_to_employee', String(Boolean(visibleToEmployee)));
+    formData.append('uploaded_by', this.user?.email || 'admin');
+    return this.requestRaw(`/employees/${id}/documents/${docId}/replace`, { method: 'PUT', body: formData }).then(resp => resp.json());
   }
   deleteEmployeeDocument(id, docId) { return this.del(`/employees/${id}/documents/${docId}`); }
   downloadEmployeeDocument(id, docId, fallbackFilename = 'document') {
@@ -200,6 +215,12 @@ class ApiClient {
     return this.put(`/schedule-catalogs/${id}`, data);
   }
   publishAll() { return this.post('/schedules/publish-all', {}); }
+  bulkUpdateSchedulesStatus(ids, status, confirm = true) {
+    return this.post('/schedules/bulk-status', { ids, status, confirm });
+  }
+  bulkDeleteSchedules(ids, confirm = true) {
+    return this.post('/schedules/bulk-delete', { ids, confirm });
+  }
   approveWeek(data) { return this.post('/schedules/approve-week', data); }
   revokeWeek(data) { return this.post('/schedules/revoke-week', data); }
   getApprovals(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/schedules/approvals${qs ? '?' + qs : ''}`); }
@@ -226,6 +247,12 @@ class ApiClient {
 
   getTimesheets(params = {}) { const qs = new URLSearchParams(params).toString(); return this.get(`/timesheets/${qs ? '?' + qs : ''}`); }
   submitTimesheet(data) { return this.post('/timesheets/', data); }
+  async submitTimesheetWithAttachment(data, file) {
+    const formData = new FormData();
+    formData.append('payload', JSON.stringify(data));
+    formData.append('file', file);
+    return this.postForm('/timesheets/submit-with-attachment', formData);
+  }
   approveTimesheet(id) { return this.put(`/timesheets/${id}/approve`, {}); }
   rejectTimesheet(id) { return this.put(`/timesheets/${id}/reject`, {}); }
   deleteTimesheet(id) { return this.del(`/timesheets/${id}`); }

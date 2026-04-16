@@ -17,6 +17,15 @@ from .routers import auth, employees, schedules, schedule_reviews, schedule_cata
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS matricule VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary DOUBLE PRECISION DEFAULT 0"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS perdiem DOUBLE PRECISION DEFAULT 0"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMP"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS reactivated_at TIMESTAMP"))
+        await conn.execute(text("UPDATE employees SET matricule = '' WHERE matricule IS NULL"))
+        await conn.execute(text("UPDATE employees SET salary = 0 WHERE salary IS NULL"))
+        await conn.execute(text("UPDATE employees SET perdiem = 0 WHERE perdiem IS NULL"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_employees_matricule ON employees (matricule)"))
         await conn.execute(text("ALTER TABLE schedule_catalog_items ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("ALTER TABLE schedule_catalog_items ADD COLUMN IF NOT EXISTS billable_rate DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("UPDATE schedule_catalog_items SET hourly_rate = 0 WHERE hourly_rate IS NULL"))
@@ -27,9 +36,14 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS km DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS deplacement DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS autre_dep DOUBLE PRECISION DEFAULT 0"))
+        await conn.execute(text("ALTER TABLE timesheet_shifts ADD COLUMN IF NOT EXISTS location VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE timesheet_shifts ALTER COLUMN schedule_id DROP NOT NULL"))
         await conn.execute(text("UPDATE timesheet_shifts SET km = 0 WHERE km IS NULL"))
         await conn.execute(text("UPDATE timesheet_shifts SET deplacement = 0 WHERE deplacement IS NULL"))
         await conn.execute(text("UPDATE timesheet_shifts SET autre_dep = 0 WHERE autre_dep IS NULL"))
+        await conn.execute(text("UPDATE timesheet_shifts SET location = '' WHERE location IS NULL"))
+        await conn.execute(text("ALTER TABLE employee_documents ADD COLUMN IF NOT EXISTS visible_to_employee BOOLEAN DEFAULT FALSE"))
+        await conn.execute(text("UPDATE employee_documents SET visible_to_employee = FALSE WHERE visible_to_employee IS NULL"))
     task = asyncio.create_task(automation_loop())
     try:
         yield

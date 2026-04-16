@@ -46,30 +46,41 @@ class PasswordTokenInfoResponse(BaseModel):
 # ── Employee ──
 class EmployeeCreate(BaseModel):
     name: str
+    matricule: str = ""
     position: str = ""
     phone: str = ""
     email: str = ""
     rate: float = 0
+    salary: float = 0
+    perdiem: float = 0
     client_id: Optional[int] = None
 
 class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
+    matricule: Optional[str] = None
     position: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     rate: Optional[float] = None
+    salary: Optional[float] = None
+    perdiem: Optional[float] = None
     client_id: Optional[int] = None
     is_active: Optional[bool] = None
 
 class EmployeeOut(BaseModel):
     id: int
     name: str
+    matricule: str
     position: str
     phone: str
     email: str
     rate: float
+    salary: float
+    perdiem: float
     client_id: Optional[int]
     is_active: bool
+    deactivated_at: Optional[datetime] = None
+    reactivated_at: Optional[datetime] = None
     class Config:
         from_attributes = True
 
@@ -87,6 +98,7 @@ class EmployeeDocumentOut(BaseModel):
     file_size: int
     category: str
     description: str
+    visible_to_employee: bool
     uploaded_by: str
     created_at: Optional[datetime]
 
@@ -216,7 +228,7 @@ class ScheduleOut(BaseModel):
 
 # ── Timesheet ──
 class TimesheetShiftCreate(BaseModel):
-    schedule_id: str
+    schedule_id: Optional[str] = None
     date: date
     hours_worked: float
     pause: float = 0
@@ -227,6 +239,7 @@ class TimesheetShiftCreate(BaseModel):
     autre_dep: float = 0
     start_actual: Optional[str] = None
     end_actual: Optional[str] = None
+    location: str = ""
 
 class TimesheetCreate(BaseModel):
     employee_id: int

@@ -187,6 +187,57 @@ async def send_password_reset_email(
     await _send_auth_email(db, email, subject, html)
 
 
+async def send_schedule_change_notification_email(
+    email: str,
+    name: str,
+    changes: list[dict],
+    portal_url: str | None = None,
+    db: AsyncSession | None = None,
+):
+    portal_link = (portal_url or FRONTEND_URL).rstrip("/")
+    subject = "Mise a jour de votre horaire — Soins Expert Plus"
+    changes_html = "".join(
+        f"""
+        <li style="margin-bottom:10px">
+          <strong>{item.get('date', '-')}{' | ' + item.get('time_range', '') if item.get('time_range') else ''}</strong><br/>
+          <span style="color:#374151">{item.get('summary', "Modification d'horaire")}</span>
+        </li>
+        """
+        for item in (changes or [])[:12]
+    )
+    extra_count = max(0, len(changes or []) - 12)
+    extra_html = (
+        f"<p style='font-size:13px;color:#6b7280'>Et {extra_count} autre(s) changement(s) dans ce meme envoi.</p>"
+        if extra_count
+        else ""
+    )
+    html = f"""
+    <div style="font-family:system-ui;max-width:580px;margin:auto;padding:30px">
+        <div style="text-align:center;margin-bottom:20px">
+            <h2 style="color:#1d4ed8;margin:0">Soins Expert Plus</h2>
+            <p style="color:#6b7280;margin-top:8px">Mise a jour d'horaire</p>
+        </div>
+        <p>Bonjour{' ' + name if name else ''},</p>
+        <p>Votre horaire a ete modifie. Voici les changements recents detectes :</p>
+        <ul style="padding-left:18px;color:#111827">
+            {changes_html or '<li>Un ou plusieurs quarts ont ete modifies.</li>'}
+        </ul>
+        {extra_html}
+        <div style="text-align:center;margin:30px 0">
+            <a href="{portal_link}" style="background:#1d4ed8;color:white;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:600;font-size:16px">
+                Ouvrir mon horaire
+            </a>
+        </div>
+        <p style="font-size:13px;color:#6b7280">
+            Si vous avez des questions sur cette mise a jour, repondez a ce courriel ou contactez l'equipe RH.
+        </p>
+        <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0">
+        <p style="font-size:11px;color:#9ca3af;text-align:center">Soins Expert Plus — 9437-7827 Quebec Inc.</p>
+    </div>
+    """
+    await _send_auth_email(db, email, subject, html)
+
+
 async def _send_email(
     to: str,
     subject: str,

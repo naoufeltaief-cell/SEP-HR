@@ -1,8 +1,9 @@
 """Schedule routes — CRUD with recurrence, publish, bulk operations, week approval, import/export"""
 from datetime import timedelta, date as date_type, datetime
+from types import SimpleNamespace
 import io, csv, re, logging
 import unicodedata
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func, text
@@ -11,10 +12,40 @@ from ..database import get_db
 from ..models.models import Schedule, ScheduleApproval, Employee, Client, TimesheetShift, new_id
 from ..models.schemas import ScheduleCreate, ScheduleUpdate, ScheduleOut
 from ..services.auth_service import require_admin, get_current_user
+from ..services.schedule_notification_service import (
+    enqueue_schedule_change_notification,
+)
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _clone_schedule(schedule: Schedule | None):
+    if not schedule:
+        return None
+    return SimpleNamespace(
+        id=getattr(schedule, "id", None),
+        date=getattr(schedule, "date", None),
+        start=getattr(schedule, "start", ""),
+        end=getattr(schedule, "end", ""),
+        hours=getattr(schedule, "hours", 0),
+        location=getattr(schedule, "location", ""),
+        status=getattr(schedule, "status", ""),
+    )
+
+
+async def _require_active_employee(db: AsyncSession, employee_id: int) -> Employee:
+    result = await db.execute(select(Employee).where(Employee.id == employee_id))
+    employee = result.scalar_one_or_none()
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employe introuvable")
+    if not bool(getattr(employee, "is_active", True)):
+        raise HTTPException(
+            status_code=409,
+            detail="Impossible d'assigner un quart a un employe inactif",
+        )
+    return employee
 
 
 @router.get("")
@@ -64,9 +95,9 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
     group_id = new_id() if len(dates) > 1 else None
     created = []
     effective_rate = data.billable_rate
-    if not effective_rate and data.employee_id:
-        emp_result = await db.execute(select(Employee).where(Employee.id == data.employee_id))
-        employee = emp_result.scalar_one_or_none()
+    employee = None
+    if data.employee_id:
+        employee = await _require_active_employee(db, data.employee_id)
         if employee and getattr(employee, "rate", 0):
             effective_rate = employee.rate
     for d in dates:
@@ -82,6 +113,12 @@ async def create_schedule(data: ScheduleCreate, db: AsyncSession = Depends(get_d
         )
         db.add(sched)
         created.append(sched)
+        await enqueue_schedule_change_notification(
+            db,
+            employee_id=data.employee_id,
+            action="created",
+            after=sched,
+        )
     await db.commit()
     # For single creation, return the full schedule object (frontend needs it)
     if len(created) == 1:
@@ -97,7 +134,15 @@ async def publish_all(db: AsyncSession = Depends(get_db), user=Depends(require_a
     result = await db.execute(select(Schedule).where(Schedule.status == "draft"))
     count = 0
     for sched in result.scalars().all():
+        before = _clone_schedule(sched)
         sched.status = "published"
+        await enqueue_schedule_change_notification(
+            db,
+            employee_id=sched.employee_id,
+            action="updated",
+            before=before,
+            after=sched,
+        )
         count += 1
     await db.commit()
     return {"published": count}
@@ -753,15 +798,95 @@ async def list_approvals(
 
 # ── PARAMETERIZED routes /{sid} AFTER static routes ──
 
+@router.post("/bulk-status")
+async def bulk_update_schedule_status(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    ids = [str(item) for item in (payload.get("ids") or []) if str(item).strip()]
+    status = str(payload.get("status") or "").strip().lower()
+    confirm = bool(payload.get("confirm"))
+    if not ids:
+        raise HTTPException(status_code=400, detail="Aucun quart selectionne")
+    if status not in {"cancelled", "published", "draft"}:
+        raise HTTPException(status_code=400, detail="Statut bulk invalide")
+    if len(ids) > 1 and not confirm:
+        raise HTTPException(status_code=400, detail="Confirmation requise pour modifier plusieurs quarts")
+
+    result = await db.execute(select(Schedule).where(Schedule.id.in_(ids)))
+    schedules = result.scalars().all()
+    if not schedules:
+        raise HTTPException(status_code=404, detail="Aucun quart introuvable")
+
+    updated = 0
+    for sched in schedules:
+        if str(sched.status or "").lower() == status:
+            continue
+        before = _clone_schedule(sched)
+        sched.status = status
+        await enqueue_schedule_change_notification(
+            db,
+            employee_id=sched.employee_id,
+            action="cancelled" if status == "cancelled" else "updated",
+            before=before,
+            after=sched,
+        )
+        updated += 1
+    await db.commit()
+    return {"updated": updated, "status": status}
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_schedules(
+    payload: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    ids = [str(item) for item in (payload.get("ids") or []) if str(item).strip()]
+    confirm = bool(payload.get("confirm"))
+    if not ids:
+        raise HTTPException(status_code=400, detail="Aucun quart selectionne")
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Confirmation requise pour supprimer des quarts")
+
+    result = await db.execute(select(Schedule).where(Schedule.id.in_(ids)))
+    schedules = result.scalars().all()
+    if not schedules:
+        raise HTTPException(status_code=404, detail="Aucun quart introuvable")
+
+    deleted = 0
+    for sched in schedules:
+        before = _clone_schedule(sched)
+        await enqueue_schedule_change_notification(
+            db,
+            employee_id=sched.employee_id,
+            action="deleted",
+            before=before,
+        )
+        await db.delete(sched)
+        deleted += 1
+    await db.commit()
+    return {"deleted": deleted}
+
+
 @router.put("/{sid}")
 async def update_schedule(sid: str, data: ScheduleUpdate, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     result = await db.execute(select(Schedule).where(Schedule.id == sid))
     sched = result.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=404, detail="Quart introuvable")
+    before = _clone_schedule(sched)
     updates = data.model_dump(exclude_unset=True)
     for k, v in updates.items():
         setattr(sched, k, v)
+    await enqueue_schedule_change_notification(
+        db,
+        employee_id=sched.employee_id,
+        action="cancelled" if str(sched.status or "").lower() == "cancelled" else "updated",
+        before=before,
+        after=sched,
+    )
     await db.commit()
     await db.refresh(sched)
     return ScheduleOut.model_validate(sched)
@@ -773,6 +898,13 @@ async def delete_schedule(sid: str, db: AsyncSession = Depends(get_db), user=Dep
     sched = result.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=404, detail="Quart introuvable")
+    before = _clone_schedule(sched)
+    await enqueue_schedule_change_notification(
+        db,
+        employee_id=sched.employee_id,
+        action="deleted",
+        before=before,
+    )
     await db.delete(sched)
     await db.commit()
     return {"message": "Quart supprime"}
@@ -784,7 +916,15 @@ async def publish_one(sid: str, db: AsyncSession = Depends(get_db), user=Depends
     sched = result.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=404, detail="Quart introuvable")
+    before = _clone_schedule(sched)
     sched.status = "published"
+    await enqueue_schedule_change_notification(
+        db,
+        employee_id=sched.employee_id,
+        action="updated",
+        before=before,
+        after=sched,
+    )
     await db.commit()
     return {"message": "Quart publie"}
 

@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState, useEffect, useCallback, useMemo } from "react";
+import React, { Suspense, lazy, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import api from "../utils/api";
 import {
   fmtDay,
@@ -360,13 +360,21 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [currentInvoice, setCurrentInvoice] = useState(null);
   const [billingLoading, setBillingLoading] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedShiftIds, setSelectedShiftIds] = useState([]);
+  const [copiedShifts, setCopiedShifts] = useState([]);
+  const [pasteMode, setPasteMode] = useState(false);
+  const [selectionBox, setSelectionBox] = useState(null);
+  const [selectionDrag, setSelectionDrag] = useState(null);
+  const gridRef = useRef(null);
+  const shiftRefs = useRef(new Map());
   const isMobile = useMobileBreakpoint(920);
 
   const reload = useCallback(async () => {
     try {
       const [scheds, emps, cls, reviews, legacyApprovals, catalogItems] = await Promise.all([
         api.getSchedules(),
-        api.getEmployees(),
+        api.getEmployees({ include_inactive: true }),
         api.getClients(),
         api.getScheduleReviews().catch(() => []),
         api.getApprovals().catch(() => []),
@@ -484,7 +492,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const activeEmps = useMemo(() => {
     let emps = employees
       .filter((e) => activeEmpIds.includes(e.id))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.is_active)) - Number(Boolean(a.is_active)) ||
+          a.name.localeCompare(b.name),
+      );
     if (filterText) {
       const q = filterText.toLowerCase();
       emps = emps.filter((e) =>
@@ -501,6 +513,24 @@ export default function SchedulesPage({ toast, onNavigate }) {
     () => activeEmps.map((employee) => employee.id),
     [activeEmps],
   );
+  const visibleScheduleMap = useMemo(
+    () => new Map(visibleSchedules.map((shift) => [String(shift.id), shift])),
+    [visibleSchedules],
+  );
+  const assignableEmployees = useMemo(
+    () => employees.filter((employee) => Boolean(employee.is_active)),
+    [employees],
+  );
+  const modalEmployees = useMemo(() => {
+    if (modal?.type !== "edit" || !modal?.data?.employeeId) return assignableEmployees;
+    const currentEmployee = employees.find(
+      (employee) => String(employee.id) === String(modal.data.employeeId),
+    );
+    if (!currentEmployee || currentEmployee.is_active) return assignableEmployees;
+    return [...assignableEmployees, currentEmployee].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [assignableEmployees, employees, modal]);
   const calendarShiftsByDate = useMemo(() => {
     const visibleSet = new Set(visibleEmployeeIds);
     const map = new Map(calendarVisibleISOs.map((iso) => [iso, []]));
@@ -1061,6 +1091,274 @@ export default function SchedulesPage({ toast, onNavigate }) {
       toast?.("Erreur: " + err.message);
     }
   };
+
+  const clearSelectedShifts = useCallback(() => {
+    setSelectedShiftIds([]);
+    setSelectionBox(null);
+    setSelectionDrag(null);
+  }, []);
+
+  const toggleSelectionMode = useCallback(() => {
+    setSelectionMode((current) => {
+      const next = !current;
+      if (!next) {
+        clearSelectedShifts();
+        setPasteMode(false);
+      }
+      return next;
+    });
+  }, [clearSelectedShifts]);
+
+  const registerShiftRef = useCallback((shiftId, node) => {
+    const key = String(shiftId);
+    if (!node) {
+      shiftRefs.current.delete(key);
+      return;
+    }
+    shiftRefs.current.set(key, node);
+  }, []);
+
+  const toggleSelectedShift = useCallback((shiftId, forceValue = null) => {
+    const key = String(shiftId);
+    setSelectedShiftIds((prev) => {
+      const alreadySelected = prev.includes(key);
+      const shouldSelect =
+        forceValue == null ? !alreadySelected : Boolean(forceValue);
+      if (shouldSelect && !alreadySelected) return [...prev, key];
+      if (!shouldSelect && alreadySelected) {
+        return prev.filter((id) => id !== key);
+      }
+      return prev;
+    });
+  }, []);
+
+  const copiedShiftTemplates = useMemo(() => {
+    const selected = selectedShiftIds
+      .map((id) => visibleScheduleMap.get(String(id)))
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`) ||
+          String(a.employee_id).localeCompare(String(b.employee_id)),
+      );
+    if (!selected.length) return [];
+    const anchorDate = selected[0].date;
+    const anchorStamp = Date.parse(`${anchorDate}T12:00:00`);
+    return selected.map((shift) => {
+      const currentStamp = Date.parse(`${shift.date}T12:00:00`);
+      const dayOffset = Math.round(
+        (currentStamp - anchorStamp) / (24 * 60 * 60 * 1000),
+      );
+      return {
+        employee_id: Number(shift.employee_id),
+        start: normalizeTimeForInput(shift.start) || shift.start,
+        end: normalizeTimeForInput(shift.end) || shift.end,
+        pause: Number(shift.pause || 0),
+        hours: Number(shift.hours || 0),
+        location: shift.location || "",
+        client_id: shift.client_id || null,
+        km: Number(shift.km || 0),
+        deplacement: Number(shift.deplacement || 0),
+        autre_dep: Number(shift.autre_dep || 0),
+        notes: shift.notes || "",
+        billable_rate: Number(shift.billable_rate || 0),
+        status: shift.status || "published",
+        dayOffset,
+      };
+    });
+  }, [selectedShiftIds, visibleScheduleMap]);
+
+  const hasClipboard = copiedShifts.length > 0;
+
+  const copySelectedShifts = useCallback(() => {
+    if (!selectedShiftIds.length) {
+      toast?.("Selectionne au moins un quart a copier");
+      return;
+    }
+    setCopiedShifts(copiedShiftTemplates);
+    setPasteMode(true);
+    toast?.(
+      `${selectedShiftIds.length} quart(s) copie(s). Clique ensuite sur une case de la semaine pour coller.`,
+    );
+  }, [copiedShiftTemplates, selectedShiftIds.length, toast]);
+
+  const pasteCopiedShifts = useCallback(
+    async (targetDate) => {
+      if (!copiedShifts.length) {
+        toast?.("Le presse-papiers est vide");
+        return;
+      }
+      try {
+        setBulkLoading(true);
+        const anchor = new Date(`${targetDate}T12:00:00`);
+        const creations = copiedShifts.map((template) => {
+          const nextDate = new Date(anchor);
+          nextDate.setDate(anchor.getDate() + Number(template.dayOffset || 0));
+          return api.createSchedule({
+            employee_id: template.employee_id,
+            date: fmtISO(nextDate),
+            start: template.start,
+            end: template.end,
+            pause: template.pause,
+            hours: template.hours,
+            location: template.location,
+            client_id: template.client_id,
+            km: template.km,
+            deplacement: template.deplacement,
+            autre_dep: template.autre_dep,
+            notes: template.notes,
+            billable_rate: template.billable_rate,
+            status: template.status || "published",
+            recurrence: "once",
+          });
+        });
+        await Promise.all(creations);
+        toast?.(`${copiedShifts.length} quart(s) colle(s)`);
+        clearSelectedShifts();
+        setPasteMode(false);
+        await reload();
+      } catch (err) {
+        toast?.("Erreur: " + err.message);
+      } finally {
+        setBulkLoading(false);
+      }
+    },
+    [clearSelectedShifts, copiedShifts, reload, toast],
+  );
+
+  const bulkCancelSelected = useCallback(async () => {
+    if (!selectedShiftIds.length) {
+      toast?.("Selectionne au moins un quart a annuler");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Annuler ${selectedShiftIds.length} quart(s) ? Ils resteront visibles pour suivi, mais ils sortiront des totaux.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      setBulkLoading(true);
+      await api.bulkUpdateSchedulesStatus(selectedShiftIds, "cancelled", true);
+      toast?.(`${selectedShiftIds.length} quart(s) annule(s)`);
+      clearSelectedShifts();
+      await reload();
+    } catch (err) {
+      toast?.("Erreur: " + err.message);
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [clearSelectedShifts, reload, selectedShiftIds, toast]);
+
+  const bulkDeleteSelected = useCallback(async () => {
+    if (!selectedShiftIds.length) {
+      toast?.("Selectionne au moins un quart a supprimer");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Supprimer definitivement ${selectedShiftIds.length} quart(s) ? Cette action ne peut pas etre annulee.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      setBulkLoading(true);
+      await api.bulkDeleteSchedules(selectedShiftIds, true);
+      toast?.(`${selectedShiftIds.length} quart(s) supprime(s)`);
+      clearSelectedShifts();
+      await reload();
+    } catch (err) {
+      toast?.("Erreur: " + err.message);
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [clearSelectedShifts, reload, selectedShiftIds, toast]);
+
+  useEffect(() => {
+    const visibleIds = new Set(visibleSchedules.map((shift) => String(shift.id)));
+    shiftRefs.current.forEach((_, key) => {
+      if (!visibleIds.has(key)) shiftRefs.current.delete(key);
+    });
+    setSelectedShiftIds((prev) => prev.filter((id) => visibleIds.has(String(id))));
+  }, [visibleSchedules]);
+
+  useEffect(() => {
+    if (!selectionDrag || !selectionMode) return undefined;
+
+    const handleMouseMove = (event) => {
+      const container = gridRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const currentX = event.clientX - rect.left + container.scrollLeft;
+      const currentY = event.clientY - rect.top + container.scrollTop;
+      const left = Math.min(selectionDrag.originX, currentX);
+      const top = Math.min(selectionDrag.originY, currentY);
+      const width = Math.abs(currentX - selectionDrag.originX);
+      const height = Math.abs(currentY - selectionDrag.originY);
+      setSelectionBox({ left, top, width, height });
+    };
+
+    const handleMouseUp = () => {
+      const box = selectionBox;
+      if (box) {
+        const selected = [];
+        shiftRefs.current.forEach((node, shiftId) => {
+          if (!node) return;
+          const nodeRect = node.getBoundingClientRect();
+          const containerRect = gridRef.current?.getBoundingClientRect();
+          if (!containerRect) return;
+          const relativeRect = {
+            left: nodeRect.left - containerRect.left + (gridRef.current?.scrollLeft || 0),
+            right: nodeRect.right - containerRect.left + (gridRef.current?.scrollLeft || 0),
+            top: nodeRect.top - containerRect.top + (gridRef.current?.scrollTop || 0),
+            bottom: nodeRect.bottom - containerRect.top + (gridRef.current?.scrollTop || 0),
+          };
+          const intersects =
+            relativeRect.left <= box.left + box.width &&
+            relativeRect.right >= box.left &&
+            relativeRect.top <= box.top + box.height &&
+            relativeRect.bottom >= box.top;
+          if (intersects) selected.push(String(shiftId));
+        });
+        if (selected.length) {
+          setSelectedShiftIds((prev) =>
+            Array.from(new Set([...prev, ...selected])),
+          );
+        }
+      }
+      setSelectionDrag(null);
+      setSelectionBox(null);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp, { once: true });
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [selectionBox, selectionDrag, selectionMode]);
+
+  const startSelectionDrag = useCallback(
+    (event) => {
+      if (!selectionMode || event.button !== 0) return;
+      if (
+        event.target.closest("button, input, textarea, select, a") ||
+        event.target.closest(".shift-pill")
+      ) {
+        return;
+      }
+      const container = gridRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const originX = event.clientX - rect.left + container.scrollLeft;
+      const originY = event.clientY - rect.top + container.scrollTop;
+      setSelectionDrag({ originX, originY });
+      setSelectionBox({ left: originX, top: originY, width: 0, height: 0 });
+    },
+    [selectionMode],
+  );
 
   const createScheduleCatalogItem = useCallback(
     async (kind, label, hourlyRate = 0) => {
@@ -2057,6 +2355,14 @@ export default function SchedulesPage({ toast, onNavigate }) {
               alignItems: "center",
             }}
           >
+            {viewMode === "week" && !isMobile && (
+              <button
+                className={`btn btn-sm ${selectionMode ? "btn-primary" : "btn-outline"}`}
+                onClick={toggleSelectionMode}
+              >
+                {selectionMode ? "Quitter la selection" : "Mode selection"}
+              </button>
+            )}
             <div style={{ position: "relative", maxWidth: 300 }}>
               <Search
                 size={14}
@@ -2126,6 +2432,75 @@ export default function SchedulesPage({ toast, onNavigate }) {
           </div>
         </div>
       </div>
+      {viewMode === "week" && !isMobile && selectionMode && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 10,
+            padding: "10px 12px",
+            marginBottom: 16,
+            border: "1px solid #bfdbfe",
+            borderRadius: 16,
+            background: "#eff6ff",
+          }}
+        >
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#1d4ed8" }}>
+            {selectedShiftIds.length
+              ? `${selectedShiftIds.length} quart(s) selectionne(s)`
+              : "Clique et glisse dans l'horaire pour selectionner plusieurs quarts."}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={copySelectedShifts}
+              disabled={!selectedShiftIds.length || bulkLoading}
+            >
+              Copier
+            </button>
+            <button
+              className={`btn btn-sm ${pasteMode ? "btn-primary" : "btn-outline"}`}
+              onClick={() => {
+                if (!hasClipboard) {
+                  toast?.("Copie d'abord un ou plusieurs quarts");
+                  return;
+                }
+                setPasteMode((current) => !current);
+              }}
+              disabled={!hasClipboard || bulkLoading}
+            >
+              {pasteMode ? "Collage actif" : "Coller"}
+            </button>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={bulkCancelSelected}
+              disabled={!selectedShiftIds.length || bulkLoading}
+            >
+              Annuler
+            </button>
+            <button
+              className="btn btn-outline btn-sm"
+              style={{ color: "var(--red)" }}
+              onClick={bulkDeleteSelected}
+              disabled={!selectedShiftIds.length || bulkLoading}
+            >
+              Supprimer
+            </button>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => {
+                clearSelectedShifts();
+                setPasteMode(false);
+              }}
+              disabled={(!selectedShiftIds.length && !pasteMode) || bulkLoading}
+            >
+              Effacer
+            </button>
+          </div>
+        </div>
+      )}
       {viewMode === "week" ? (
         isMobile ? (
           <div style={{ display: "grid", gap: 14 }}>
@@ -2502,7 +2877,28 @@ export default function SchedulesPage({ toast, onNavigate }) {
             })}
           </div>
         ) : (
-        <div className="schedule-grid">
+        <div
+          className="schedule-grid"
+          ref={gridRef}
+          onMouseDown={startSelectionDrag}
+          style={{ position: "relative" }}
+        >
+        {selectionMode && selectionBox && (
+          <div
+            style={{
+              position: "absolute",
+              left: selectionBox.left,
+              top: selectionBox.top,
+              width: selectionBox.width,
+              height: selectionBox.height,
+              border: "1px dashed #2563eb",
+              background: "rgba(37,99,235,.12)",
+              borderRadius: 12,
+              pointerEvents: "none",
+              zIndex: 30,
+            }}
+          />
+        )}
         <table>
           <thead>
             <tr>
@@ -2556,6 +2952,22 @@ export default function SchedulesPage({ toast, onNavigate }) {
                         <div>
                           <div style={{ fontWeight: 600, fontSize: 12 }}>
                             {e.name}
+                            {!e.is_active && (
+                              <span
+                                style={{
+                                  marginLeft: 6,
+                                  padding: "2px 6px",
+                                  borderRadius: 999,
+                                  background: "#fff1f3",
+                                  color: "#b42318",
+                                  fontSize: 9,
+                                  fontWeight: 700,
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                Inactif
+                              </span>
+                            )}
                           </div>
                           <div style={{ fontSize: 10, color: "var(--text3)" }}>
                             {(e.position || "").slice(0, 24)}
@@ -2569,19 +2981,46 @@ export default function SchedulesPage({ toast, onNavigate }) {
                         (s) => s.employee_id === e.id && s.date === iso,
                       );
                       return (
-                        <td key={i} onDoubleClick={() => openAdd(e.id, iso)}>
+                        <td
+                          key={i}
+                          onDoubleClick={() => openAdd(e.id, iso)}
+                          onClick={() => {
+                            if (pasteMode && hasClipboard) {
+                              pasteCopiedShifts(iso);
+                            }
+                          }}
+                          style={{
+                            background:
+                              pasteMode && hasClipboard
+                                ? "rgba(37,99,235,.04)"
+                                : undefined,
+                            cursor:
+                              pasteMode && hasClipboard ? "copy" : undefined,
+                          }}
+                        >
                           {shifts.map((s) => (
                             <ShiftPill
                               key={s.id}
                               shift={s}
                               employee={e}
                               client={clientMap.get(s.client_id || e.client_id || null)}
-                              onClick={() => openEdit(s)}
+                              selected={selectedShiftIds.includes(String(s.id))}
+                              selectionMode={selectionMode}
+                              registerRef={registerShiftRef}
+                              onClick={() =>
+                                selectionMode
+                                  ? toggleSelectedShift(s.id)
+                                  : openEdit(s)
+                              }
                             />
                           ))}
                           {shifts.length === 0 && (
                             <div
-                              onClick={() => openAdd(e.id, iso)}
+                              onClick={() =>
+                                pasteMode && hasClipboard
+                                  ? pasteCopiedShifts(iso)
+                                  : openAdd(e.id, iso)
+                              }
                               style={{
                                 opacity: 0.25,
                                 textAlign: "center",
@@ -3091,7 +3530,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
           {modal ? (
             <ScheduleComposerModal
               modal={modal}
-              employees={employees}
+              employees={modalEmployees}
               clients={clients}
               schedules={schedules}
               catalogItems={scheduleCatalogItems}
@@ -4449,6 +4888,9 @@ function ShiftPill({
   onClick,
   compact = false,
   showEmployee = false,
+  selected = false,
+  selectionMode = false,
+  registerRef = null,
 }) {
   const [hovered, setHovered] = useState(false);
   const cancelled = isCancelledShift(shift);
@@ -4505,13 +4947,19 @@ function ShiftPill({
   return (
     <div
       className="shift-pill"
-      onClick={onClick}
+      ref={(node) => registerRef && registerRef(shift.id, node)}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick?.(event);
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       title={`${employee?.name || ""} ${timeRange}`.trim()}
       style={{
         background: colors.background,
-        border: `1px solid ${colors.border}`,
+        border: selected
+          ? "2px solid #7c3aed"
+          : `1px solid ${colors.border}`,
         color: colors.text,
         cursor: "pointer",
         paddingLeft: compact ? 9 : 10,
@@ -4519,6 +4967,11 @@ function ShiftPill({
         minHeight: compact ? 46 : undefined,
         overflow: "visible",
         zIndex: hovered ? 20 : 1,
+        boxShadow: selected
+          ? "0 0 0 3px rgba(124,58,237,.16)"
+          : selectionMode
+            ? "0 0 0 1px rgba(124,58,237,.08)"
+            : undefined,
       }}
     >
       <span

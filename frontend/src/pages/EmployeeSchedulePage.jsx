@@ -40,6 +40,40 @@ function normalizeTime(value) {
   return `${String(Number(match[1])).padStart(2, '0')}:${match[2]}`;
 }
 
+function normalizeTimeForInput(value) {
+  if (!value) return '';
+  const raw = String(value).trim();
+  const match = raw.match(/^(\d{1,2}):(\d{1,2})(?::\d{2})?$/);
+  if (!match) return '';
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return '';
+  }
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function normalizeTimeDraft(value) {
+  const raw = String(value || '')
+    .replace(/[^\d:]/g, '')
+    .slice(0, 5);
+  if (!raw) return '';
+  if (raw.includes(':')) {
+    const [hours = '', minutes = ''] = raw.split(':');
+    return `${hours.slice(0, 2)}${raw.includes(':') ? ':' : ''}${minutes.slice(0, 2)}`;
+  }
+  const digits = raw.slice(0, 4);
+  if (digits.length <= 2) return digits;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 function recalcHours(startStr, endStr, pauseMin) {
   let start = timeToMinutes(startStr);
   let end = timeToMinutes(endStr);
@@ -68,6 +102,22 @@ function formatHours(value) {
   return Number(value || 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
 }
 
+function normalizeDecimalDraft(value) {
+  const raw = String(value || '').replace(',', '.');
+  if (!raw) return '';
+  const cleaned = raw.replace(/[^\d.]/g, '');
+  const [whole = '', ...rest] = cleaned.split('.');
+  const fractional = rest.join('').slice(0, 2);
+  const normalizedWhole = whole.replace(/^0+(?=\d)/, '');
+  return fractional ? `${normalizedWhole || '0'}.${fractional}` : normalizedWhole;
+}
+
+function parseDraftNumber(value) {
+  if (value == null || value === '') return 0;
+  const parsed = Number(String(value).replace(',', '.'));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function addDays(dateValue, days) {
   const next = new Date(dateValue);
   next.setDate(next.getDate() + days);
@@ -92,6 +142,10 @@ function buildDraftRow(schedule, existingShift = null) {
   const startActual = normalizeTime(existingShift?.start_actual || schedule?.start || '08:00');
   const endActual = normalizeTime(existingShift?.end_actual || schedule?.end || '16:00');
   const pauseMin = Math.round(Number(existingShift?.pause || 0) * 60) || defaultPauseMin(schedule);
+  const gardeHours = Number(existingShift?.garde_hours || 0);
+  const rappelHours = Number(existingShift?.rappel_hours || 0);
+  const km = Number(existingShift?.km || 0);
+  const autreDep = Number(existingShift?.autre_dep || 0);
   return {
     rowId: existingShift?.id || schedule?.id || `manual-${Math.random().toString(36).slice(2, 10)}`,
     scheduleId: existingShift?.schedule_id || schedule?.id || '',
@@ -105,10 +159,14 @@ function buildDraftRow(schedule, existingShift = null) {
     endActual,
     pauseMin,
     hoursWorked: Number(existingShift?.hours_worked || recalcHours(startActual, endActual, pauseMin)),
-    gardeHours: Number(existingShift?.garde_hours || 0),
-    rappelHours: Number(existingShift?.rappel_hours || 0),
-    km: Number(existingShift?.km || 0),
-    autreDep: Number(existingShift?.autre_dep || 0),
+    gardeHours,
+    gardeInput: gardeHours ? hoursToDuration(gardeHours) : '',
+    rappelHours,
+    rappelInput: rappelHours ? hoursToDuration(rappelHours) : '',
+    km,
+    kmInput: km ? String(km) : '',
+    autreDep,
+    autreDepInput: autreDep ? String(autreDep) : '',
   };
 }
 
@@ -161,16 +219,20 @@ export default function EmployeeSchedulePage({ user, toast }) {
   const reload = useCallback(async () => {
     try {
       setLoading(true);
-      const [employeeDetail, ownSchedules, ownTimesheets, employeeDocs] = await Promise.all([
+      const [employeeDetail, ownSchedules, ownTimesheets, globalDocs, employeeDocs] = await Promise.all([
         user?.employee_id ? api.getEmployee(user.employee_id).catch(() => null) : Promise.resolve(null),
         api.getSchedules(),
         api.getTimesheets(),
+        api.getSharedEmployeeDocuments().catch(() => []),
         user?.employee_id ? api.getEmployeeDocuments(user.employee_id).catch(() => []) : Promise.resolve([]),
       ]);
       setEmployee(employeeDetail);
       setSchedules(ownSchedules || []);
       setTimesheets(ownTimesheets || []);
-      setSharedDocuments(employeeDocs || []);
+      setSharedDocuments([
+        ...(globalDocs || []).map((document) => ({ ...document, portal_scope: 'shared' })),
+        ...(employeeDocs || []).map((document) => ({ ...document, portal_scope: 'employee' })),
+      ]);
     } catch (err) {
       toast?.('Erreur: ' + err.message);
     } finally {
@@ -295,10 +357,46 @@ export default function EmployeeSchedulePage({ user, toast }) {
     setDraftRows((prev) =>
       prev.map((row) => {
         if (row.rowId !== rowId) return row;
-        const next = { ...row, [field]: value };
-        if (field === 'startActual' || field === 'endActual' || field === 'pauseMin') {
-          next.hoursWorked = recalcHours(next.startActual, next.endActual, next.pauseMin);
+        const next = { ...row };
+        if (field === 'startActual' || field === 'endActual') {
+          next[field] = normalizeTimeDraft(value);
+          const normalizedStart = normalizeTimeForInput(next.startActual);
+          const normalizedEnd = normalizeTimeForInput(next.endActual);
+          if (normalizedStart && normalizedEnd) {
+            next.hoursWorked = recalcHours(normalizedStart, normalizedEnd, next.pauseMin);
+          }
+          return next;
         }
+        if (field === 'pauseMin') {
+          next.pauseMin = Number(value || 0);
+          const normalizedStart = normalizeTimeForInput(next.startActual);
+          const normalizedEnd = normalizeTimeForInput(next.endActual);
+          if (normalizedStart && normalizedEnd) {
+            next.hoursWorked = recalcHours(normalizedStart, normalizedEnd, next.pauseMin);
+          }
+          return next;
+        }
+        if (field === 'gardeInput') {
+          next.gardeInput = normalizeTimeDraft(value);
+          next.gardeHours = durationToHours(normalizeTimeForInput(next.gardeInput));
+          return next;
+        }
+        if (field === 'rappelInput') {
+          next.rappelInput = normalizeTimeDraft(value);
+          next.rappelHours = durationToHours(normalizeTimeForInput(next.rappelInput));
+          return next;
+        }
+        if (field === 'kmInput') {
+          next.kmInput = normalizeDecimalDraft(value);
+          next.km = parseDraftNumber(next.kmInput);
+          return next;
+        }
+        if (field === 'autreDepInput') {
+          next.autreDepInput = normalizeDecimalDraft(value);
+          next.autreDep = parseDraftNumber(next.autreDepInput);
+          return next;
+        }
+        next[field] = value;
         return next;
       }),
     );
@@ -321,6 +419,20 @@ export default function EmployeeSchedulePage({ user, toast }) {
       toast?.('Ajoute la FDT signee avant de soumettre la semaine');
       return;
     }
+    for (const shift of draftRows) {
+      if (!normalizeTimeForInput(shift.startActual) || !normalizeTimeForInput(shift.endActual)) {
+        toast?.(`Completer l'heure de debut et de fin du quart ${shift.date || ''} au format 24 h`);
+        return;
+      }
+      if (shift.gardeInput && !normalizeTimeForInput(shift.gardeInput)) {
+        toast?.(`Completer les heures de garde du quart ${shift.date || ''} au format HH:MM`);
+        return;
+      }
+      if (shift.rappelInput && !normalizeTimeForInput(shift.rappelInput)) {
+        toast?.(`Completer les heures de rappel du quart ${shift.date || ''} au format HH:MM`);
+        return;
+      }
+    }
 
     try {
       setSubmitting(true);
@@ -339,8 +451,8 @@ export default function EmployeeSchedulePage({ user, toast }) {
           km: Number(shift.km || 0),
           deplacement: 0,
           autre_dep: Number(shift.autreDep || 0),
-          start_actual: normalizeTime(shift.startActual),
-          end_actual: normalizeTime(shift.endActual),
+          start_actual: normalizeTimeForInput(shift.startActual) || normalizeTime(shift.startActual),
+          end_actual: normalizeTimeForInput(shift.endActual) || normalizeTime(shift.endActual),
           location: shift.location || '',
         })),
       };
@@ -525,7 +637,7 @@ export default function EmployeeSchedulePage({ user, toast }) {
                     </div>
                     {row.isManual && canEditWeekTimesheet ? (
                       <button className="btn btn-outline btn-sm" onClick={() => removeManualShift(row.rowId)}>
-                        <Trash2 size={14} /> Retirer
+                        <Trash2 size={14} /> Supprimer ce quart
                       </button>
                     ) : null}
                   </div>
@@ -535,10 +647,10 @@ export default function EmployeeSchedulePage({ user, toast }) {
                       <input className="input" type="date" value={row.date} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'date', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Debut reel">
-                      <input className="input" type="time" value={row.startActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'startActual', event.target.value)} />
+                      <input className="input" type="text" inputMode="numeric" placeholder="07:00" value={row.startActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'startActual', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Fin reelle">
-                      <input className="input" type="time" value={row.endActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'endActual', event.target.value)} />
+                      <input className="input" type="text" inputMode="numeric" placeholder="15:00" value={row.endActual} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'endActual', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Pause (min)">
                       <input className="input" type="number" min="0" step="5" value={row.pauseMin} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'pauseMin', Number(event.target.value || 0))} />
@@ -547,16 +659,16 @@ export default function EmployeeSchedulePage({ user, toast }) {
                       <input className="input" type="number" min="0" step="0.25" value={row.hoursWorked} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'hoursWorked', Number(event.target.value || 0))} />
                     </FieldInput>
                     <FieldInput label="Heures de garde">
-                      <input className="input" type="time" step="300" value={hoursToDuration(row.gardeHours)} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'gardeHours', durationToHours(event.target.value))} />
+                      <input className="input" type="text" inputMode="numeric" placeholder="00:00" value={row.gardeInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'gardeInput', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Heures de rappel">
-                      <input className="input" type="time" step="300" value={hoursToDuration(row.rappelHours)} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'rappelHours', durationToHours(event.target.value))} />
+                      <input className="input" type="text" inputMode="numeric" placeholder="00:00" value={row.rappelInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'rappelInput', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Kilometrage">
-                      <input className="input" type="number" min="0" step="1" value={row.km} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'km', Number(event.target.value || 0))} />
+                      <input className="input" type="text" inputMode="decimal" placeholder="0" value={row.kmInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'kmInput', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Autre depense $" fullWidth={isMobile}>
-                      <input className="input" type="number" min="0" step="0.01" value={row.autreDep} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'autreDep', Number(event.target.value || 0))} />
+                      <input className="input" type="text" inputMode="decimal" placeholder="0.00" value={row.autreDepInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'autreDepInput', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Lieu" fullWidth>
                       <input className="input" value={row.location || ''} disabled={!canEditWeekTimesheet && !row.isManual} onChange={(event) => updateDraftRow(row.rowId, 'location', event.target.value)} placeholder="Lieu ou details utiles du quart" />
@@ -665,18 +777,26 @@ export default function EmployeeSchedulePage({ user, toast }) {
         </div>
         {sharedDocuments.length ? (
           <div style={{ display: 'grid', gap: 10 }}>
-            {sharedDocuments.map((document) => (
-              <div key={document.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 12, background: '#fff', flexWrap: 'wrap' }}>
-                <div>
-                  <div style={{ fontWeight: 700 }}>{document.original_filename || document.filename}</div>
-                  <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
-                    {document.description || document.category || 'Document'}
-                  </div>
-                </div>
-                <button className="btn btn-outline btn-sm" onClick={() => api.downloadEmployeeDocument(user.employee_id, document.id, document.original_filename || document.filename || 'document')}>
-                  <Paperclip size={14} /> Ouvrir
-                </button>
-              </div>
+                    {sharedDocuments.map((document) => (
+                      <div key={document.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 12, background: '#fff', flexWrap: 'wrap' }}>
+                        <div>
+                          <div style={{ fontWeight: 700 }}>{document.original_filename || document.filename}</div>
+                          <div style={{ fontSize: 12, color: 'var(--text3)', marginTop: 4 }}>
+                            {document.description || document.category || 'Document'}
+                            {document.portal_scope === 'shared' ? ' • Partage a tous les employes actifs' : ' • Document individuel'}
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          onClick={() =>
+                            document.portal_scope === 'shared'
+                              ? api.downloadSharedEmployeeDocument(document.id, document.original_filename || document.filename || 'document')
+                              : api.downloadEmployeeDocument(user.employee_id, document.id, document.original_filename || document.filename || 'document')
+                          }
+                        >
+                          <Paperclip size={14} /> Ouvrir
+                        </button>
+                      </div>
             ))}
           </div>
         ) : (

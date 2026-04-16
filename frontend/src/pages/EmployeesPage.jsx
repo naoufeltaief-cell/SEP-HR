@@ -108,16 +108,24 @@ export default function EmployeesPage({ toast }) {
   const [documentCategory, setDocumentCategory] = useState('document');
   const [uploadingDocument, setUploadingDocument] = useState(false);
   const [uploadKey, setUploadKey] = useState(0);
+  const [sharedDocuments, setSharedDocuments] = useState([]);
+  const [sharedDocumentFile, setSharedDocumentFile] = useState(null);
+  const [sharedDocumentDescription, setSharedDocumentDescription] = useState('');
+  const [sharedDocumentCategory, setSharedDocumentCategory] = useState('document');
+  const [uploadingSharedDocument, setUploadingSharedDocument] = useState(false);
+  const [sharedUploadKey, setSharedUploadKey] = useState(0);
 
   const reload = useCallback(async () => {
-    const [emps, scheds, cls] = await Promise.all([
+    const [emps, scheds, cls, sharedDocs] = await Promise.all([
       api.getEmployees({ include_inactive: true }),
       api.getSchedules(),
       api.getClients(),
+      api.getSharedEmployeeDocuments().catch(() => []),
     ]);
     setEmployees(emps || []);
     setSchedules(scheds || []);
     setClients(cls || []);
+    setSharedDocuments(sharedDocs || []);
   }, []);
 
   useEffect(() => {
@@ -178,6 +186,13 @@ export default function EmployeesPage({ toast }) {
     setDocumentDescription('');
     setDocumentCategory('document');
     setUploadKey((current) => current + 1);
+  };
+
+  const resetSharedDocumentForm = () => {
+    setSharedDocumentFile(null);
+    setSharedDocumentDescription('');
+    setSharedDocumentCategory('document');
+    setSharedUploadKey((current) => current + 1);
   };
 
   const addNote = async () => {
@@ -331,6 +346,56 @@ export default function EmployeesPage({ toast }) {
     }
   };
 
+  const uploadSharedDocument = async () => {
+    if (!sharedDocumentFile) {
+      toast?.('Selectionne un document a partager');
+      return;
+    }
+    try {
+      setUploadingSharedDocument(true);
+      await api.uploadSharedEmployeeDocument(
+        sharedDocumentFile,
+        sharedDocumentCategory,
+        sharedDocumentDescription,
+      );
+      toast?.('Document partage a tous les employes actifs');
+      resetSharedDocumentForm();
+      await reload();
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    } finally {
+      setUploadingSharedDocument(false);
+    }
+  };
+
+  const replaceSharedDocument = async (document, file) => {
+    if (!document?.id || !file) return;
+    try {
+      await api.replaceSharedEmployeeDocument(
+        document.id,
+        file,
+        document.category || 'document',
+        document.description || '',
+      );
+      toast?.('Document partage remplace');
+      await reload();
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    }
+  };
+
+  const deleteSharedDocument = async (document) => {
+    if (!document?.id) return;
+    if (!window.confirm(`Supprimer ${document.original_filename || document.filename} pour tous les employes actifs ?`)) return;
+    try {
+      await api.deleteSharedEmployeeDocument(document.id);
+      toast?.('Document partage supprime');
+      await reload();
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    }
+  };
+
   return (
     <>
       <div className="page-header">
@@ -363,6 +428,79 @@ export default function EmployeesPage({ toast }) {
           <option value="reactivated">Reactives</option>
           <option value="inactive">Inactifs</option>
         </select>
+      </div>
+
+      <div className="card" style={{ marginBottom: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 320px' }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--brand-d)', marginBottom: 6 }}>
+              Documents partages a tous les employes actifs
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 14 }}>
+              Un seul ajout ici rend le document visible dans le portail employe de toute personne active.
+            </div>
+            <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+              <input key={sharedUploadKey} className="input" type="file" onChange={(event) => setSharedDocumentFile(event.target.files?.[0] || null)} />
+              <select className="input" value={sharedDocumentCategory} onChange={(event) => setSharedDocumentCategory(event.target.value)}>
+                <option value="document">Document</option>
+                <option value="guide-employe">Guide employe</option>
+                <option value="paie">Calendrier de paie</option>
+                <option value="fdt">Feuille de temps</option>
+                <option value="autre">Autre</option>
+              </select>
+              <input className="input" placeholder="Description" value={sharedDocumentDescription} onChange={(event) => setSharedDocumentDescription(event.target.value)} />
+              <div>
+                <button className="btn btn-primary btn-sm" onClick={uploadSharedDocument} disabled={uploadingSharedDocument}>
+                  <Upload size={13} /> {uploadingSharedDocument ? 'Partage...' : 'Partager a tous les employes actifs'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ flex: '1 1 360px', minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Documents actuellement partages</div>
+            {sharedDocuments.length ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                {sharedDocuments.map((document) => (
+                  <div key={document.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 12, alignItems: 'center', padding: '10px 12px', background: '#fff', border: '1px solid var(--border)', borderRadius: 12 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 4 }}>
+                        <div style={{ fontWeight: 700 }}>{document.original_filename || document.filename}</div>
+                        <DocumentChip active label="Tous les employes actifs" />
+                        <DocumentChip active label={document.category || 'document'} />
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text3)' }}>
+                        {document.description || 'Sans description'} • {document.created_at?.slice(0, 10) || '-'}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <button className="btn btn-outline btn-sm" onClick={() => api.downloadSharedEmployeeDocument(document.id, document.original_filename || document.filename || 'document')}>
+                        <FileText size={13} /> Ouvrir
+                      </button>
+                      <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer' }}>
+                        Remplacer
+                        <input
+                          type="file"
+                          style={{ display: 'none' }}
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            if (file) replaceSharedDocument(document, file);
+                            event.target.value = '';
+                          }}
+                        />
+                      </label>
+                      <button className="btn btn-outline btn-sm" onClick={() => deleteSharedDocument(document)}>
+                        Supprimer
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text3)', fontSize: 13 }}>Aucun document partage pour le moment.</div>
+            )}
+          </div>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
@@ -525,7 +663,7 @@ export default function EmployeesPage({ toast }) {
                 </div>
 
                 <div className="card" style={{ padding: 14 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Ajouter un document partage</div>
+                  <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Ajouter un document individuel au dossier</div>
                   <div style={{ display: 'grid', gap: 10 }}>
                     <input key={uploadKey} className="input" type="file" onChange={(event) => setDocumentFile(event.target.files?.[0] || null)} />
                     <select className="input" value={documentCategory} onChange={(event) => setDocumentCategory(event.target.value)}>
@@ -538,7 +676,7 @@ export default function EmployeesPage({ toast }) {
                     <input className="input" placeholder="Description" value={documentDescription} onChange={(event) => setDocumentDescription(event.target.value)} />
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text2)' }}>
                       <input type="checkbox" checked={documentVisibility} onChange={(event) => setDocumentVisibility(event.target.checked)} />
-                      Visible dans le portail employe
+                      Visible uniquement pour cet employe dans son portail
                     </label>
                     <button className="btn btn-primary btn-sm" onClick={uploadEmployeeDocument} disabled={uploadingDocument}>
                       <Upload size={13} /> {uploadingDocument ? 'Ajout...' : 'Ajouter le document'}
@@ -548,7 +686,7 @@ export default function EmployeesPage({ toast }) {
               </div>
 
               <div style={{ marginTop: 22 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Documents du dossier</div>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Documents individuels du dossier</div>
                 {detail.documents?.length ? (
                   <div style={{ display: 'grid', gap: 8 }}>
                     {detail.documents.map((document) => (

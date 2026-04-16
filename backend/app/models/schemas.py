@@ -107,6 +107,21 @@ class EmployeeDocumentOut(BaseModel):
 
 
 # ── Client ──
+class SharedEmployeeDocumentOut(BaseModel):
+    id: int
+    filename: str
+    original_filename: str
+    file_type: str
+    file_size: int
+    category: str
+    description: str
+    uploaded_by: str
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
 class ScheduleCatalogItemCreate(BaseModel):
     kind: str
     label: str

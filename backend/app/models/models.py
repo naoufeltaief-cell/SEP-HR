@@ -113,6 +113,20 @@ class EmployeeDocument(Base):
     employee = relationship("Employee", back_populates="documents")
 
 
+class SharedEmployeeDocument(Base):
+    __tablename__ = "shared_employee_documents"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    filename = Column(String(255), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    file_type = Column(String(50), nullable=False)
+    file_size = Column(Integer, default=0)
+    file_data = Column(LargeBinary, nullable=False)
+    category = Column(String(50), default="document")
+    description = Column(Text, default="")
+    uploaded_by = Column(String(255), default="admin")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ChatbotUpload(Base):
     __tablename__ = "chatbot_uploads"
     id = Column(String, primary_key=True, default=new_id)

@@ -43,6 +43,10 @@ TIMESHEET_INBOX_SEARCH = (os.getenv("TIMESHEET_INBOX_SEARCH") or "newer_than:14d
 TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED = str(os.getenv("TIMESHEET_AUTO_SCHEDULE_SYNC_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 TIMESHEET_AUTO_DRAFT_ENABLED = str(os.getenv("TIMESHEET_AUTO_DRAFT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
 TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE = float(os.getenv("TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE", "0.68") or 0.68)
+SCHEDULE_NOTIFICATION_POLL_SECONDS = max(
+    30,
+    int(os.getenv("SCHEDULE_NOTIFICATION_POLL_SECONDS", "60") or 60),
+)
 DEFAULT_REMINDER_RECIPIENTS = [
     "ines_achour@hotmail.ca",
     "vaniecote1960@hotmail.fr",
@@ -848,7 +852,7 @@ async def automation_loop() -> None:
             await run_pending_automations()
         except Exception as exc:
             print(f"[AUTOMATION ERROR] {exc}")
-        await asyncio.sleep(600)
+        await asyncio.sleep(SCHEDULE_NOTIFICATION_POLL_SECONDS)
 
 
 async def cancel_automation_task(task) -> None:

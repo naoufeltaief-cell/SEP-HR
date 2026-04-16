@@ -11,7 +11,7 @@ from ..models.models import Employee, Schedule, ScheduleChangeNotification
 from .email_service import FRONTEND_URL, send_schedule_change_notification_email
 
 SCHEDULE_CHANGE_DEBOUNCE_MINUTES = int(
-    os.getenv("SCHEDULE_CHANGE_DEBOUNCE_MINUTES", "10") or 10
+    os.getenv("SCHEDULE_CHANGE_DEBOUNCE_MINUTES", "2") or 2
 )
 SCHEDULE_CHANGE_LOOKAHEAD_DAYS = int(
     os.getenv("SCHEDULE_CHANGE_LOOKAHEAD_DAYS", "14") or 14

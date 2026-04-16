@@ -364,6 +364,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [selectedShiftIds, setSelectedShiftIds] = useState([]);
   const [copiedShifts, setCopiedShifts] = useState([]);
   const [pasteMode, setPasteMode] = useState(false);
+  const [lastBulkAction, setLastBulkAction] = useState(null);
   const [selectionBox, setSelectionBox] = useState(null);
   const [selectionDrag, setSelectionDrag] = useState(null);
   const gridRef = useRef(null);
@@ -1170,6 +1171,31 @@ export default function SchedulesPage({ toast, onNavigate }) {
 
   const hasClipboard = copiedShifts.length > 0;
 
+  const snapshotShiftForUndo = useCallback((shift) => {
+    if (!shift) return null;
+    return {
+      id: String(shift.id),
+      employee_id: Number(shift.employee_id),
+      date: shift.date,
+      start: normalizeTimeForInput(shift.start) || shift.start,
+      end: normalizeTimeForInput(shift.end) || shift.end,
+      pause: Number(shift.pause || 0),
+      hours: Number(shift.hours || 0),
+      location: shift.location || "",
+      client_id: shift.client_id || null,
+      km: Number(shift.km || 0),
+      deplacement: Number(shift.deplacement || 0),
+      autre_dep: Number(shift.autre_dep || 0),
+      notes: shift.notes || "",
+      billable_rate: Number(shift.billable_rate || 0),
+      status: shift.status || "published",
+      garde_hours: Number(shift.garde_hours || 0),
+      rappel_hours: Number(shift.rappel_hours || 0),
+      mandat_start: shift.mandat_start || null,
+      mandat_end: shift.mandat_end || null,
+    };
+  }, []);
+
   const copySelectedShifts = useCallback(() => {
     if (!selectedShiftIds.length) {
       toast?.("Selectionne au moins un quart a copier");
@@ -1212,7 +1238,12 @@ export default function SchedulesPage({ toast, onNavigate }) {
             recurrence: "once",
           });
         });
-        await Promise.all(creations);
+        const createdShifts = await Promise.all(creations);
+        setLastBulkAction({
+          type: "paste",
+          ids: createdShifts.map((shift) => String(shift?.id || "")).filter(Boolean),
+          count: createdShifts.length,
+        });
         toast?.(`${copiedShifts.length} quart(s) colle(s)`);
         clearSelectedShifts();
         setPasteMode(false);
@@ -1240,7 +1271,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
     }
     try {
       setBulkLoading(true);
+      const previousShifts = selectedShiftIds
+        .map((id) => snapshotShiftForUndo(visibleScheduleMap.get(String(id))))
+        .filter(Boolean);
       await api.bulkUpdateSchedulesStatus(selectedShiftIds, "cancelled", true);
+      setLastBulkAction({
+        type: "cancel",
+        shifts: previousShifts,
+        count: previousShifts.length,
+      });
       toast?.(`${selectedShiftIds.length} quart(s) annule(s)`);
       clearSelectedShifts();
       await reload();
@@ -1249,7 +1288,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
     } finally {
       setBulkLoading(false);
     }
-  }, [clearSelectedShifts, reload, selectedShiftIds, toast]);
+  }, [clearSelectedShifts, reload, selectedShiftIds, snapshotShiftForUndo, toast, visibleScheduleMap]);
 
   const bulkDeleteSelected = useCallback(async () => {
     if (!selectedShiftIds.length) {
@@ -1265,7 +1304,15 @@ export default function SchedulesPage({ toast, onNavigate }) {
     }
     try {
       setBulkLoading(true);
+      const deletedShifts = selectedShiftIds
+        .map((id) => snapshotShiftForUndo(visibleScheduleMap.get(String(id))))
+        .filter(Boolean);
       await api.bulkDeleteSchedules(selectedShiftIds, true);
+      setLastBulkAction({
+        type: "delete",
+        shifts: deletedShifts,
+        count: deletedShifts.length,
+      });
       toast?.(`${selectedShiftIds.length} quart(s) supprime(s)`);
       clearSelectedShifts();
       await reload();
@@ -1274,7 +1321,61 @@ export default function SchedulesPage({ toast, onNavigate }) {
     } finally {
       setBulkLoading(false);
     }
-  }, [clearSelectedShifts, reload, selectedShiftIds, toast]);
+  }, [clearSelectedShifts, reload, selectedShiftIds, snapshotShiftForUndo, toast, visibleScheduleMap]);
+
+  const undoLastBulkAction = useCallback(async () => {
+    if (!lastBulkAction) {
+      toast?.("Aucune action bulk recente a annuler");
+      return;
+    }
+    try {
+      setBulkLoading(true);
+      if (lastBulkAction.type === "cancel") {
+        await Promise.all(
+          (lastBulkAction.shifts || []).map((shift) =>
+            api.updateSchedule(shift.id, { status: shift.status || "published" }),
+          ),
+        );
+      } else if (lastBulkAction.type === "delete") {
+        await Promise.all(
+          (lastBulkAction.shifts || []).map((shift) =>
+            api.createSchedule({
+              employee_id: shift.employee_id,
+              date: shift.date,
+              start: shift.start,
+              end: shift.end,
+              pause: shift.pause,
+              hours: shift.hours,
+              location: shift.location,
+              client_id: shift.client_id,
+              km: shift.km,
+              deplacement: shift.deplacement,
+              autre_dep: shift.autre_dep,
+              notes: shift.notes,
+              billable_rate: shift.billable_rate,
+              status: shift.status || "published",
+              garde_hours: shift.garde_hours || 0,
+              rappel_hours: shift.rappel_hours || 0,
+              mandat_start: shift.mandat_start,
+              mandat_end: shift.mandat_end,
+              recurrence: "once",
+            }),
+          ),
+        );
+      } else if (lastBulkAction.type === "paste" && (lastBulkAction.ids || []).length) {
+        await api.bulkDeleteSchedules(lastBulkAction.ids, true);
+      }
+      setLastBulkAction(null);
+      clearSelectedShifts();
+      setPasteMode(false);
+      toast?.("Derniere action bulk annulee");
+      await reload();
+    } catch (err) {
+      toast?.("Erreur: " + err.message);
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [clearSelectedShifts, lastBulkAction, reload, toast]);
 
   useEffect(() => {
     const visibleIds = new Set(visibleSchedules.map((shift) => String(shift.id)));
@@ -2453,6 +2554,13 @@ export default function SchedulesPage({ toast, onNavigate }) {
               : "Clique et glisse dans l'horaire pour selectionner plusieurs quarts."}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={undoLastBulkAction}
+              disabled={!lastBulkAction || bulkLoading}
+            >
+              Retour arriere
+            </button>
             <button
               className="btn btn-outline btn-sm"
               onClick={copySelectedShifts}

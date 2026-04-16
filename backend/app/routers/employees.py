@@ -8,13 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..database import get_db
-from ..models.models import Employee, EmployeeDocument, EmployeeNote, User
+from ..models.models import (
+    Employee,
+    EmployeeDocument,
+    EmployeeNote,
+    SharedEmployeeDocument,
+    User,
+)
 from ..models.schemas import (
     EmployeeCreate,
     EmployeeDocumentOut,
     EmployeeOut,
     EmployeeUpdate,
     NoteCreate,
+    SharedEmployeeDocumentOut,
 )
 from ..services.auth_service import generate_magic_token, get_current_user, require_admin
 from ..services.email_service import send_employee_portal_invitation
@@ -209,6 +216,45 @@ def _ensure_employee_access(user, employee: Employee):
     raise HTTPException(status_code=403, detail="Acces refuse a ce dossier employe")
 
 
+async def _ensure_shared_document_access(db: AsyncSession, user):
+    if getattr(user, "role", "") == "admin":
+        return
+    employee_id = getattr(user, "employee_id", None)
+    if not employee_id:
+        raise HTTPException(status_code=403, detail="Acces refuse aux documents partages")
+    employee_result = await db.execute(select(Employee).where(Employee.id == employee_id))
+    employee = employee_result.scalar_one_or_none()
+    if not employee or not bool(getattr(employee, "is_active", False)):
+        raise HTTPException(status_code=403, detail="Acces refuse aux documents partages")
+
+
+async def _read_upload_payload(file: UploadFile) -> tuple[bytes, str, str]:
+    content_type = file.content_type or ""
+    if content_type and content_type not in ALLOWED_MIME:
+        raise HTTPException(status_code=400, detail=f"Type non supporte: {content_type}")
+    data = await file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10 MB)")
+    ext = (
+        file.filename.split(".")[-1].lower()
+        if file.filename and "." in file.filename
+        else ""
+    ).strip()
+    return data, content_type, ext
+
+
+def _document_media_type(file_type: str | None) -> str:
+    return {
+        "pdf": "application/pdf",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
+    }.get(str(file_type or "").lower(), "application/octet-stream")
+
+
 async def _send_portal_invite_or_capture_error(
     db: AsyncSession,
     email: str,
@@ -268,6 +314,118 @@ async def list_employees(
         }
         for employee in employees
     ]
+
+
+@router.get("/shared-documents")
+async def list_shared_employee_documents(
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    await _ensure_shared_document_access(db, user)
+    result = await db.execute(
+        select(SharedEmployeeDocument).order_by(SharedEmployeeDocument.created_at.desc())
+    )
+    return [
+        SharedEmployeeDocumentOut.model_validate(document).model_dump()
+        for document in result.scalars().all()
+    ]
+
+
+@router.post("/shared-documents", status_code=201)
+async def upload_shared_employee_document(
+    file: UploadFile = File(...),
+    category: str = Form("document"),
+    description: str = Form(""),
+    uploaded_by: str = Form("admin"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    data, content_type, ext = await _read_upload_payload(file)
+    document = SharedEmployeeDocument(
+        filename=file.filename or "document",
+        original_filename=file.filename or "document",
+        file_type=ext or (content_type or "bin"),
+        file_size=len(data),
+        file_data=data,
+        category=category,
+        description=description,
+        uploaded_by=uploaded_by or getattr(user, "email", "admin"),
+    )
+    db.add(document)
+    await db.commit()
+    await db.refresh(document)
+    return SharedEmployeeDocumentOut.model_validate(document)
+
+
+@router.get("/shared-documents/{doc_id}")
+async def get_shared_employee_document(
+    doc_id: int,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    await _ensure_shared_document_access(db, user)
+    result = await db.execute(
+        select(SharedEmployeeDocument).where(SharedEmployeeDocument.id == doc_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document partage introuvable")
+    return Response(
+        content=document.file_data,
+        media_type=_document_media_type(document.file_type),
+        headers={
+            "Content-Disposition": f'attachment; filename="{document.original_filename}"'
+        },
+    )
+
+
+@router.delete("/shared-documents/{doc_id}")
+async def delete_shared_employee_document(
+    doc_id: int,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(
+        select(SharedEmployeeDocument).where(SharedEmployeeDocument.id == doc_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document partage introuvable")
+    await db.delete(document)
+    await db.commit()
+    return {"message": "Document partage supprime"}
+
+
+@router.put("/shared-documents/{doc_id}/replace")
+async def replace_shared_employee_document(
+    doc_id: int,
+    file: UploadFile = File(...),
+    category: str = Form("document"),
+    description: str = Form(""),
+    uploaded_by: str = Form("admin"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(
+        select(SharedEmployeeDocument).where(SharedEmployeeDocument.id == doc_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document partage introuvable")
+
+    data, content_type, ext = await _read_upload_payload(file)
+    document.filename = file.filename or document.filename
+    document.original_filename = file.filename or document.original_filename
+    document.file_type = ext or (content_type or document.file_type or "bin")
+    document.file_size = len(data)
+    document.file_data = data
+    document.category = category
+    document.description = description
+    document.uploaded_by = uploaded_by or getattr(user, "email", "admin")
+    document.created_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(document)
+    return SharedEmployeeDocumentOut.model_validate(document)
 
 
 @router.get("/{eid}")

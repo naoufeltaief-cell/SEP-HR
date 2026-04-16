@@ -171,6 +171,27 @@ class ApiClient {
   reactivateEmployee(id) { return this.post(`/employees/${id}/reactivate`, {}); }
   inviteEmployeeAccess(id) { return this.post(`/employees/${id}/invite-access`, {}); }
   addEmployeeNote(id, data) { return this.post(`/employees/${id}/notes`, data); }
+  getSharedEmployeeDocuments() { return this.get('/employees/shared-documents'); }
+  async uploadSharedEmployeeDocument(file, category = 'document', description = '') {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    formData.append('description', description);
+    formData.append('uploaded_by', this.user?.email || 'admin');
+    return this.postForm('/employees/shared-documents', formData);
+  }
+  async replaceSharedEmployeeDocument(docId, file, category = 'document', description = '') {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('category', category);
+    formData.append('description', description);
+    formData.append('uploaded_by', this.user?.email || 'admin');
+    return this.requestRaw(`/employees/shared-documents/${docId}/replace`, { method: 'PUT', body: formData }).then(resp => resp.json());
+  }
+  deleteSharedEmployeeDocument(docId) { return this.del(`/employees/shared-documents/${docId}`); }
+  downloadSharedEmployeeDocument(docId, fallbackFilename = 'document') {
+    return this.downloadProtectedFile(`/employees/shared-documents/${docId}`, fallbackFilename);
+  }
   getEmployeeDocuments(id) { return this.get(`/employees/${id}/documents`); }
   async uploadEmployeeDocument(id, file, category = 'document', description = '', visibleToEmployee = false) {
     const formData = new FormData();

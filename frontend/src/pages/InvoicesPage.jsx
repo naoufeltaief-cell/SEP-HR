@@ -1700,6 +1700,23 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     }
   };
 
+  const undoReceivedPayment = async () => {
+    const paymentCount = (inv.payments || []).length;
+    const confirmText = paymentCount > 0
+      ? `Annuler le dernier paiement recu pour cette facture?`
+      : `Aucun paiement detaille n'est enregistre. Reouvrir quand meme la facture comme impayee?`;
+    if (!confirm(confirmText)) return;
+    try {
+      await apiFetch(`/invoices/${inv.id}/undo-payment`, { method: 'POST' });
+      setSuccess(paymentCount > 0 ? 'Dernier paiement annule' : 'Facture reouverte');
+      onRefresh();
+      loadInvoices();
+      loadStats();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const workflowActions = useMemo(() => {
     const actions = [];
     switch (inv.status) {
@@ -1719,16 +1736,17 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
       case 'partially_paid':
         actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: '' });
         actions.push({ label: 'Ajout paiement', fn: () => setShowPayment(true), variant: 'warning', icon: '' });
+        actions.push({ label: 'Annuler paiement recu', fn: () => undoReceivedPayment(), variant: 'danger', icon: '' });
         break;
       case 'paid':
-        actions.push({ label: 'Reouvrir', status: 'sent', variant: 'outline', icon: '' });
+        actions.push({ label: 'Annuler paiement recu', fn: () => undoReceivedPayment(), variant: 'danger', icon: '' });
         break;
       case 'cancelled':
         actions.push({ label: 'Reactiver', status: 'draft', variant: 'outline', icon: '' });
         break;
     }
     return actions;
-  }, [inv.status, inv.id]);
+  }, [inv.status, inv.id, inv.payments]);
 
   return (
     <div>

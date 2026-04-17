@@ -752,7 +752,9 @@ async def update_invoice(
     user=Depends(require_admin),
 ):
     """Update invoice (draft or validated)"""
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.payments)).where(Invoice.id == invoice_id)
+    )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
@@ -1308,6 +1310,54 @@ async def remove_payment(
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"message": "Payment deleted"}
+
+
+@router.post("/{invoice_id}/undo-payment")
+async def undo_invoice_payment(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.payments)).where(Invoice.id == invoice_id)
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(404, "Invoice not found")
+    if invoice.status in (InvoiceStatus.DRAFT.value, InvoiceStatus.CANCELLED.value):
+        raise HTTPException(400, "Cannot undo payment on draft or cancelled invoice")
+
+    payments = list(invoice.payments or [])
+    if payments:
+        latest_payment = sorted(
+            payments,
+            key=lambda item: (
+                item.date.isoformat() if item.date else "",
+                item.created_at.isoformat() if item.created_at else "",
+            ),
+            reverse=True,
+        )[0]
+        try:
+            await delete_payment(db, invoice, latest_payment.id, getattr(user, "email", ""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"message": "Latest payment removed", "payment_id": latest_payment.id}
+
+    old_status = invoice.status
+    invoice.amount_paid = 0.0
+    invoice.balance_due = round(float(invoice.total or 0), 2)
+    invoice.paid_at = None
+    invoice.status = InvoiceStatus.SENT.value
+    db.add(InvoiceAuditLog(
+        invoice_id=invoice.id,
+        action=AuditAction.STATUS_CHANGE.value,
+        old_status=old_status,
+        new_status=invoice.status,
+        user_email=getattr(user, "email", ""),
+        details="Invoice payment state reopened without payment rows",
+    ))
+    await db.commit()
+    return {"message": "Invoice reopened without stored payment rows"}
 
 
 # â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”

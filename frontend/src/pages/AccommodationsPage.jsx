@@ -76,28 +76,29 @@ export default function AccommodationsPage({ toast }) {
   const [modalAttachments, setModalAttachments] = useState([]);
   const [uploadingAccommodationId, setUploadingAccommodationId] = useState(null);
 
+  const loadSupportData = useCallback(async () => {
+    const [employeesResult, schedulesResult] = await Promise.allSettled([
+      api.getEmployees(),
+      api.getSchedules(),
+    ]);
+    setEmployees(employeesResult.status === 'fulfilled' ? employeesResult.value || [] : []);
+    setSchedules(schedulesResult.status === 'fulfilled' ? schedulesResult.value || [] : []);
+    if (employeesResult.status !== 'fulfilled' || schedulesResult.status !== 'fulfilled') {
+      toast?.("Hebergement charge avec donnees partielles. Les calculs automatiques peuvent etre limites.");
+    }
+  }, [toast]);
+
   const reload = useCallback(async () => {
     try {
-      const [accResult, empsResult, schedsResult] = await Promise.allSettled([
-        api.getAccommodations(),
-        api.getEmployees(),
-        api.getSchedules(),
-      ]);
-      if (accResult.status !== 'fulfilled') {
-        throw accResult.reason || new Error("Impossible de charger l'hebergement");
-      }
-      setAccommodations(accResult.value || []);
-      setEmployees(empsResult.status === 'fulfilled' ? empsResult.value || [] : []);
-      setSchedules(schedsResult.status === 'fulfilled' ? schedsResult.value || [] : []);
-      if (empsResult.status !== 'fulfilled' || schedsResult.status !== 'fulfilled') {
-        toast?.("Hebergement charge avec donnees partielles. Les calculs automatiques peuvent etre limites.");
-      }
+      const accommodationsData = await api.getAccommodations();
+      setAccommodations(accommodationsData || []);
+      await loadSupportData();
     } catch (err) {
       toast?.(`Erreur: ${err.message}`);
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [loadSupportData, toast]);
 
   useEffect(() => {
     reload();
@@ -174,6 +175,9 @@ export default function AccommodationsPage({ toast }) {
   );
 
   const openAdd = () => {
+    if (!employees.length || !schedules.length) {
+      loadSupportData();
+    }
     setModalAttachments([]);
     setModal({
       employee_id: '',
@@ -189,6 +193,9 @@ export default function AccommodationsPage({ toast }) {
   };
 
   const openEdit = async (accommodation) => {
+    if (!employees.length || !schedules.length) {
+      await loadSupportData();
+    }
     setModalAttachments([]);
     setModal({
       id: accommodation.id,

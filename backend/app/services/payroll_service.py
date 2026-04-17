@@ -236,7 +236,7 @@ def _collect_payroll_profile_issues(employee: Employee | None, company_context: 
     return issues
 
 
-def build_desjardins_export_row(
+def normalize_desjardins_export_row(
     *,
     employee: Employee,
     company_context: str,
@@ -253,8 +253,8 @@ def build_desjardins_export_row(
 ) -> PayrollSourceItem:
     company = _resolve_payroll_company(employee, company_context)
     matricule = _clean_str(getattr(employee, "matricule", ""))
-    statement_number = _clean_str(getattr(employee, "payroll_statement_number", "")) or DEFAULT_PAYROLL_STATEMENT_NUMBER
-    transaction_type = _clean_str(getattr(employee, "payroll_transaction_type", "")) or DEFAULT_PAYROLL_TRANSACTION_TYPE
+    statement_number = DEFAULT_PAYROLL_STATEMENT_NUMBER
+    transaction_type = DEFAULT_PAYROLL_TRANSACTION_TYPE
 
     if not company:
         raise ValueError("Aucune compagnie active ou config de compagnie n'a ete trouvee.")
@@ -287,6 +287,37 @@ def build_desjardins_export_row(
         rate=rate,
         amount=amount,
         sort_order=sort_order,
+    )
+
+
+def build_desjardins_export_row(
+    *,
+    employee: Employee,
+    company_context: str,
+    code: str,
+    week_number: int | None,
+    transaction_date: date | None,
+    source_type: str,
+    source_id: str,
+    export_key: str,
+    sort_order: int,
+    quantity: float | None = None,
+    rate: float | None = None,
+    amount: float | None = None,
+) -> PayrollSourceItem:
+    return normalize_desjardins_export_row(
+        employee=employee,
+        company_context=company_context,
+        code=code,
+        week_number=week_number,
+        transaction_date=transaction_date,
+        source_type=source_type,
+        source_id=source_id,
+        export_key=export_key,
+        sort_order=sort_order,
+        quantity=quantity,
+        rate=rate,
+        amount=amount,
     )
 
 
@@ -345,8 +376,8 @@ async def _load_approved_context(
     approvals_result = await db.execute(
         select(ScheduleApproval).where(
             ScheduleApproval.status == "approved",
-            ScheduleApproval.week_start >= period_start,
-            ScheduleApproval.week_end <= period_end,
+            ScheduleApproval.week_end >= period_start,
+            ScheduleApproval.week_start <= period_end,
         )
     )
     approvals = approvals_result.scalars().all()
@@ -374,12 +405,17 @@ async def _load_approved_context(
         )
     )
     schedules_by_key: dict[tuple[int, int, date, date], list[Schedule]] = defaultdict(list)
+    approvals_by_employee: dict[int, list[ScheduleApproval]] = defaultdict(list)
+    for approval in filtered_approvals:
+        approvals_by_employee[approval.employee_id].append(approval)
     for schedule in schedules_result.scalars().all():
-        for approval in filtered_approvals:
+        employee = employees.get(schedule.employee_id)
+        effective_schedule_client_id = getattr(schedule, "client_id", None) or getattr(employee, "client_id", None)
+        for approval in approvals_by_employee.get(schedule.employee_id, []):
+            effective_approval_client_id = getattr(approval, "client_id", None) or getattr(employee, "client_id", None)
             if (
-                approval.employee_id == schedule.employee_id
-                and approval.client_id == getattr(schedule, "client_id", None)
-                and approval.week_start <= schedule.date <= approval.week_end
+                approval.week_start <= schedule.date <= approval.week_end
+                and effective_approval_client_id == effective_schedule_client_id
             ):
                 schedules_by_key[
                     (approval.employee_id, approval.client_id, approval.week_start, approval.week_end)

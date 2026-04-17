@@ -48,7 +48,7 @@ export default function BillingPayrollTab({
   const todayIso = new Date().toISOString().split('T')[0];
   const [periodStart, setPeriodStart] = useState(todayIso);
   const [periodEnd, setPeriodEnd] = useState(todayIso);
-  const [companyId, setCompanyId] = useState('');
+  const [companyId, setCompanyId] = useState(DEFAULT_COMPANY);
   const [regenerate, setRegenerate] = useState(false);
   const [preview, setPreview] = useState(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -165,7 +165,6 @@ export default function BillingPayrollTab({
         <div>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Compagnie</div>
           <select value={companyId} onChange={(event) => setCompanyId(event.target.value)} style={{ ...inputStyle, width: '100%' }}>
-            <option value="">Compagnie par defaut ({DEFAULT_COMPANY})</option>
             {companyOptions.map((company) => (
               <option key={company} value={company}>
                 {company}

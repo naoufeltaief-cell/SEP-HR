@@ -12,46 +12,49 @@ from ..services.automation_service import sync_accommodation_reminder_state
 router = APIRouter()
 
 
+def _serialize_accommodation(accommodation: Accommodation, attachment_count: int = 0) -> dict:
+    try:
+        sync_accommodation_reminder_state(accommodation)
+    except Exception:
+        pass
+    return {
+        "id": accommodation.id,
+        "employee_id": accommodation.employee_id,
+        "total_cost": float(getattr(accommodation, "total_cost", 0) or 0),
+        "start_date": getattr(accommodation, "start_date", None),
+        "end_date": getattr(accommodation, "end_date", None),
+        "days_worked": int(getattr(accommodation, "days_worked", 0) or 0),
+        "cost_per_day": float(getattr(accommodation, "cost_per_day", 0) or 0),
+        "notes": getattr(accommodation, "notes", "") or "",
+        "pdf_name": getattr(accommodation, "pdf_name", "") or "",
+        "reminder_enabled": bool(getattr(accommodation, "reminder_enabled", True)),
+        "reminder_status": getattr(accommodation, "reminder_status", "scheduled") or "scheduled",
+        "reminder_scheduled_for": getattr(accommodation, "reminder_scheduled_for", None),
+        "reminder_sent_at": getattr(accommodation, "reminder_sent_at", None),
+        "reminder_cancelled_at": getattr(accommodation, "reminder_cancelled_at", None),
+        "reminder_last_error": getattr(accommodation, "reminder_last_error", "") or "",
+        "attachment_count": int(attachment_count or 0),
+    }
+
+
 @router.get("")
 @router.get("/")
 async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     result = await db.execute(select(Accommodation).order_by(Accommodation.start_date.desc()))
     accommodations = result.scalars().all()
-    dirty = False
-    for accommodation in accommodations:
-        previous = (
-            accommodation.reminder_enabled,
-            accommodation.reminder_status,
-            accommodation.reminder_scheduled_for,
-            accommodation.reminder_cancelled_at,
-        )
-        sync_accommodation_reminder_state(accommodation)
-        current = (
-            accommodation.reminder_enabled,
-            accommodation.reminder_status,
-            accommodation.reminder_scheduled_for,
-            accommodation.reminder_cancelled_at,
-        )
-        if current != previous:
-            dirty = True
     ids = [a.id for a in accommodations]
     attachment_counts = {}
     if ids:
-        count_result = await db.execute(
-            select(AccommodationAttachment.accommodation_id, func.count(AccommodationAttachment.id))
-            .where(AccommodationAttachment.accommodation_id.in_(ids))
-            .group_by(AccommodationAttachment.accommodation_id)
-        )
-        attachment_counts = {row[0]: int(row[1] or 0) for row in count_result.all()}
-    if dirty:
-        await db.commit()
-    return [
-        {
-            **AccommodationOut.model_validate(accommodation).model_dump(),
-            "attachment_count": attachment_counts.get(accommodation.id, 0),
-        }
-        for accommodation in accommodations
-    ]
+        try:
+            count_result = await db.execute(
+                select(AccommodationAttachment.accommodation_id, func.count(AccommodationAttachment.id))
+                .where(AccommodationAttachment.accommodation_id.in_(ids))
+                .group_by(AccommodationAttachment.accommodation_id)
+            )
+            attachment_counts = {row[0]: int(row[1] or 0) for row in count_result.all()}
+        except Exception:
+            attachment_counts = {}
+    return [_serialize_accommodation(accommodation, attachment_counts.get(accommodation.id, 0)) for accommodation in accommodations]
 
 
 @router.post("/", status_code=201)

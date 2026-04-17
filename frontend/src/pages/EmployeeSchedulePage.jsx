@@ -626,9 +626,14 @@ export default function EmployeeSchedulePage({ user, toast }) {
                       </div>
                     </div>
                     {row.isManual && canEditWeekTimesheet ? (
-                      <button className="btn btn-outline btn-sm" onClick={() => removeManualShift(row.rowId)}>
-                        <Trash2 size={14} /> Supprimer ce quart
-                      </button>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#b42318', background: '#fff1f3', borderRadius: 999, padding: '4px 10px' }}>
+                          Quart manuel supprimable
+                        </span>
+                        <button className="btn btn-outline btn-sm" style={{ color: '#b42318' }} onClick={() => removeManualShift(row.rowId)}>
+                          <Trash2 size={14} /> Supprimer ce quart
+                        </button>
+                      </div>
                     ) : null}
                   </div>
 

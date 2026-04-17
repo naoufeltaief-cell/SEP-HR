@@ -24,6 +24,10 @@ from ..models.schemas import (
     SharedEmployeeDocumentOut,
 )
 from ..services.auth_service import generate_magic_token, get_current_user, require_admin
+from ..services.employee_payroll_import_service import (
+    apply_desjardins_employee_rows,
+    parse_desjardins_employee_file,
+)
 from ..services.email_service import send_employee_portal_invitation
 
 router = APIRouter()
@@ -35,6 +39,9 @@ ALLOWED_MIME = {
     "image/gif",
     "image/heic",
     "image/heif",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/csv",
 }
 MAX_FILE_SIZE = 10 * 1024 * 1024
 PORTAL_INVITE_EXPIRE_HOURS = 72
@@ -243,6 +250,17 @@ async def _read_upload_payload(file: UploadFile) -> tuple[bytes, str, str]:
     return data, content_type, ext
 
 
+async def _read_payroll_import_payload(file: UploadFile) -> tuple[bytes, str]:
+    data = await file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Fichier trop volumineux (max 10 MB)")
+    filename = file.filename or "desjardins.xlsx"
+    extension = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if extension not in {"xlsx", "xlsm", "xltx", "xltm", "csv", "txt"}:
+        raise HTTPException(status_code=400, detail="Format non supporte. Utilise un fichier .xlsx ou .csv.")
+    return data, filename
+
+
 def _document_media_type(file_type: str | None) -> str:
     return {
         "pdf": "application/pdf",
@@ -426,6 +444,36 @@ async def replace_shared_employee_document(
     await db.commit()
     await db.refresh(document)
     return SharedEmployeeDocumentOut.model_validate(document)
+
+
+@router.post("/import-desjardins-matricules")
+async def import_desjardins_matricules(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    data, filename = await _read_payroll_import_payload(file)
+    try:
+        parsed_rows = parse_desjardins_employee_file(data, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not parsed_rows:
+        raise HTTPException(status_code=400, detail="Aucune ligne exploitable n'a ete trouvee dans le fichier Desjardins.")
+
+    result = await db.execute(select(Employee))
+    employees = result.scalars().all()
+    report = apply_desjardins_employee_rows(employees, parsed_rows)
+    await db.commit()
+    return {
+        "filename": filename,
+        "default_company": report["default_company"],
+        "total_rows": report["total_rows"],
+        "matched_rows": report["matched_rows"],
+        "updated_employees": report["updated_employees"],
+        "unmatched_rows": report["unmatched_rows"],
+        "ambiguous_rows": report["ambiguous_rows"],
+    }
 
 
 @router.get("/{eid}")

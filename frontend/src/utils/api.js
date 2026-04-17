@@ -169,6 +169,11 @@ class ApiClient {
   updateEmployee(id, data) { return this.put(`/employees/${id}`, data); }
   deactivateEmployee(id) { return this.post(`/employees/${id}/deactivate`, {}); }
   reactivateEmployee(id) { return this.post(`/employees/${id}/reactivate`, {}); }
+  async importDesjardinsMatricules(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.postForm('/employees/import-desjardins-matricules', formData);
+  }
   inviteEmployeeAccess(id) { return this.post(`/employees/${id}/invite-access`, {}); }
   addEmployeeNote(id, data) { return this.post(`/employees/${id}/notes`, data); }
   getSharedEmployeeDocuments() { return this.get('/employees/shared-documents'); }

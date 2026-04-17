@@ -121,6 +121,10 @@ export default function EmployeesPage({ toast }) {
   const [sharedDocumentCategory, setSharedDocumentCategory] = useState('document');
   const [uploadingSharedDocument, setUploadingSharedDocument] = useState(false);
   const [sharedUploadKey, setSharedUploadKey] = useState(0);
+  const [payrollImportFile, setPayrollImportFile] = useState(null);
+  const [payrollImporting, setPayrollImporting] = useState(false);
+  const [payrollImportKey, setPayrollImportKey] = useState(0);
+  const [payrollImportReport, setPayrollImportReport] = useState(null);
 
   const reload = useCallback(async () => {
     const [emps, scheds, cls, sharedDocs] = await Promise.all([
@@ -200,6 +204,11 @@ export default function EmployeesPage({ toast }) {
     setSharedDocumentDescription('');
     setSharedDocumentCategory('document');
     setSharedUploadKey((current) => current + 1);
+  };
+
+  const resetPayrollImportForm = () => {
+    setPayrollImportFile(null);
+    setPayrollImportKey((current) => current + 1);
   };
 
   const addNote = async () => {
@@ -417,6 +426,32 @@ export default function EmployeesPage({ toast }) {
     }
   };
 
+  const importDesjardinsMatricules = async () => {
+    if (!payrollImportFile) {
+      toast?.('Selectionne la liste Desjardins a importer');
+      return;
+    }
+    try {
+      setPayrollImporting(true);
+      const report = await api.importDesjardinsMatricules(payrollImportFile);
+      setPayrollImportReport(report);
+      resetPayrollImportForm();
+      await reload();
+      const warnings = [];
+      if (report.unmatched_rows?.length) warnings.push(`${report.unmatched_rows.length} non correspondance(s)`);
+      if (report.ambiguous_rows?.length) warnings.push(`${report.ambiguous_rows.length} correspondance(s) ambigue(s)`);
+      toast?.(
+        `Import Desjardins termine - ${report.updated_employees || 0} profil(s) mis a jour`
+        + (warnings.length ? ` (${warnings.join(', ')})` : '')
+      );
+      if (detail?.id) await refreshDetail(detail.id);
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    } finally {
+      setPayrollImporting(false);
+    }
+  };
+
   return (
     <>
       <div className="page-header">
@@ -519,6 +554,66 @@ export default function EmployeesPage({ toast }) {
               </div>
             ) : (
               <div style={{ color: 'var(--text3)', fontSize: 13 }}>Aucun document partage pour le moment.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 18 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 320px' }}>
+            <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--brand-d)', marginBottom: 6 }}>
+              Import des matricules Desjardins
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 14 }}>
+              Importe la liste officielle de la banque Desjardins pour mettre a jour les matricules et la division paie des employes correspondants.
+            </div>
+            <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+              <input
+                key={payrollImportKey}
+                className="input"
+                type="file"
+                accept=".xlsx,.csv"
+                onChange={(event) => setPayrollImportFile(event.target.files?.[0] || null)}
+              />
+              <div>
+                <button className="btn btn-primary btn-sm" onClick={importDesjardinsMatricules} disabled={payrollImporting}>
+                  <Upload size={13} /> {payrollImporting ? 'Import...' : 'Importer la liste Desjardins'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ flex: '1 1 360px', minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Dernier rapport d'import</div>
+            {payrollImportReport ? (
+              <div style={{ display: 'grid', gap: 8 }}>
+                <div style={{ fontSize: 13, color: 'var(--text2)' }}>
+                  Fichier: <strong>{payrollImportReport.filename}</strong>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <DocumentChip active label={`${payrollImportReport.total_rows || 0} ligne(s)`} />
+                  <DocumentChip active label={`${payrollImportReport.matched_rows || 0} correspondance(s)`} />
+                  <DocumentChip active label={`${payrollImportReport.updated_employees || 0} profil(s) mis a jour`} />
+                  <DocumentChip active label={`Compagnie ${payrollImportReport.default_company || '254981'}`} />
+                </div>
+                {!!payrollImportReport.unmatched_rows?.length && (
+                  <div style={{ fontSize: 12, color: '#9a3412' }}>
+                    Non trouves: {payrollImportReport.unmatched_rows.slice(0, 5).map((item) => item.name).join(', ')}
+                    {payrollImportReport.unmatched_rows.length > 5 ? '...' : ''}
+                  </div>
+                )}
+                {!!payrollImportReport.ambiguous_rows?.length && (
+                  <div style={{ fontSize: 12, color: '#9a3412' }}>
+                    Ambigus: {payrollImportReport.ambiguous_rows.slice(0, 3).map((item) => item.name).join(', ')}
+                    {payrollImportReport.ambiguous_rows.length > 3 ? '...' : ''}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ color: 'var(--text3)', fontSize: 13 }}>
+                Aucun import Desjardins lance depuis cette session.
+              </div>
             )}
           </div>
         </div>

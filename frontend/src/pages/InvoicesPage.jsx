@@ -382,7 +382,12 @@ export default function InvoicesPage() {
   const emailInvoice = async (id) => {
     try {
       const res = await apiFetch(`/invoices/${id}/email`, { method: 'POST' });
-      setSuccess(res.message || 'Courriel envoye');
+      const deliveryBits = [];
+      if (res.transport) deliveryBits.push(`transport: ${res.transport}`);
+      if (res.from_email) deliveryBits.push(`depuis: ${res.from_email}`);
+      setSuccess(
+        res.message || `Courriel envoye${deliveryBits.length ? ` (${deliveryBits.join(' | ')})` : ''}`
+      );
       if (selectedInvoice?.id === id) openDetail(id);
       loadInvoices();
     } catch (e) {

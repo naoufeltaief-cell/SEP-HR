@@ -28,6 +28,10 @@ from ..services.employee_payroll_import_service import (
     apply_desjardins_employee_rows,
     parse_desjardins_employee_file,
 )
+from ..services.employee_compensation_import_service import (
+    apply_employee_compensation_rows,
+    parse_employee_compensation_file,
+)
 from ..services.email_service import send_employee_portal_invitation
 
 router = APIRouter()
@@ -45,6 +49,9 @@ ALLOWED_MIME = {
 }
 MAX_FILE_SIZE = 10 * 1024 * 1024
 PORTAL_INVITE_EXPIRE_HOURS = 72
+DEFAULT_PAYROLL_COMPANY = "254981"
+DEFAULT_PAYROLL_STATEMENT_NUMBER = "0"
+DEFAULT_PAYROLL_TRANSACTION_TYPE = "G"
 
 
 def _normalize_email(value: str) -> str:
@@ -85,6 +92,53 @@ def _parse_form_bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on", "oui"}
+
+
+def _normalize_employee_payload(payload: dict) -> dict:
+    normalized = dict(payload or {})
+    compensation_mode = _clean_str(
+        normalized.get("payroll_compensation_mode")
+    ).lower() or "hourly"
+    normalized["payroll_compensation_mode"] = compensation_mode
+    normalized["perdiem_mode"] = _clean_str(normalized.get("perdiem_mode"))
+    threshold = normalized.get("perdiem_threshold_hours")
+    try:
+        normalized["perdiem_threshold_hours"] = float(threshold or 7)
+    except (TypeError, ValueError):
+        normalized["perdiem_threshold_hours"] = 7.0
+    if normalized["perdiem_threshold_hours"] <= 0:
+        normalized["perdiem_threshold_hours"] = 7.0
+
+    if "rate" in normalized and normalized.get("rate") is not None:
+        try:
+            normalized_rate = float(normalized.get("rate") or 0)
+        except (TypeError, ValueError):
+            normalized_rate = 0.0
+        if compensation_mode == "honoraires":
+            normalized_rate = 0.0
+        normalized["rate"] = normalized_rate
+        normalized["salary"] = normalized_rate
+    elif "salary" in normalized and normalized.get("salary") is not None:
+        try:
+            normalized["salary"] = float(normalized.get("salary") or 0)
+        except (TypeError, ValueError):
+            normalized["salary"] = 0.0
+
+    if "perdiem" in normalized and normalized.get("perdiem") is not None:
+        try:
+            normalized["perdiem"] = float(normalized.get("perdiem") or 0)
+        except (TypeError, ValueError):
+            normalized["perdiem"] = 0.0
+        if compensation_mode == "honoraires":
+            normalized["perdiem"] = 0.0
+
+    if not _clean_str(normalized.get("payroll_company")):
+        normalized["payroll_company"] = DEFAULT_PAYROLL_COMPANY
+    if not _clean_str(normalized.get("payroll_statement_number")):
+        normalized["payroll_statement_number"] = DEFAULT_PAYROLL_STATEMENT_NUMBER
+    if not _clean_str(normalized.get("payroll_transaction_type")):
+        normalized["payroll_transaction_type"] = DEFAULT_PAYROLL_TRANSACTION_TYPE
+    return normalized
 
 
 def _serialize_portal_access(portal_user: User | None) -> dict:
@@ -476,6 +530,35 @@ async def import_desjardins_matricules(
     }
 
 
+@router.post("/import-compensation-profiles")
+async def import_employee_compensation_profiles(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    data, filename = await _read_payroll_import_payload(file)
+    try:
+        parsed_rows = parse_employee_compensation_file(data, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not parsed_rows:
+        raise HTTPException(status_code=400, detail="Aucune ligne exploitable n'a ete trouvee dans le fichier de taux/perdiem.")
+
+    result = await db.execute(select(Employee))
+    employees = result.scalars().all()
+    report = apply_employee_compensation_rows(employees, parsed_rows)
+    await db.commit()
+    return {
+        "filename": filename,
+        "total_rows": report["total_rows"],
+        "matched_rows": report["matched_rows"],
+        "updated_employees": report["updated_employees"],
+        "unmatched_rows": report["unmatched_rows"],
+        "ambiguous_rows": report["ambiguous_rows"],
+    }
+
+
 @router.get("/{eid}")
 async def get_employee(
     eid: int, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)
@@ -510,7 +593,8 @@ async def create_employee(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    emp = Employee(**data.model_dump())
+    payload = _normalize_employee_payload(data.model_dump())
+    emp = Employee(**payload)
     _apply_employee_activation_state(emp, emp.is_active)
     db.add(emp)
     await db.flush()
@@ -552,7 +636,7 @@ async def update_employee(
     if not emp:
         raise HTTPException(status_code=404, detail="Employe introuvable")
     previous_email = _normalize_email(emp.email)
-    updates = data.model_dump(exclude_unset=True)
+    updates = _normalize_employee_payload(data.model_dump(exclude_unset=True))
     next_is_active = updates.pop("is_active", None)
     for key, value in updates.items():
         setattr(emp, key, value)

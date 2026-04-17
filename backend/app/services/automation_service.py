@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import suppress
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.utils import getaddresses
 from zoneinfo import ZoneInfo
 

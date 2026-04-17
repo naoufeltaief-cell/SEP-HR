@@ -53,6 +53,9 @@ class EmployeeCreate(BaseModel):
     rate: float = 0
     salary: float = 0
     perdiem: float = 0
+    payroll_compensation_mode: str = "hourly"
+    perdiem_mode: str = ""
+    perdiem_threshold_hours: float = 7
     payroll_company: str = ""
     payroll_statement_number: str = ""
     payroll_transaction_type: str = ""
@@ -71,6 +74,9 @@ class EmployeeUpdate(BaseModel):
     rate: Optional[float] = None
     salary: Optional[float] = None
     perdiem: Optional[float] = None
+    payroll_compensation_mode: Optional[str] = None
+    perdiem_mode: Optional[str] = None
+    perdiem_threshold_hours: Optional[float] = None
     payroll_company: Optional[str] = None
     payroll_statement_number: Optional[str] = None
     payroll_transaction_type: Optional[str] = None
@@ -91,6 +97,9 @@ class EmployeeOut(BaseModel):
     rate: float
     salary: float
     perdiem: float
+    payroll_compensation_mode: str = "hourly"
+    perdiem_mode: str = ""
+    perdiem_threshold_hours: float = 7
     payroll_company: str = ""
     payroll_statement_number: str = ""
     payroll_transaction_type: str = ""

@@ -24,6 +24,7 @@ from app.services.payroll_service import (  # noqa: E402
     DEFAULT_PAYROLL_COMPANY,
     DEFAULT_PAYROLL_STATEMENT_NUMBER,
     DEFAULT_PAYROLL_TRANSACTION_TYPE,
+    _perdiem_amount_for_schedule,
     _rows_to_csv_bytes,
     _rows_to_xlsx_bytes,
     _week_number_for_date,
@@ -189,6 +190,34 @@ class PayrollExportTests(unittest.TestCase):
         self.assertEqual(data_row[5], 37.5)
         self.assertEqual(data_row[8], 2)
         self.assertEqual(data_row[13], "2026-04-18")
+
+    def test_perdiem_amount_supports_hourly_and_per_shift_modes(self):
+        from types import SimpleNamespace
+
+        hourly_employee = SimpleNamespace(
+            perdiem=10,
+            perdiem_mode="hourly",
+            perdiem_threshold_hours=0,
+            payroll_compensation_mode="hourly",
+        )
+        shift_employee = SimpleNamespace(
+            perdiem=120,
+            perdiem_mode="per_shift_min_hours",
+            perdiem_threshold_hours=7,
+            payroll_compensation_mode="hourly",
+        )
+        honoraires_employee = SimpleNamespace(
+            perdiem=120,
+            perdiem_mode="per_shift_min_hours",
+            perdiem_threshold_hours=7,
+            payroll_compensation_mode="honoraires",
+        )
+
+        self.assertEqual(_perdiem_amount_for_schedule(hourly_employee, 7.5), 75.0)
+        self.assertEqual(_perdiem_amount_for_schedule(shift_employee, 6.5), 0.0)
+        self.assertEqual(_perdiem_amount_for_schedule(shift_employee, 7.0), 120.0)
+        self.assertEqual(_perdiem_amount_for_schedule(shift_employee, 10.5), 120.0)
+        self.assertEqual(_perdiem_amount_for_schedule(honoraires_employee, 8.0), 0.0)
 
 
 if __name__ == "__main__":

@@ -56,11 +56,11 @@ function emptyEmployeeForm() {
     phone: '',
     email: '',
     rate: 0,
-    salary: 0,
     perdiem: 0,
+    payroll_compensation_mode: 'hourly',
+    perdiem_mode: '',
+    perdiem_threshold_hours: 7,
     payroll_company: '',
-    payroll_statement_number: '',
-    payroll_transaction_type: '',
     payroll_division: '',
     payroll_service: '',
     payroll_department: '',
@@ -125,6 +125,10 @@ export default function EmployeesPage({ toast }) {
   const [payrollImporting, setPayrollImporting] = useState(false);
   const [payrollImportKey, setPayrollImportKey] = useState(0);
   const [payrollImportReport, setPayrollImportReport] = useState(null);
+  const [compensationImportFile, setCompensationImportFile] = useState(null);
+  const [compensationImporting, setCompensationImporting] = useState(false);
+  const [compensationImportKey, setCompensationImportKey] = useState(0);
+  const [compensationImportReport, setCompensationImportReport] = useState(null);
 
   const reload = useCallback(async () => {
     const [emps, scheds, cls, sharedDocs] = await Promise.all([
@@ -211,6 +215,11 @@ export default function EmployeesPage({ toast }) {
     setPayrollImportKey((current) => current + 1);
   };
 
+  const resetCompensationImportForm = () => {
+    setCompensationImportFile(null);
+    setCompensationImportKey((current) => current + 1);
+  };
+
   const addNote = async () => {
     if (!noteText.trim() || !detail) return;
     await api.addEmployeeNote(detail.id, { content: noteText });
@@ -230,11 +239,11 @@ export default function EmployeesPage({ toast }) {
         phone: employee.phone || '',
         email: employee.email || '',
         rate: Number(employee.rate || 0),
-        salary: Number(employee.salary || 0),
         perdiem: Number(employee.perdiem || 0),
+        payroll_compensation_mode: employee.payroll_compensation_mode || 'hourly',
+        perdiem_mode: employee.perdiem_mode || '',
+        perdiem_threshold_hours: Number(employee.perdiem_threshold_hours || 7),
         payroll_company: employee.payroll_company || '',
-        payroll_statement_number: employee.payroll_statement_number || '',
-        payroll_transaction_type: employee.payroll_transaction_type || '',
         payroll_division: employee.payroll_division || '',
         payroll_service: employee.payroll_service || '',
         payroll_department: employee.payroll_department || '',
@@ -254,11 +263,11 @@ export default function EmployeesPage({ toast }) {
         phone: modal.data.phone,
         email: modal.data.email,
         rate: Number(modal.data.rate || 0),
-        salary: Number(modal.data.salary || 0),
         perdiem: Number(modal.data.perdiem || 0),
+        payroll_compensation_mode: modal.data.payroll_compensation_mode || 'hourly',
+        perdiem_mode: modal.data.perdiem_mode || '',
+        perdiem_threshold_hours: Number(modal.data.perdiem_threshold_hours || 7),
         payroll_company: modal.data.payroll_company || '',
-        payroll_statement_number: modal.data.payroll_statement_number || '',
-        payroll_transaction_type: modal.data.payroll_transaction_type || '',
         payroll_division: modal.data.payroll_division || '',
         payroll_service: modal.data.payroll_service || '',
         payroll_department: modal.data.payroll_department || '',
@@ -452,6 +461,32 @@ export default function EmployeesPage({ toast }) {
     }
   };
 
+  const importCompensationProfiles = async () => {
+    if (!compensationImportFile) {
+      toast?.('Selectionne la liste taux/perdiem a importer');
+      return;
+    }
+    try {
+      setCompensationImporting(true);
+      const report = await api.importEmployeeCompensationProfiles(compensationImportFile);
+      setCompensationImportReport(report);
+      resetCompensationImportForm();
+      await reload();
+      const warnings = [];
+      if (report.unmatched_rows?.length) warnings.push(`${report.unmatched_rows.length} non correspondance(s)`);
+      if (report.ambiguous_rows?.length) warnings.push(`${report.ambiguous_rows.length} correspondance(s) ambigue(s)`);
+      toast?.(
+        `Import taux/perdiem termine - ${report.updated_employees || 0} profil(s) mis a jour`
+        + (warnings.length ? ` (${warnings.join(', ')})` : '')
+      );
+      if (detail?.id) await refreshDetail(detail.id);
+    } catch (err) {
+      toast?.('Erreur: ' + err.message);
+    } finally {
+      setCompensationImporting(false);
+    }
+  };
+
   return (
     <>
       <div className="page-header">
@@ -560,62 +595,119 @@ export default function EmployeesPage({ toast }) {
       </div>
 
       <div className="card" style={{ marginBottom: 18 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <div style={{ flex: '1 1 320px' }}>
-            <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--brand-d)', marginBottom: 6 }}>
-              Import des matricules Desjardins
+        <div style={{ display: 'grid', gap: 18 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 18 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--brand-d)', marginBottom: 6 }}>
+                Import des matricules Desjardins
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 14 }}>
+                Importe la liste officielle de la banque Desjardins pour mettre a jour les matricules et la division paie des employes correspondants.
+              </div>
+              <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+                <input
+                  key={payrollImportKey}
+                  className="input"
+                  type="file"
+                  accept=".xlsx,.csv"
+                  onChange={(event) => setPayrollImportFile(event.target.files?.[0] || null)}
+                />
+                <div>
+                  <button className="btn btn-primary btn-sm" onClick={importDesjardinsMatricules} disabled={payrollImporting}>
+                    <Upload size={13} /> {payrollImporting ? 'Import...' : 'Importer la liste Desjardins'}
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: 12, color: 'var(--text3)', fontSize: 13 }}>
+                {payrollImportReport ? (
+                  <>
+                    <strong>Dernier import:</strong> {payrollImportReport.filename} ({payrollImportReport.updated_employees || 0} profil(s) mis a jour)
+                  </>
+                ) : 'Aucun import Desjardins lance depuis cette session.'}
+              </div>
             </div>
-            <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 14 }}>
-              Importe la liste officielle de la banque Desjardins pour mettre a jour les matricules et la division paie des employes correspondants.
-            </div>
-            <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
-              <input
-                key={payrollImportKey}
-                className="input"
-                type="file"
-                accept=".xlsx,.csv"
-                onChange={(event) => setPayrollImportFile(event.target.files?.[0] || null)}
-              />
-              <div>
-                <button className="btn btn-primary btn-sm" onClick={importDesjardinsMatricules} disabled={payrollImporting}>
-                  <Upload size={13} /> {payrollImporting ? 'Import...' : 'Importer la liste Desjardins'}
-                </button>
+
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 16, color: 'var(--brand-d)', marginBottom: 6 }}>
+                Import des taux horaires et perdiem
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text3)', marginBottom: 14 }}>
+                Met a jour le taux horaire, le perdiem, le mode perdiem et les cas honoraires a partir de ton fichier de reference.
+              </div>
+              <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+                <input
+                  key={compensationImportKey}
+                  className="input"
+                  type="file"
+                  accept=".xlsx,.csv"
+                  onChange={(event) => setCompensationImportFile(event.target.files?.[0] || null)}
+                />
+                <div>
+                  <button className="btn btn-primary btn-sm" onClick={importCompensationProfiles} disabled={compensationImporting}>
+                    <Upload size={13} /> {compensationImporting ? 'Import...' : 'Importer les taux et perdiem'}
+                  </button>
+                </div>
+              </div>
+              <div style={{ marginTop: 12, color: 'var(--text3)', fontSize: 13 }}>
+                {compensationImportReport ? (
+                  <>
+                    <strong>Dernier import:</strong> {compensationImportReport.filename} ({compensationImportReport.updated_employees || 0} profil(s) mis a jour)
+                  </>
+                ) : 'Aucun import taux/perdiem lance depuis cette session.'}
               </div>
             </div>
           </div>
 
-          <div style={{ flex: '1 1 360px', minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Dernier rapport d'import</div>
-            {payrollImportReport ? (
-              <div style={{ display: 'grid', gap: 8 }}>
-                <div style={{ fontSize: 13, color: 'var(--text2)' }}>
-                  Fichier: <strong>{payrollImportReport.filename}</strong>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <DocumentChip active label={`${payrollImportReport.total_rows || 0} ligne(s)`} />
-                  <DocumentChip active label={`${payrollImportReport.matched_rows || 0} correspondance(s)`} />
-                  <DocumentChip active label={`${payrollImportReport.updated_employees || 0} profil(s) mis a jour`} />
-                  <DocumentChip active label={`Compagnie ${payrollImportReport.default_company || '254981'}`} />
-                </div>
-                {!!payrollImportReport.unmatched_rows?.length && (
-                  <div style={{ fontSize: 12, color: '#9a3412' }}>
-                    Non trouves: {payrollImportReport.unmatched_rows.slice(0, 5).map((item) => item.name).join(', ')}
-                    {payrollImportReport.unmatched_rows.length > 5 ? '...' : ''}
+          {(payrollImportReport || compensationImportReport) ? (
+            <div style={{ display: 'grid', gap: 12 }}>
+              {payrollImportReport ? (
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Rapport import Desjardins</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <DocumentChip active label={`${payrollImportReport.total_rows || 0} ligne(s)`} />
+                    <DocumentChip active label={`${payrollImportReport.matched_rows || 0} correspondance(s)`} />
+                    <DocumentChip active label={`${payrollImportReport.updated_employees || 0} profil(s) mis a jour`} />
+                    <DocumentChip active label={`Compagnie ${payrollImportReport.default_company || '254981'}`} />
                   </div>
-                )}
-                {!!payrollImportReport.ambiguous_rows?.length && (
-                  <div style={{ fontSize: 12, color: '#9a3412' }}>
-                    Ambigus: {payrollImportReport.ambiguous_rows.slice(0, 3).map((item) => item.name).join(', ')}
-                    {payrollImportReport.ambiguous_rows.length > 3 ? '...' : ''}
+                  {!!payrollImportReport.unmatched_rows?.length && (
+                    <div style={{ fontSize: 12, color: '#9a3412' }}>
+                      Non trouves: {payrollImportReport.unmatched_rows.slice(0, 5).map((item) => item.name).join(', ')}
+                      {payrollImportReport.unmatched_rows.length > 5 ? '...' : ''}
+                    </div>
+                  )}
+                  {!!payrollImportReport.ambiguous_rows?.length && (
+                    <div style={{ fontSize: 12, color: '#9a3412' }}>
+                      Ambigus: {payrollImportReport.ambiguous_rows.slice(0, 3).map((item) => item.name).join(', ')}
+                      {payrollImportReport.ambiguous_rows.length > 3 ? '...' : ''}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {compensationImportReport ? (
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Rapport import taux/perdiem</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <DocumentChip active label={`${compensationImportReport.total_rows || 0} ligne(s)`} />
+                    <DocumentChip active label={`${compensationImportReport.matched_rows || 0} correspondance(s)`} />
+                    <DocumentChip active label={`${compensationImportReport.updated_employees || 0} profil(s) mis a jour`} />
                   </div>
-                )}
-              </div>
-            ) : (
-              <div style={{ color: 'var(--text3)', fontSize: 13 }}>
-                Aucun import Desjardins lance depuis cette session.
-              </div>
-            )}
-          </div>
+                  {!!compensationImportReport.unmatched_rows?.length && (
+                    <div style={{ fontSize: 12, color: '#9a3412' }}>
+                      Non trouves: {compensationImportReport.unmatched_rows.slice(0, 5).map((item) => item.name).join(', ')}
+                      {compensationImportReport.unmatched_rows.length > 5 ? '...' : ''}
+                    </div>
+                  )}
+                  {!!compensationImportReport.ambiguous_rows?.length && (
+                    <div style={{ fontSize: 12, color: '#9a3412' }}>
+                      Ambigus: {compensationImportReport.ambiguous_rows.slice(0, 3).map((item) => item.name).join(', ')}
+                      {compensationImportReport.ambiguous_rows.length > 3 ? '...' : ''}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -667,9 +759,13 @@ export default function EmployeesPage({ toast }) {
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontWeight: 700, color: 'var(--brand)', fontSize: 14 }}>{hours.toFixed(1)} h</div>
                   <div style={{ fontSize: 11, color: 'var(--text3)' }}>{fmtMoney(employee.rate)}/h</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>
-                    Salaire {fmtMoney(employee.salary)}
-                  </div>
+                  {employee.payroll_compensation_mode === 'honoraires' ? (
+                    <div style={{ fontSize: 11, color: '#9a3412', marginTop: 2 }}>Mode honoraires</div>
+                  ) : employee.perdiem ? (
+                    <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>
+                      Perdiem {fmtMoney(employee.perdiem)}
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -746,16 +842,17 @@ export default function EmployeesPage({ toast }) {
                 <DetailField label="Telephone" value={detail.phone} />
                 <DetailField label="Acces portail" value={detail.portal_access?.enabled ? detail.portal_access.email || detail.email : 'Aucun compte portail'} />
                 <DetailField label="Taux horaire" value={`${fmtMoney(detail.rate)}/h`} />
-                <DetailField label="Salaire" value={fmtMoney(detail.salary)} />
                 <DetailField label="Per diem" value={fmtMoney(detail.perdiem)} />
+                <DetailField label="Mode remuneration" value={detail.payroll_compensation_mode === 'honoraires' ? 'Honoraires' : 'Horaire'} />
+                <DetailField label="Mode perdiem" value={detail.perdiem_mode === 'hourly' ? 'Perdiem horaire' : detail.perdiem_mode === 'per_shift_min_hours' ? `Perdiem par quart (${detail.perdiem_threshold_hours || 7} h min)` : 'Aucun'} />
               </div>
 
               <div style={{ marginBottom: 22 }}>
                 <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Profil paie / Export</div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 16 }}>
                   <DetailField label="Compagnie" value={detail.payroll_company} />
-                  <DetailField label="No releve" value={detail.payroll_statement_number} />
-                  <DetailField label="Type transaction" value={detail.payroll_transaction_type} />
+                  <DetailField label="No releve" value={detail.payroll_statement_number || '0 (auto)'} />
+                  <DetailField label="Type transaction" value={detail.payroll_transaction_type || 'G (auto)'} />
                   <DetailField label="Division" value={detail.payroll_division} />
                   <DetailField label="Service" value={detail.payroll_service} />
                   <DetailField label="Departement" value={detail.payroll_department} />
@@ -895,33 +992,99 @@ export default function EmployeesPage({ toast }) {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
               <div className="field">
                 <label>Taux horaire ($/h)</label>
-                <input className="input" type="number" step="0.01" value={modal.data.rate} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, rate: parseFloat(event.target.value) || 0 } }))} />
-              </div>
-              <div className="field">
-                <label>Salaire</label>
-                <input className="input" type="number" step="0.01" value={modal.data.salary} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, salary: parseFloat(event.target.value) || 0 } }))} />
+                <input className="input" type="number" step="0.01" value={modal.data.rate} disabled={modal.data.payroll_compensation_mode === 'honoraires'} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, rate: parseFloat(event.target.value) || 0 } }))} />
               </div>
               <div className="field">
                 <label>Per diem</label>
-                <input className="input" type="number" step="0.01" value={modal.data.perdiem} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, perdiem: parseFloat(event.target.value) || 0 } }))} />
+                <input className="input" type="number" step="0.01" value={modal.data.perdiem} disabled={modal.data.payroll_compensation_mode === 'honoraires'} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, perdiem: parseFloat(event.target.value) || 0 } }))} />
+              </div>
+              <div className="field">
+                <label>Mode remuneration</label>
+                <select
+                  className="input"
+                  value={modal.data.payroll_compensation_mode || 'hourly'}
+                  onChange={(event) =>
+                    setModal((current) => ({
+                      ...current,
+                      data: {
+                        ...current.data,
+                        payroll_compensation_mode: event.target.value,
+                        ...(event.target.value === 'honoraires'
+                          ? { rate: 0, perdiem: 0, perdiem_mode: '', perdiem_threshold_hours: 0 }
+                          : {
+                              perdiem_threshold_hours:
+                                Number(current.data.perdiem_threshold_hours || 0) > 0
+                                  ? current.data.perdiem_threshold_hours
+                                  : 7,
+                            }),
+                      },
+                    }))
+                  }
+                >
+                  <option value="hourly">Horaire</option>
+                  <option value="honoraires">Honoraires</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 }}>
+              <div className="field">
+                <label>Mode perdiem</label>
+                <select
+                  className="input"
+                  value={modal.data.perdiem_mode || ''}
+                  disabled={modal.data.payroll_compensation_mode === 'honoraires'}
+                  onChange={(event) =>
+                    setModal((current) => ({
+                      ...current,
+                      data: {
+                        ...current.data,
+                        perdiem_mode: event.target.value,
+                        perdiem_threshold_hours:
+                          event.target.value === 'per_shift_min_hours'
+                            ? Number(current.data.perdiem_threshold_hours || 7)
+                            : current.data.perdiem_threshold_hours,
+                      },
+                    }))
+                  }
+                >
+                  <option value="">Aucun / standard par quart</option>
+                  <option value="per_shift_min_hours">Perdiem par quart avec seuil</option>
+                  <option value="hourly">Perdiem horaire</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Seuil perdiem (h)</label>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  value={modal.data.perdiem_threshold_hours ?? 7}
+                  disabled={
+                    modal.data.payroll_compensation_mode === 'honoraires' ||
+                    (modal.data.perdiem_mode || '') !== 'per_shift_min_hours'
+                  }
+                  onChange={(event) =>
+                    setModal((current) => ({
+                      ...current,
+                      data: {
+                        ...current.data,
+                        perdiem_threshold_hours: parseFloat(event.target.value) || 0,
+                      },
+                    }))
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Compagnie</label>
+                <input className="input" value={modal.data.payroll_company || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_company: event.target.value } }))} />
               </div>
             </div>
 
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
               <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Profil paie / Export Desjardins</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                <div className="field">
-                  <label>Compagnie</label>
-                  <input className="input" value={modal.data.payroll_company || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_company: event.target.value } }))} />
-                </div>
-                <div className="field">
-                  <label>No releve</label>
-                  <input className="input" value={modal.data.payroll_statement_number || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_statement_number: event.target.value } }))} />
-                </div>
-                <div className="field">
-                  <label>Type transaction</label>
-                  <input className="input" value={modal.data.payroll_transaction_type || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_transaction_type: event.target.value } }))} />
-                </div>
                 <div className="field">
                   <label>Division</label>
                   <input className="input" value={modal.data.payroll_division || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_division: event.target.value } }))} />
@@ -938,6 +1101,9 @@ export default function EmployeesPage({ toast }) {
                   <label>Sous-departement</label>
                   <input className="input" value={modal.data.payroll_subdepartment || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_subdepartment: event.target.value } }))} />
                 </div>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text3)' }}>
+                No releve est applique automatiquement a 0 et Type transaction a G dans l'export paie V1.
               </div>
             </div>
 

@@ -1488,8 +1488,11 @@ async def email_invoice(
     return {
         "message": (
             f"Facture envoyee par courriel a {invoice.client_email} "
-            f"via {delivery.get('transport', 'unknown')}"
-        )
+            f"via {delivery.get('transport', 'unknown')} "
+            f"depuis {delivery.get('account_email') or delivery.get('from_email') or 'la boite de facturation'}"
+        ),
+        "transport": delivery.get("transport", "unknown"),
+        "from_email": delivery.get("account_email") or delivery.get("from_email") or "",
     }
 
 

@@ -12,11 +12,17 @@ from ..services.automation_service import sync_accommodation_reminder_state
 router = APIRouter()
 
 
-def _serialize_accommodation(accommodation: Accommodation, attachment_count: int = 0) -> dict:
+def _safe_sync_accommodation_reminder(accommodation: Accommodation) -> None:
     try:
         sync_accommodation_reminder_state(accommodation)
-    except Exception:
-        pass
+    except Exception as exc:
+        accommodation.reminder_last_error = str(exc)
+        if getattr(accommodation, "reminder_enabled", True):
+            accommodation.reminder_status = "error"
+
+
+def _serialize_accommodation(accommodation: Accommodation, attachment_count: int = 0) -> dict:
+    _safe_sync_accommodation_reminder(accommodation)
     return {
         "id": accommodation.id,
         "employee_id": accommodation.employee_id,
@@ -60,7 +66,7 @@ async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(r
 @router.post("/", status_code=201)
 async def create_accommodation(data: AccommodationCreate, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     accom = Accommodation(id=new_id(), **data.model_dump())
-    sync_accommodation_reminder_state(accom)
+    _safe_sync_accommodation_reminder(accom)
     db.add(accom)
     await db.commit()
     await db.refresh(accom)
@@ -89,7 +95,7 @@ async def update_accommodation(
 
     for field, value in payload.items():
         setattr(accom, field, value)
-    sync_accommodation_reminder_state(accom)
+    _safe_sync_accommodation_reminder(accom)
 
     await db.commit()
     await db.refresh(accom)
@@ -107,7 +113,7 @@ async def cancel_accommodation_reminder(
     if not accom:
         raise HTTPException(status_code=404, detail="Hébergement introuvable")
     accom.reminder_enabled = False
-    sync_accommodation_reminder_state(accom)
+    _safe_sync_accommodation_reminder(accom)
     await db.commit()
     await db.refresh(accom)
     return AccommodationOut.model_validate(accom)
@@ -126,7 +132,7 @@ async def reactivate_accommodation_reminder(
     accom.reminder_enabled = True
     accom.reminder_sent_at = None
     accom.reminder_last_error = ""
-    sync_accommodation_reminder_state(accom)
+    _safe_sync_accommodation_reminder(accom)
     await db.commit()
     await db.refresh(accom)
     return AccommodationOut.model_validate(accom)

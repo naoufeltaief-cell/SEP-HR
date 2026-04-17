@@ -217,6 +217,39 @@ def _resolve_payroll_company(employee: Employee | None, company_context: str = "
     )
 
 
+def _employee_compensation_mode(employee: Employee | None) -> str:
+    return _clean_str(getattr(employee, "payroll_compensation_mode", "")).lower() or "hourly"
+
+
+def _employee_perdiem_mode(employee: Employee | None) -> str:
+    return _clean_str(getattr(employee, "perdiem_mode", "")).lower()
+
+
+def _employee_perdiem_threshold_hours(employee: Employee | None) -> float:
+    try:
+        threshold = float(getattr(employee, "perdiem_threshold_hours", 7) or 7)
+    except (TypeError, ValueError):
+        threshold = 7.0
+    return threshold if threshold > 0 else 7.0
+
+
+def _is_honoraires_employee(employee: Employee | None) -> bool:
+    return _employee_compensation_mode(employee) == "honoraires"
+
+
+def _perdiem_amount_for_schedule(employee: Employee | None, hours: float) -> float:
+    perdiem_amount = _round_number(getattr(employee, "perdiem", 0))
+    if perdiem_amount <= 0 or hours <= 0 or _is_honoraires_employee(employee):
+        return 0.0
+    perdiem_mode = _employee_perdiem_mode(employee)
+    perdiem_threshold = _employee_perdiem_threshold_hours(employee)
+    if perdiem_mode == "hourly":
+        return round(perdiem_amount * hours, 2)
+    if perdiem_mode in {"", "per_shift_min_hours"} and hours >= perdiem_threshold:
+        return perdiem_amount
+    return 0.0
+
+
 def _collect_payroll_profile_issues(employee: Employee | None, company_context: str = "") -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     if not _resolve_payroll_company(employee, company_context):
@@ -411,6 +444,7 @@ async def _load_approved_context(
     for schedule in schedules_result.scalars().all():
         employee = employees.get(schedule.employee_id)
         effective_schedule_client_id = getattr(schedule, "client_id", None) or getattr(employee, "client_id", None)
+        matched = False
         for approval in approvals_by_employee.get(schedule.employee_id, []):
             effective_approval_client_id = getattr(approval, "client_id", None) or getattr(employee, "client_id", None)
             if (
@@ -420,7 +454,20 @@ async def _load_approved_context(
                 schedules_by_key[
                     (approval.employee_id, approval.client_id, approval.week_start, approval.week_end)
                 ].append(schedule)
+                matched = True
                 break
+        if matched:
+            continue
+        fallback_candidates = [
+            approval
+            for approval in approvals_by_employee.get(schedule.employee_id, [])
+            if approval.week_start <= schedule.date <= approval.week_end
+        ]
+        if len(fallback_candidates) == 1:
+            fallback = fallback_candidates[0]
+            schedules_by_key[
+                (fallback.employee_id, fallback.client_id, fallback.week_start, fallback.week_end)
+            ].append(schedule)
 
     for key in list(schedules_by_key.keys()):
         schedules_by_key[key] = sorted(schedules_by_key[key], key=lambda row: (row.date, row.start or "", row.end or ""))
@@ -533,7 +580,6 @@ async def build_desjardins_payroll_preview(
     source_items: list[PayrollSourceItem] = []
     skipped_profiles: list[dict] = []
     ignored_items: list[dict] = []
-    seen_perdiem_keys: set[tuple[int, date, date]] = set()
     employee_ids_with_exportable_data: set[int] = set()
     total_garde_hours = 0.0
     total_rappel_hours = 0.0
@@ -563,13 +609,16 @@ async def build_desjardins_payroll_preview(
         if not schedules:
             continue
 
+        is_honoraires = _is_honoraires_employee(employee)
+
         for schedule in schedules:
             week_number = _week_number_for_date(period_start, schedule.date)
-            code = _schedule_classification(schedule)
-            mapping = mappings.get(code)
-            if mapping:
-                hours = _round_number(getattr(schedule, "hours", 0))
-                if hours > 0:
+            hours = _round_number(getattr(schedule, "hours", 0))
+
+            if not is_honoraires:
+                code = _schedule_classification(schedule)
+                mapping = mappings.get(code)
+                if mapping and hours > 0:
                     source_items.append(
                         build_desjardins_export_row(
                             employee=employee,
@@ -584,7 +633,23 @@ async def build_desjardins_payroll_preview(
                             sort_order=mapping.sort_order,
                         )
                     )
-                    employee_ids_with_exportable_data.add(employee.id)
+                if "518" in mappings and hours > 0:
+                    perdiem_line_amount = _perdiem_amount_for_schedule(employee, hours)
+                    if perdiem_line_amount > 0:
+                        source_items.append(
+                            build_desjardins_export_row(
+                                employee=employee,
+                                company_context=company_filter,
+                                code="518",
+                                week_number=week_number,
+                                transaction_date=period_end,
+                                source_type="perdiem_schedule",
+                                source_id=str(schedule.id),
+                                export_key=f"schedule-perdiem:{schedule.id}:518",
+                                amount=perdiem_line_amount,
+                                sort_order=mappings["518"].sort_order,
+                            )
+                        )
 
             km_value = _round_number(getattr(schedule, "km", 0))
             if km_value > 0 and "57" in mappings:
@@ -603,7 +668,6 @@ async def build_desjardins_payroll_preview(
                         sort_order=mappings["57"].sort_order,
                     )
                 )
-                employee_ids_with_exportable_data.add(employee.id)
 
             expense_value = _round_number(getattr(schedule, "autre_dep", 0))
             if expense_value > 0 and "517" in mappings:
@@ -621,30 +685,9 @@ async def build_desjardins_payroll_preview(
                         sort_order=mappings["517"].sort_order,
                     )
                 )
-                employee_ids_with_exportable_data.add(employee.id)
 
             total_garde_hours += _round_number(getattr(schedule, "garde_hours", 0))
             total_rappel_hours += _round_number(getattr(schedule, "rappel_hours", 0))
-
-        perdiem_amount = _round_number(getattr(employee, "perdiem", 0))
-        perdiem_key = (employee.id, approval.week_start, approval.week_end)
-        if perdiem_amount > 0 and "518" in mappings and perdiem_key not in seen_perdiem_keys:
-            source_items.append(
-                build_desjardins_export_row(
-                    employee=employee,
-                    company_context=company_filter,
-                    code="518",
-                    week_number=_week_number_for_date(period_start, approval.week_start),
-                    transaction_date=period_end,
-                    source_type="perdiem_week",
-                    source_id=f"{employee.id}:{approval.week_start.isoformat()}",
-                    export_key=f"perdiem-week:{employee.id}:{approval.week_start.isoformat()}:518",
-                    amount=perdiem_amount,
-                    sort_order=mappings["518"].sort_order,
-                )
-            )
-            employee_ids_with_exportable_data.add(employee.id)
-            seen_perdiem_keys.add(perdiem_key)
 
     exportable_items = source_items
     already_exported_count = 0
@@ -657,6 +700,8 @@ async def build_desjardins_payroll_preview(
         exportable_items = [
             item for item in source_items if item.export_key not in already_exported_keys
         ]
+
+    employee_ids_with_exportable_data = {item.employee_id for item in exportable_items}
 
     rows = _aggregate_rows(exportable_items, mappings)
     stats = {
@@ -947,11 +992,23 @@ async def build_desjardins_payroll_export(
     rows = preview["rows"]
     source_items: list[PayrollSourceItem] = preview["source_items"]
     if not rows:
-        raise ValueError("Aucune ligne exportable pour cette période.")
+        if preview["skipped_profiles"]:
+            sample = preview["skipped_profiles"][0]
+            message = sample.get("messages", ["Aucune ligne exportable pour cette periode."])[0]
+            raise ValueError(f"Aucune ligne exportable pour cette periode. {message}")
+        if preview["stats"]["already_exported_count"] > 0:
+            raise ValueError(
+                "Toutes les lignes exportables de cette periode ont deja ete exportees. "
+                "Utilise Regenerer pour forcer une nouvelle generation."
+            )
+        raise ValueError(
+            "Aucune ligne exportable pour cette periode. "
+            "Verifie qu'il existe des semaines approuvees et des quarts relies a cette periode."
+        )
 
     normalized_format = str(export_format or "").strip().lower()
     if normalized_format not in {"csv", "xlsx"}:
-        raise ValueError("Format d'export non supporté. Utilise csv ou xlsx.")
+        raise ValueError("Format d'export non supporte. Utilise csv ou xlsx.")
 
     if normalized_format == "csv":
         content = _rows_to_csv_bytes(rows)

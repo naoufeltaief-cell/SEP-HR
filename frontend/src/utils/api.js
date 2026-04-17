@@ -174,6 +174,11 @@ class ApiClient {
     formData.append('file', file);
     return this.postForm('/employees/import-desjardins-matricules', formData);
   }
+  async importEmployeeCompensationProfiles(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.postForm('/employees/import-compensation-profiles', formData);
+  }
   inviteEmployeeAccess(id) { return this.post(`/employees/${id}/invite-access`, {}); }
   addEmployeeNote(id, data) { return this.post(`/employees/${id}/notes`, data); }
   getSharedEmployeeDocuments() { return this.get('/employees/shared-documents'); }

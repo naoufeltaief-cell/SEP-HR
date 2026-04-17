@@ -23,6 +23,9 @@ SMTP_PASS = os.getenv("SMTP_PASS") or os.getenv("SMTP_PASS_PAIE") or ""
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 BILLING_SENDER_EMAIL = os.getenv("BILLING_SENDER_EMAIL", os.getenv("GMAIL_SENDER_EMAIL", SMTP_USER))
 BILLING_EMAIL_TRANSPORT = os.getenv("BILLING_EMAIL_TRANSPORT", "auto").lower()
+STRICT_CONNECTED_BILLING_GMAIL = str(
+    os.getenv("STRICT_CONNECTED_BILLING_GMAIL", "true")
+).strip().lower() in {"1", "true", "yes", "on"}
 AUTH_SENDER_EMAIL = os.getenv("AUTH_SENDER_EMAIL", "rh@soins-expert-plus.com").strip()
 AUTH_SMTP_USER_RAW = os.getenv("AUTH_SMTP_USER")
 AUTH_SMTP_PASS_RAW = os.getenv("AUTH_SMTP_PASS")
@@ -335,7 +338,9 @@ async def send_email_message(
     text = (body_text or "").strip()
 
     if prefer_billing_gmail and BILLING_EMAIL_TRANSPORT != "smtp" and db is not None:
+        connection = None
         try:
+            connection = await get_billing_gmail_connection(db)
             return await send_via_connected_billing_gmail(
                 db=db,
                 to_email=to_email,
@@ -346,6 +351,15 @@ async def send_email_message(
                 attachments=attachments or [],
             )
         except Exception as gmail_exc:
+            if (
+                STRICT_CONNECTED_BILLING_GMAIL
+                and connection
+                and connection.is_active
+                and connection.refresh_token
+            ):
+                raise RuntimeError(
+                    f"Envoi Gmail de facturation echoue: {gmail_exc}"
+                ) from gmail_exc
             print(f"[EMAIL WARN] Gmail OAuth fallback to SMTP: {gmail_exc}")
 
     await _send_email(

@@ -333,6 +333,7 @@ async def send_email_message(
     reply_to_email: str | None = None,
     db: AsyncSession | None = None,
     prefer_billing_gmail: bool = True,
+    require_billing_gmail: bool = False,
 ):
     html = (body_html or "").strip() or _plain_text_to_html(body_text)
     text = (body_text or "").strip()
@@ -341,6 +342,13 @@ async def send_email_message(
         connection = None
         try:
             connection = await get_billing_gmail_connection(db)
+            if require_billing_gmail and (
+                not connection or not connection.is_active or not connection.refresh_token
+            ):
+                raise RuntimeError(
+                    "Le compte Gmail de facturation n'est pas connecte ou le jeton OAuth est incomplet. "
+                    "Reconnecte le courriel de paie dans l'onglet Facturation avant d'envoyer la facture."
+                )
             delivery = await send_via_connected_billing_gmail(
                 db=db,
                 to_email=to_email,
@@ -352,8 +360,15 @@ async def send_email_message(
             )
             if delivery:
                 return delivery
+            if require_billing_gmail:
+                raise RuntimeError(
+                    "Aucun envoi Gmail de facturation n'a ete confirme. "
+                    "La facture n'a pas ete marquee envoyee."
+                )
         except Exception as gmail_exc:
             if (
+                require_billing_gmail
+                or
                 STRICT_CONNECTED_BILLING_GMAIL
                 and connection
                 and connection.is_active
@@ -363,6 +378,12 @@ async def send_email_message(
                     f"Envoi Gmail de facturation echoue: {gmail_exc}"
                 ) from gmail_exc
             print(f"[EMAIL WARN] Gmail OAuth fallback to SMTP: {gmail_exc}")
+
+    if require_billing_gmail:
+        raise RuntimeError(
+            "Envoi Gmail de facturation requis pour cette action. "
+            "Aucun fallback SMTP n'a ete utilise."
+        )
 
     await _send_email(
         to=to_email,

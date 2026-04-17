@@ -109,6 +109,7 @@ async def email_invoice_and_mark_sent(
         attachments=attachments,
         db=db,
         prefer_billing_gmail=True,
+        require_billing_gmail=True,
     )
 
     if invoice.status == InvoiceStatus.DRAFT.value:

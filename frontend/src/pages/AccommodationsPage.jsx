@@ -78,14 +78,20 @@ export default function AccommodationsPage({ toast }) {
 
   const reload = useCallback(async () => {
     try {
-      const [acc, emps, scheds] = await Promise.all([
+      const [accResult, empsResult, schedsResult] = await Promise.allSettled([
         api.getAccommodations(),
         api.getEmployees(),
         api.getSchedules(),
       ]);
-      setAccommodations(acc || []);
-      setEmployees(emps || []);
-      setSchedules(scheds || []);
+      if (accResult.status !== 'fulfilled') {
+        throw accResult.reason || new Error("Impossible de charger l'hebergement");
+      }
+      setAccommodations(accResult.value || []);
+      setEmployees(empsResult.status === 'fulfilled' ? empsResult.value || [] : []);
+      setSchedules(schedsResult.status === 'fulfilled' ? schedsResult.value || [] : []);
+      if (empsResult.status !== 'fulfilled' || schedsResult.status !== 'fulfilled') {
+        toast?.("Hebergement charge avec donnees partielles. Les calculs automatiques peuvent etre limites.");
+      }
     } catch (err) {
       toast?.(`Erreur: ${err.message}`);
     } finally {
@@ -228,13 +234,21 @@ export default function AccommodationsPage({ toast }) {
       return;
     }
 
-    const daysWorked = autoCalc?.days || Number(modal.days_worked) || 0;
+    const autoDaysWorked = Number(autoCalc?.days || 0);
+    const manualDaysWorked = Number(modal.days_worked || 0);
+    const daysWorked = autoDaysWorked || manualDaysWorked;
     if (daysWorked === 0) {
-      toast?.('Aucun jour travaille trouve dans cette periode');
+      toast?.('Indique au moins un jour travaille ou choisis une periode avec des quarts');
       return;
     }
 
-    const costPerDay = Math.round((Number(modal.total_cost) / daysWorked) * 100) / 100;
+    const manualCostPerDay = Number(modal.cost_per_day || 0);
+    const costPerDay =
+      autoDaysWorked > 0
+        ? Math.round((Number(modal.total_cost) / daysWorked) * 100) / 100
+        : manualCostPerDay > 0
+          ? Math.round(manualCostPerDay * 100) / 100
+          : Math.round((Number(modal.total_cost) / daysWorked) * 100) / 100;
     try {
       const payload = {
         ...modal,
@@ -588,6 +602,35 @@ export default function AccommodationsPage({ toast }) {
                 {autoCalc.calcText}
               </div>
             )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="field">
+              <label>Jours travailles</label>
+              <input
+                type="number"
+                className="input"
+                min={0}
+                step={1}
+                value={modal.days_worked || ''}
+                onChange={(event) =>
+                  setModal((prev) => ({ ...prev, days_worked: parseInt(event.target.value || '0', 10) || 0 }))
+                }
+              />
+            </div>
+            <div className="field">
+              <label>Cout par jour ($)</label>
+              <input
+                type="number"
+                className="input"
+                min={0}
+                step={0.01}
+                value={modal.cost_per_day || ''}
+                onChange={(event) =>
+                  setModal((prev) => ({ ...prev, cost_per_day: parseFloat(event.target.value || '0') || 0 }))
+                }
+              />
+            </div>
           </div>
 
           <div className="field">

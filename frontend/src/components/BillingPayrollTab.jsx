@@ -13,6 +13,8 @@ const fmtNumber = (value) =>
     maximumFractionDigits: 2,
   }).format(Number(value || 0));
 
+const DEFAULT_COMPANY = '254981';
+
 function buildDownload(base64Content, mimeType, filename) {
   const binary = atob(base64Content || '');
   const buffer = new Uint8Array(binary.length);
@@ -55,6 +57,7 @@ export default function BillingPayrollTab({
 
   const companyOptions = useMemo(() => {
     const values = new Set();
+    values.add(DEFAULT_COMPANY);
     for (const employee of employees || []) {
       const company = String(employee?.payroll_company || '').trim();
       if (company) values.add(company);
@@ -162,7 +165,7 @@ export default function BillingPayrollTab({
         <div>
           <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Compagnie</div>
           <select value={companyId} onChange={(event) => setCompanyId(event.target.value)} style={{ ...inputStyle, width: '100%' }}>
-            <option value="">Toutes les compagnies</option>
+            <option value="">Compagnie par defaut ({DEFAULT_COMPANY})</option>
             {companyOptions.map((company) => (
               <option key={company} value={company}>
                 {company}
@@ -208,7 +211,12 @@ export default function BillingPayrollTab({
           <div style={{ fontWeight: 700, marginBottom: 8 }}>Profils paie incomplets</div>
           {preview.skipped_profiles.map((item) => (
             <div key={`${item.employee_id}-${item.week_start}`} style={{ fontSize: 12, marginBottom: 4 }}>
-              {item.employee_name} - champs manquants: {(item.missing_fields || []).join(', ')}
+              <div>{item.employee_name}</div>
+              <div style={{ color: '#9a3412' }}>
+                {item.messages?.length
+                  ? item.messages.join(' ')
+                  : `Champs manquants: ${(item.missing_fields || []).join(', ')}`}
+              </div>
             </div>
           ))}
         </div>

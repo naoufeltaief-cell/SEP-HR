@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import csv
 import io
+import os
 import re
 import unicodedata
 from collections import defaultdict
@@ -24,6 +25,9 @@ from .invoice_service import KM_RATE, is_orientation_shift
 
 PAYROLL_PROVIDER = "desjardins"
 ALLOWED_PAYROLL_CODES = {"1", "4", "43", "57", "517", "518"}
+DEFAULT_PAYROLL_COMPANY = (os.getenv("PAYROLL_DEFAULT_COMPANY") or "254981").strip()
+DEFAULT_PAYROLL_STATEMENT_NUMBER = "0"
+DEFAULT_PAYROLL_TRANSACTION_TYPE = "G"
 CSV_HEADERS = [
     "Compagnie",
     "Matricule",
@@ -205,17 +209,85 @@ def _schedule_classification(schedule: Schedule) -> str:
     return "1"
 
 
-def _employee_has_required_payroll_profile(employee: Employee) -> tuple[bool, list[str]]:
-    missing = []
-    if not _clean_str(getattr(employee, "payroll_company", "")):
-        missing.append("compagnie")
+def _resolve_payroll_company(employee: Employee | None, company_context: str = "") -> str:
+    return (
+        _clean_str(company_context)
+        or _clean_str(getattr(employee, "payroll_company", ""))
+        or DEFAULT_PAYROLL_COMPANY
+    )
+
+
+def _collect_payroll_profile_issues(employee: Employee | None, company_context: str = "") -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    if not _resolve_payroll_company(employee, company_context):
+        issues.append(
+            {
+                "field": "compagnie",
+                "message": "Aucune compagnie active ou config de compagnie n'a ete trouvee.",
+            }
+        )
     if not _clean_str(getattr(employee, "matricule", "")):
-        missing.append("matricule")
-    if not _clean_str(getattr(employee, "payroll_statement_number", "")):
-        missing.append("no_releve")
-    if not _clean_str(getattr(employee, "payroll_transaction_type", "")):
-        missing.append("type_transaction")
-    return (len(missing) == 0, missing)
+        issues.append(
+            {
+                "field": "matricule",
+                "message": "Le matricule est absent du profil employe.",
+            }
+        )
+    return issues
+
+
+def build_desjardins_export_row(
+    *,
+    employee: Employee,
+    company_context: str,
+    code: str,
+    week_number: int | None,
+    transaction_date: date | None,
+    source_type: str,
+    source_id: str,
+    export_key: str,
+    sort_order: int,
+    quantity: float | None = None,
+    rate: float | None = None,
+    amount: float | None = None,
+) -> PayrollSourceItem:
+    company = _resolve_payroll_company(employee, company_context)
+    matricule = _clean_str(getattr(employee, "matricule", ""))
+    statement_number = _clean_str(getattr(employee, "payroll_statement_number", "")) or DEFAULT_PAYROLL_STATEMENT_NUMBER
+    transaction_type = _clean_str(getattr(employee, "payroll_transaction_type", "")) or DEFAULT_PAYROLL_TRANSACTION_TYPE
+
+    if not company:
+        raise ValueError("Aucune compagnie active ou config de compagnie n'a ete trouvee.")
+    if not matricule:
+        raise ValueError("Le matricule est absent du profil employe.")
+    if transaction_date is None:
+        raise ValueError("La date de transaction est introuvable pour cette ligne de paie.")
+    if week_number not in {1, 2}:
+        raise ValueError("La semaine de paie est introuvable pour cette ligne exportable.")
+    if code not in ALLOWED_PAYROLL_CODES:
+        raise ValueError(f"Le code de paie {code} n'est pas autorise dans cette version.")
+
+    return PayrollSourceItem(
+        export_key=export_key,
+        source_type=source_type,
+        source_id=source_id,
+        employee_id=employee.id,
+        company=company,
+        matricule=matricule,
+        statement_number=statement_number,
+        transaction_type=transaction_type,
+        code=code,
+        week_number=week_number,
+        division=_clean_str(getattr(employee, "payroll_division", "")),
+        service=_clean_str(getattr(employee, "payroll_service", "")),
+        department=_clean_str(getattr(employee, "payroll_department", "")),
+        subdepartment=_clean_str(getattr(employee, "payroll_subdepartment", "")),
+        transaction_date=transaction_date,
+        quantity=quantity,
+        rate=rate,
+        amount=amount,
+        sort_order=sort_order,
+    )
 
 
 async def ensure_default_payroll_code_mappings(db: AsyncSession) -> dict[str, PayrollCodeMapping]:
@@ -285,15 +357,9 @@ async def _load_approved_context(
     employees_result = await db.execute(select(Employee).where(Employee.id.in_(employee_ids)))
     employees = {employee.id: employee for employee in employees_result.scalars().all()}
 
-    filtered_approvals: list[ScheduleApproval] = []
-    normalized_company = _clean_str(company_filter)
-    for approval in approvals:
-        employee = employees.get(approval.employee_id)
-        if not employee:
-            continue
-        if normalized_company and _clean_str(getattr(employee, "payroll_company", "")) != normalized_company:
-            continue
-        filtered_approvals.append(approval)
+    filtered_approvals: list[ScheduleApproval] = [
+        approval for approval in approvals if employees.get(approval.employee_id)
+    ]
 
     if not filtered_approvals:
         return [], employees, {}
@@ -440,13 +506,14 @@ async def build_desjardins_payroll_preview(
         employee = employees.get(approval.employee_id)
         if not employee:
             continue
-        has_profile, missing_fields = _employee_has_required_payroll_profile(employee)
-        if not has_profile:
+        profile_issues = _collect_payroll_profile_issues(employee, company_filter)
+        if profile_issues:
             skipped_profiles.append(
                 {
                     "employee_id": employee.id,
                     "employee_name": employee.name,
-                    "missing_fields": missing_fields,
+                    "missing_fields": [issue["field"] for issue in profile_issues],
+                    "messages": [issue["message"] for issue in profile_issues],
                     "week_start": approval.week_start.isoformat(),
                     "week_end": approval.week_end.isoformat(),
                 }
@@ -462,29 +529,21 @@ async def build_desjardins_payroll_preview(
 
         for schedule in schedules:
             week_number = _week_number_for_date(period_start, schedule.date)
-            company = _clean_str(employee.payroll_company)
             code = _schedule_classification(schedule)
             mapping = mappings.get(code)
             if mapping:
                 hours = _round_number(getattr(schedule, "hours", 0))
                 if hours > 0:
                     source_items.append(
-                        PayrollSourceItem(
-                            export_key=f"schedule:{schedule.id}:{code}",
-                            source_type="schedule",
-                            source_id=str(schedule.id),
-                            employee_id=employee.id,
-                            company=company,
-                            matricule=_clean_str(employee.matricule),
-                            statement_number=_clean_str(employee.payroll_statement_number),
-                            transaction_type=_clean_str(employee.payroll_transaction_type),
+                        build_desjardins_export_row(
+                            employee=employee,
+                            company_context=company_filter,
                             code=code,
                             week_number=week_number,
-                            division=_clean_str(employee.payroll_division),
-                            service=_clean_str(employee.payroll_service),
-                            department=_clean_str(employee.payroll_department),
-                            subdepartment=_clean_str(employee.payroll_subdepartment),
                             transaction_date=period_end,
+                            source_type="schedule",
+                            source_id=str(schedule.id),
+                            export_key=f"schedule:{schedule.id}:{code}",
                             quantity=hours,
                             sort_order=mapping.sort_order,
                         )
@@ -494,22 +553,15 @@ async def build_desjardins_payroll_preview(
             km_value = _round_number(getattr(schedule, "km", 0))
             if km_value > 0 and "57" in mappings:
                 source_items.append(
-                    PayrollSourceItem(
-                        export_key=f"schedule-km:{schedule.id}:57",
-                        source_type="schedule_km",
-                        source_id=str(schedule.id),
-                        employee_id=employee.id,
-                        company=_clean_str(employee.payroll_company),
-                        matricule=_clean_str(employee.matricule),
-                        statement_number=_clean_str(employee.payroll_statement_number),
-                        transaction_type=_clean_str(employee.payroll_transaction_type),
+                    build_desjardins_export_row(
+                        employee=employee,
+                        company_context=company_filter,
                         code="57",
                         week_number=week_number,
-                        division=_clean_str(employee.payroll_division),
-                        service=_clean_str(employee.payroll_service),
-                        department=_clean_str(employee.payroll_department),
-                        subdepartment=_clean_str(employee.payroll_subdepartment),
                         transaction_date=period_end,
+                        source_type="schedule_km",
+                        source_id=str(schedule.id),
+                        export_key=f"schedule-km:{schedule.id}:57",
                         quantity=km_value,
                         rate=_round_rate(KM_RATE),
                         sort_order=mappings["57"].sort_order,
@@ -520,22 +572,15 @@ async def build_desjardins_payroll_preview(
             expense_value = _round_number(getattr(schedule, "autre_dep", 0))
             if expense_value > 0 and "517" in mappings:
                 source_items.append(
-                    PayrollSourceItem(
-                        export_key=f"schedule-expense:{schedule.id}:517",
-                        source_type="schedule_expense",
-                        source_id=str(schedule.id),
-                        employee_id=employee.id,
-                        company=_clean_str(employee.payroll_company),
-                        matricule=_clean_str(employee.matricule),
-                        statement_number=_clean_str(employee.payroll_statement_number),
-                        transaction_type=_clean_str(employee.payroll_transaction_type),
+                    build_desjardins_export_row(
+                        employee=employee,
+                        company_context=company_filter,
                         code="517",
                         week_number=week_number,
-                        division=_clean_str(employee.payroll_division),
-                        service=_clean_str(employee.payroll_service),
-                        department=_clean_str(employee.payroll_department),
-                        subdepartment=_clean_str(employee.payroll_subdepartment),
                         transaction_date=period_end,
+                        source_type="schedule_expense",
+                        source_id=str(schedule.id),
+                        export_key=f"schedule-expense:{schedule.id}:517",
                         amount=expense_value,
                         sort_order=mappings["517"].sort_order,
                     )
@@ -549,22 +594,15 @@ async def build_desjardins_payroll_preview(
         perdiem_key = (employee.id, approval.week_start, approval.week_end)
         if perdiem_amount > 0 and "518" in mappings and perdiem_key not in seen_perdiem_keys:
             source_items.append(
-                PayrollSourceItem(
-                    export_key=f"perdiem-week:{employee.id}:{approval.week_start.isoformat()}:518",
-                    source_type="perdiem_week",
-                    source_id=f"{employee.id}:{approval.week_start.isoformat()}",
-                    employee_id=employee.id,
-                    company=_clean_str(employee.payroll_company),
-                    matricule=_clean_str(employee.matricule),
-                    statement_number=_clean_str(employee.payroll_statement_number),
-                    transaction_type=_clean_str(employee.payroll_transaction_type),
+                build_desjardins_export_row(
+                    employee=employee,
+                    company_context=company_filter,
                     code="518",
                     week_number=_week_number_for_date(period_start, approval.week_start),
-                    division=_clean_str(employee.payroll_division),
-                    service=_clean_str(employee.payroll_service),
-                    department=_clean_str(employee.payroll_department),
-                    subdepartment=_clean_str(employee.payroll_subdepartment),
                     transaction_date=period_end,
+                    source_type="perdiem_week",
+                    source_id=f"{employee.id}:{approval.week_start.isoformat()}",
+                    export_key=f"perdiem-week:{employee.id}:{approval.week_start.isoformat()}:518",
                     amount=perdiem_amount,
                     sort_order=mappings["518"].sort_order,
                 )

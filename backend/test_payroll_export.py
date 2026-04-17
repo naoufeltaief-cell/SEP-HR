@@ -21,13 +21,81 @@ if ROOT not in sys.path:
 from app.services.payroll_service import (  # noqa: E402
     ALLOWED_PAYROLL_CODES,
     CSV_HEADERS,
+    DEFAULT_PAYROLL_COMPANY,
+    DEFAULT_PAYROLL_STATEMENT_NUMBER,
+    DEFAULT_PAYROLL_TRANSACTION_TYPE,
     _rows_to_csv_bytes,
     _rows_to_xlsx_bytes,
     _week_number_for_date,
+    build_desjardins_export_row,
 )
 
 
 class PayrollExportTests(unittest.TestCase):
+    def test_build_row_applies_system_defaults_before_validation(self):
+        from datetime import date
+        from types import SimpleNamespace
+
+        employee = SimpleNamespace(
+            id=12,
+            matricule="A001",
+            payroll_company="",
+            payroll_statement_number="",
+            payroll_transaction_type="",
+            payroll_division="DIV",
+            payroll_service="SRV",
+            payroll_department="DEP",
+            payroll_subdepartment="SUB",
+        )
+
+        row = build_desjardins_export_row(
+            employee=employee,
+            company_context="",
+            code="1",
+            week_number=1,
+            transaction_date=date(2026, 4, 18),
+            source_type="schedule",
+            source_id="abc",
+            export_key="schedule:abc:1",
+            sort_order=10,
+            quantity=7.5,
+        )
+
+        self.assertEqual(row.company, DEFAULT_PAYROLL_COMPANY)
+        self.assertEqual(row.statement_number, DEFAULT_PAYROLL_STATEMENT_NUMBER)
+        self.assertEqual(row.transaction_type, DEFAULT_PAYROLL_TRANSACTION_TYPE)
+        self.assertEqual(row.matricule, "A001")
+
+    def test_build_row_requires_employee_matricule(self):
+        from datetime import date
+        from types import SimpleNamespace
+
+        employee = SimpleNamespace(
+            id=12,
+            matricule="",
+            payroll_company="",
+            payroll_statement_number="",
+            payroll_transaction_type="",
+            payroll_division="",
+            payroll_service="",
+            payroll_department="",
+            payroll_subdepartment="",
+        )
+
+        with self.assertRaisesRegex(ValueError, "matricule est absent du profil employe"):
+            build_desjardins_export_row(
+                employee=employee,
+                company_context="",
+                code="1",
+                week_number=1,
+                transaction_date=date(2026, 4, 18),
+                source_type="schedule",
+                source_id="abc",
+                export_key="schedule:abc:1",
+                sort_order=10,
+                quantity=7.5,
+            )
+
     def test_allowed_codes_are_strictly_limited(self):
         self.assertEqual(ALLOWED_PAYROLL_CODES, {"1", "4", "43", "57", "517", "518"})
 
@@ -67,7 +135,7 @@ class PayrollExportTests(unittest.TestCase):
                 "company": "SEP",
                 "matricule": "A001",
                 "statement_number": "R1",
-                "transaction_type": "P",
+                "transaction_type": "G",
                 "payroll_code": "57",
                 "quantity": 345.5,
                 "rate": 0.525,
@@ -93,8 +161,8 @@ class PayrollExportTests(unittest.TestCase):
             {
                 "company": "SEP",
                 "matricule": "A001",
-                "statement_number": "R1",
-                "transaction_type": "P",
+                "statement_number": "0",
+                "transaction_type": "G",
                 "payroll_code": "1",
                 "quantity": 37.5,
                 "rate": None,
@@ -115,6 +183,8 @@ class PayrollExportTests(unittest.TestCase):
         self.assertEqual(header, CSV_HEADERS)
         self.assertEqual(data_row[0], "SEP")
         self.assertEqual(data_row[1], "A001")
+        self.assertEqual(data_row[2], "0")
+        self.assertEqual(data_row[3], "G")
         self.assertEqual(data_row[4], "1")
         self.assertEqual(data_row[5], 37.5)
         self.assertEqual(data_row[8], 2)

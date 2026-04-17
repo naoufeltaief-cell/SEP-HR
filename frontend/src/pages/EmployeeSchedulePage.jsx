@@ -149,7 +149,7 @@ function buildDraftRow(schedule, existingShift = null) {
   return {
     rowId: existingShift?.id || schedule?.id || `manual-${Math.random().toString(36).slice(2, 10)}`,
     scheduleId: existingShift?.schedule_id || schedule?.id || '',
-    isManual: !schedule,
+    isManual: !schedule || !schedule?.id,
     date: existingShift?.date || schedule?.date || '',
     location: existingShift?.location || schedule?.location || '',
     scheduledStart: schedule?.start || '',
@@ -171,24 +171,14 @@ function buildDraftRow(schedule, existingShift = null) {
 }
 
 function createManualDraftRow(defaultDate) {
-  return buildDraftRow(
-    {
-      id: '',
-      date: defaultDate,
-      start: '08:00',
-      end: '16:00',
-      hours: 8,
-      location: '',
-    },
-    {
-      date: defaultDate,
-      start_actual: '08:00',
-      end_actual: '16:00',
-      location: '',
-      hours_worked: 8,
-      pause: 0,
-    },
-  );
+  return buildDraftRow(null, {
+    date: defaultDate,
+    start_actual: '08:00',
+    end_actual: '16:00',
+    location: '',
+    hours_worked: 8,
+    pause: 0,
+  });
 }
 
 function FieldInput({ label, children, fullWidth = false }) {
@@ -665,15 +655,22 @@ export default function EmployeeSchedulePage({ user, toast }) {
                       <input className="input" type="text" inputMode="numeric" placeholder="00:00" value={row.rappelInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'rappelInput', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Kilometrage">
-                      <input className="input" type="text" inputMode="decimal" placeholder="0" value={row.kmInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'kmInput', event.target.value)} />
+                      <input className="input" type="text" inputMode="decimal" placeholder="0" value={row.kmInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'kmInput', event.target.value)} onBlur={(event) => updateDraftRow(row.rowId, 'kmInput', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Autre depense $" fullWidth={isMobile}>
-                      <input className="input" type="text" inputMode="decimal" placeholder="0.00" value={row.autreDepInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'autreDepInput', event.target.value)} />
+                      <input className="input" type="text" inputMode="decimal" placeholder="0.00" value={row.autreDepInput || ''} disabled={!canEditWeekTimesheet} onChange={(event) => updateDraftRow(row.rowId, 'autreDepInput', event.target.value)} onBlur={(event) => updateDraftRow(row.rowId, 'autreDepInput', event.target.value)} />
                     </FieldInput>
                     <FieldInput label="Lieu" fullWidth>
                       <input className="input" value={row.location || ''} disabled={!canEditWeekTimesheet && !row.isManual} onChange={(event) => updateDraftRow(row.rowId, 'location', event.target.value)} placeholder="Lieu ou details utiles du quart" />
                     </FieldInput>
                   </div>
+                  {row.isManual && canEditWeekTimesheet ? (
+                    <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+                      <button className="btn btn-outline btn-sm" style={{ color: 'var(--red)' }} onClick={() => removeManualShift(row.rowId)}>
+                        <Trash2 size={14} /> Retirer ce quart manuel
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

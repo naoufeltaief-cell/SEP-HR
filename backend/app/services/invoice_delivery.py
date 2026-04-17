@@ -126,7 +126,8 @@ async def email_invoice_and_mark_sent(
         details=(
             f"Envoye a {invoice.client_email} via {delivery.get('transport', 'unknown')} "
             f"depuis {delivery.get('from_email', '')} "
-            f"avec {len(attachments)} piece(s) jointe(s)"
+            f"avec {len(attachments)} piece(s) jointe(s) "
+            f"(message_id={delivery.get('message_id', '')})"
         ),
     ))
     await db.commit()

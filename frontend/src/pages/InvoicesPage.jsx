@@ -325,8 +325,19 @@ export default function InvoicesPage() {
 
   const changeStatus = async (id, newStatus) => {
     try {
-      await apiFetch(`/invoices/${id}/status`, { method: 'POST', body: JSON.stringify({ new_status: newStatus }) });
-      setSuccess(`Statut chang  ${statusConfig[newStatus]?.label || newStatus}`);
+      if (newStatus === 'sent') {
+        const res = await apiFetch(`/invoices/${id}/email`, { method: 'POST' });
+        const deliveryBits = [];
+        if (res.transport) deliveryBits.push(`transport: ${res.transport}`);
+        if (res.from_email) deliveryBits.push(`depuis: ${res.from_email}`);
+        if (res.message_id) deliveryBits.push(`message_id: ${res.message_id}`);
+        setSuccess(
+          res.message || `Courriel envoye${deliveryBits.length ? ` (${deliveryBits.join(' | ')})` : ''}`
+        );
+      } else {
+        await apiFetch(`/invoices/${id}/status`, { method: 'POST', body: JSON.stringify({ new_status: newStatus }) });
+        setSuccess(`Statut change ${statusConfig[newStatus]?.label || newStatus}`);
+      }
       if (selectedInvoice?.id === id) openDetail(id);
       loadInvoices();
       loadStats();

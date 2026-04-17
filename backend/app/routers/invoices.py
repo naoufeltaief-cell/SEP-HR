@@ -1086,6 +1086,15 @@ async def update_status(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(404, "Invoice not found")
+    if data.new_status == InvoiceStatus.SENT:
+        try:
+            await email_invoice_and_mark_sent(db, invoice, getattr(user, "email", ""))
+            await db.refresh(invoice)
+            return _serialize_invoice(invoice, include_relations=True)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except RuntimeError as e:
+            raise HTTPException(500, f"Erreur d'envoi du courriel: {str(e)}")
     try:
         invoice = await change_invoice_status(
             db, invoice, data.new_status.value,
@@ -1197,13 +1206,13 @@ async def mark_unpaid(
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
-    result = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
-    inv = result.scalar_one_or_none()
-    if not inv:
-        raise HTTPException(404, "Facture introuvable")
-    inv.status = "sent"
-    await db.commit()
-    return {"message": "Facture marquÃ©e impayÃ©e"}
+    # Backward-compatible alias: "unpaid" now reuses the robust undo-payment flow.
+    try:
+        return await undo_invoice_payment(invoice_id, db, user)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Erreur lors de l'annulation du paiement: {str(e)}")
 
 
 @router.put("/{invoice_id}/cancel")
@@ -1543,6 +1552,7 @@ async def email_invoice(
         ),
         "transport": delivery.get("transport", "unknown"),
         "from_email": delivery.get("account_email") or delivery.get("from_email") or "",
+        "message_id": delivery.get("message_id") or "",
     }
 
 

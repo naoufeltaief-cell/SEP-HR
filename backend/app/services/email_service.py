@@ -2,6 +2,7 @@
 import os
 import smtplib
 from datetime import datetime
+from html import escape
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
@@ -187,6 +188,17 @@ async def send_password_reset_email(
     await _send_auth_email(db, email, subject, html)
 
 
+def _plain_text_to_html(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return (
+        '<div style="font-family:system-ui,Segoe UI,sans-serif;line-height:1.6;white-space:pre-wrap">'
+        f"{escape(text)}"
+        "</div>"
+    )
+
+
 async def send_schedule_change_notification_email(
     email: str,
     name: str,
@@ -242,6 +254,7 @@ async def _send_email(
     to: str,
     subject: str,
     html: str,
+    text_body: str = "",
     bcc_emails=None,
     sender_email: str | None = None,
     smtp_user: str | None = None,
@@ -274,7 +287,10 @@ async def _send_email(
     if reply_to_email:
         msg["Reply-To"] = reply_to_email.strip()
     body_part = MIMEMultipart("alternative")
-    body_part.attach(MIMEText(html, "html"))
+    plain_text = (text_body or "").strip()
+    if plain_text:
+        body_part.attach(MIMEText(plain_text, "plain", "utf-8"))
+    body_part.attach(MIMEText(html, "html", "utf-8"))
     msg.attach(body_part)
     for attachment in attachments or []:
         filename = (attachment.get("filename") or "document.bin").strip() or "document.bin"
@@ -303,6 +319,47 @@ async def _send_email(
             f"Echec de l'envoi du courriel vers {to}. "
             f"Expediteur: {sender}. Compte SMTP: {login_user}. Erreur: {e}"
         ) from e
+
+
+async def send_email_message(
+    to_email: str,
+    subject: str,
+    body_text: str = "",
+    body_html: str = "",
+    attachments: list[dict] | None = None,
+    reply_to_email: str | None = None,
+    db: AsyncSession | None = None,
+    prefer_billing_gmail: bool = True,
+):
+    html = (body_html or "").strip() or _plain_text_to_html(body_text)
+    text = (body_text or "").strip()
+
+    if prefer_billing_gmail and BILLING_EMAIL_TRANSPORT != "smtp" and db is not None:
+        try:
+            return await send_via_connected_billing_gmail(
+                db=db,
+                to_email=to_email,
+                subject=subject,
+                body_text=text,
+                body_html=html,
+                reply_to_email=reply_to_email or "",
+                attachments=attachments or [],
+            )
+        except Exception as gmail_exc:
+            print(f"[EMAIL WARN] Gmail OAuth fallback to SMTP: {gmail_exc}")
+
+    await _send_email(
+        to=to_email,
+        subject=subject,
+        html=html,
+        text_body=text,
+        reply_to_email=reply_to_email,
+        attachments=attachments or [],
+    )
+    return {
+        "transport": "smtp",
+        "from_email": BILLING_SENDER_EMAIL,
+    }
 
 
 async def send_email_with_attachment(
@@ -387,6 +444,31 @@ async def send_email_with_attachment(
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send to {to_email}: {e}")
         raise
+
+
+async def send_email_with_attachment(
+    to_email: str,
+    subject: str,
+    body: str,
+    attachment: bytes,
+    attachment_name: str = "document.pdf",
+    db: AsyncSession | None = None,
+):
+    """Backward-compatible helper for a single PDF attachment."""
+    return await send_email_message(
+        to_email=to_email,
+        subject=subject,
+        body_text=body,
+        attachments=[
+            {
+                "filename": attachment_name or "document.pdf",
+                "mime_type": "application/pdf",
+                "content": attachment or b"",
+            }
+        ],
+        db=db,
+        prefer_billing_gmail=True,
+    )
 
 
 async def test_billing_email_connection(to_email: str):

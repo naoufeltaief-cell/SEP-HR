@@ -1,22 +1,23 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import BillingPayrollTab from '../components/BillingPayrollTab';
 
 const API = import.meta.env.VITE_API_URL || '/api';
 const fmt = (n) => { if (n == null || isNaN(n)) return '$0.00'; return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n); };
-const fmtDate = (d) => { if (!d) return '—'; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('fr-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }); };
-const fmtDateTime = (d) => { if (!d) return '—'; return new Date(d).toLocaleString('fr-CA'); };
+const fmtDate = (d) => { if (!d) return 'Ã¢â‚¬â€'; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('fr-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }); };
+const fmtDateTime = (d) => { if (!d) return 'Ã¢â‚¬â€'; return new Date(d).toLocaleString('fr-CA'); };
 const getToken = () => localStorage.getItem('sep_token');
 const apiFetch = async (path, opts = {}) => {
   const token = getToken();
   if (!token && !path.includes('/auth/')) {
-    throw new Error('Non authentifié — veuillez vous reconnecter');
+    throw new Error('Non authentifiÃƒÂ© Ã¢â‚¬â€ veuillez vous reconnecter');
   }
   const headers = { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...opts.headers };
   const res = await fetch(`${API}${path}`, { ...opts, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     const detail = err.detail || 'API Error';
-    if (res.status === 401 && detail.includes('authentifié')) {
-      throw new Error('Session expirée — veuillez vous reconnecter');
+    if (res.status === 401 && detail.includes('authentifiÃƒÂ©')) {
+      throw new Error('Session expirÃƒÂ©e Ã¢â‚¬â€ veuillez vous reconnecter');
     }
     throw new Error(detail);
   }
@@ -28,11 +29,11 @@ const apiFetch = async (path, opts = {}) => {
 
 const statusConfig = {
   draft: { label: 'Brouillon', bg: '#6C757D', text: '#fff' },
-  validated: { label: 'Validée', bg: '#2A7B88', text: '#fff' },
-  sent: { label: 'Envoyée', bg: '#0D6EFD', text: '#fff' },
+  validated: { label: 'ValidÃƒÂ©e', bg: '#2A7B88', text: '#fff' },
+  sent: { label: 'EnvoyÃƒÂ©e', bg: '#0D6EFD', text: '#fff' },
   partially_paid: { label: 'Partiel', bg: '#FFC107', text: '#000' },
-  paid: { label: 'Payée', bg: '#28A745', text: '#fff' },
-  cancelled: { label: 'Annulée', bg: '#DC3545', text: '#fff' }
+  paid: { label: 'PayÃƒÂ©e', bg: '#28A745', text: '#fff' },
+  cancelled: { label: 'AnnulÃƒÂ©e', bg: '#DC3545', text: '#fff' }
 };
 
 const StatusBadge = ({ status }) => {
@@ -133,7 +134,7 @@ function Modal({ open, onClose, title, children }) {
       <div style={S.modalContent}>
         <div style={{ ...S.flexBetween, marginBottom: 16 }}>
           <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: '#2A7B88' }}>{title}</h3>
-          <button onClick={onClose} style={{ ...S.btn('ghost'), fontSize: 18, padding: 4 }}>✕</button>
+          <button onClick={onClose} style={{ ...S.btn('ghost'), fontSize: 18, padding: 4 }}>Ã¢Å“â€¢</button>
         </div>
         {children}
       </div>
@@ -297,8 +298,8 @@ export default function InvoicesPage() {
       const data = event?.data || {};
       if (data.type !== 'sep-billing-gmail-oauth') return;
       setBillingEmailBusy(false);
-      if (data.ok) setSuccess(data.message || 'Gmail connecté');
-      else setError(data.message || 'Échec de connexion Gmail');
+      if (data.ok) setSuccess(data.message || 'Gmail connectÃƒÂ©');
+      else setError(data.message || 'Ãƒâ€°chec de connexion Gmail');
       loadBillingEmailStatus();
     };
     window.addEventListener('message', onMessage);
@@ -318,7 +319,7 @@ export default function InvoicesPage() {
   const changeStatus = async (id, newStatus) => {
     try {
       await apiFetch(`/invoices/${id}/status`, { method: 'POST', body: JSON.stringify({ new_status: newStatus }) });
-      setSuccess(`Statut changé → ${statusConfig[newStatus]?.label || newStatus}`);
+      setSuccess(`Statut changÃƒÂ© Ã¢â€ â€™ ${statusConfig[newStatus]?.label || newStatus}`);
       if (selectedInvoice?.id === id) openDetail(id);
       loadInvoices();
       loadStats();
@@ -330,7 +331,7 @@ export default function InvoicesPage() {
   const markPaid = async (id) => {
     try {
       await apiFetch(`/invoices/${id}/mark-paid`, { method: 'POST' });
-      setSuccess('Facture marquée payée');
+      setSuccess('Facture marquÃƒÂ©e payÃƒÂ©e');
       if (selectedInvoice?.id === id) openDetail(id);
       loadInvoices();
       loadStats();
@@ -342,7 +343,7 @@ export default function InvoicesPage() {
   const duplicateInvoice = async (id) => {
     try {
       const inv = await apiFetch(`/invoices/${id}/duplicate`, { method: 'POST' });
-      setSuccess(`Facture dupliquée: ${inv.number}`);
+      setSuccess(`Facture dupliquÃƒÂ©e: ${inv.number}`);
       loadInvoices();
       loadStats();
     } catch (e) {
@@ -354,7 +355,7 @@ export default function InvoicesPage() {
     if (!confirm('Supprimer cette facture?')) return;
     try {
       await apiFetch(`/invoices/${id}`, { method: 'DELETE' });
-      setSuccess('Facture supprimée');
+      setSuccess('Facture supprimÃƒÂ©e');
       if (selectedInvoice?.id === id) {
         setSelectedInvoice(null);
         setActiveTab('list');
@@ -374,7 +375,7 @@ export default function InvoicesPage() {
   const emailInvoice = async (id) => {
     try {
       const res = await apiFetch(`/invoices/${id}/email`, { method: 'POST' });
-      setSuccess(res.message || 'Courriel envoyé');
+      setSuccess(res.message || 'Courriel envoyÃƒÂ©');
       if (selectedInvoice?.id === id) openDetail(id);
       loadInvoices();
     } catch (e) {
@@ -396,11 +397,11 @@ export default function InvoicesPage() {
   };
 
   const disconnectBillingEmail = async () => {
-    if (!window.confirm('Déconnecter le compte Gmail de facturation ?')) return;
+    if (!window.confirm('DÃƒÂ©connecter le compte Gmail de facturation ?')) return;
     setBillingEmailBusy(true);
     try {
       const res = await apiFetch('/billing-email/disconnect', { method: 'DELETE' });
-      setSuccess(res.message || 'Connexion Gmail supprimée');
+      setSuccess(res.message || 'Connexion Gmail supprimÃƒÂ©e');
       await loadBillingEmailStatus();
     } catch (e) {
       setError(e.message);
@@ -493,7 +494,7 @@ export default function InvoicesPage() {
         method: 'POST',
         body: JSON.stringify({ period_start: genStart, period_end: genEnd })
       });
-      setSuccess(`${data.length} facture(s) générée(s)`);
+      setSuccess(`${data.length} facture(s) gÃƒÂ©nÃƒÂ©rÃƒÂ©e(s)`);
       loadInvoices();
       loadStats();
     } catch (e) {
@@ -504,7 +505,7 @@ export default function InvoicesPage() {
 
   const generateSingleInvoice = async () => {
     if (!genSingleEmployeeId || !genSingleClientId) {
-      setError('Sélectionne un employé et un client');
+      setError('SÃƒÂ©lectionne un employÃƒÂ© et un client');
       return;
     }
     setLoading(true);
@@ -518,7 +519,7 @@ export default function InvoicesPage() {
           period_end: genEnd
         })
       });
-      setSuccess(`Facture ${data.number} générée`);
+      setSuccess(`Facture ${data.number} gÃƒÂ©nÃƒÂ©rÃƒÂ©e`);
       await loadInvoices();
       await loadStats();
       if (data.id) await openDetail(data.id);
@@ -567,7 +568,7 @@ export default function InvoicesPage() {
   };
 
   const addManualExpense = () => {
-    setManualExpenseLines(prev => [...prev, { type: 'km', description: 'Kilométrage', quantity: 0, rate: 0.525, amount: 0 }]);
+    setManualExpenseLines(prev => [...prev, { type: 'km', description: 'KilomÃƒÂ©trage', quantity: 0, rate: 0.525, amount: 0 }]);
   };
 
   const updateManualExpense = (idx, field, value) => {
@@ -584,7 +585,7 @@ export default function InvoicesPage() {
 
   const createManualInvoice = async () => {
     if (!manualClientId) { setError('Client requis'); return; }
-    if (!manualPeriodStart || !manualPeriodEnd) { setError('Période requise'); return; }
+    if (!manualPeriodStart || !manualPeriodEnd) { setError('PÃƒÂ©riode requise'); return; }
     setLoading(true);
     try {
       const processedLines = manualLines.map(l => ({
@@ -621,7 +622,7 @@ export default function InvoicesPage() {
           extra_lines: [],
         })
       });
-      setSuccess(`Facture ${data.number} créée manuellement`);
+      setSuccess(`Facture ${data.number} crÃƒÂ©ÃƒÂ©e manuellement`);
       setShowManualForm(false);
       setManualLines([]);
       setManualExpenseLines([]);
@@ -679,7 +680,7 @@ export default function InvoicesPage() {
   const bulkValidate = async () => {
     try {
       const res = await apiFetch('/invoices/bulk/validate', { method: 'POST', body: JSON.stringify([...selected]) });
-      setSuccess(`${res.validated?.length || 0} facture(s) validée(s)`);
+      setSuccess(`${res.validated?.length || 0} facture(s) validÃƒÂ©e(s)`);
       setSelected(new Set());
       loadInvoices();
       loadStats();
@@ -701,7 +702,7 @@ export default function InvoicesPage() {
         loadStats();
         return;
       }
-      setSuccess(`${res.sent?.length || 0} facture(s) envoyée(s)`);
+      setSuccess(`${res.sent?.length || 0} facture(s) envoyÃƒÂ©e(s)`);
       setSelected(new Set());
       loadInvoices();
       loadStats();
@@ -711,13 +712,13 @@ export default function InvoicesPage() {
   };
 
   const bulkDelete = async () => {
-    if (!confirm(`Supprimer ${selected.size} facture(s) sélectionnée(s)? (brouillon/validées/annulées seulement)`)) return;
+    if (!confirm(`Supprimer ${selected.size} facture(s) sÃƒÂ©lectionnÃƒÂ©e(s)? (brouillon/validÃƒÂ©es/annulÃƒÂ©es seulement)`)) return;
     try {
       const res = await apiFetch('/invoices/bulk/delete', { method: 'POST', body: JSON.stringify([...selected]) });
       const count = res.deleted?.length || 0;
       const skippedCount = res.skipped?.length || 0;
-      let msg = `${count} facture(s) supprimée(s)`;
-      if (skippedCount > 0) msg += ` — ${skippedCount} ignorée(s)`;
+      let msg = `${count} facture(s) supprimÃƒÂ©e(s)`;
+      if (skippedCount > 0) msg += ` Ã¢â‚¬â€ ${skippedCount} ignorÃƒÂ©e(s)`;
       setSuccess(msg);
       setSelected(new Set());
       loadInvoices();
@@ -731,23 +732,23 @@ export default function InvoicesPage() {
     <div style={S.page}>
       {success && (
         <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 2000, background: '#28A745', color: '#fff', padding: '12px 20px', borderRadius: 8, boxShadow: '0 4px 20px rgba(0,0,0,0.2)', fontSize: 13, fontWeight: 600, maxWidth: 400 }}>
-          ✓ {success}
+          Ã¢Å“â€œ {success}
         </div>
       )}
       {error && (
         <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 2000, background: '#DC3545', color: '#fff', padding: '12px 20px', borderRadius: 8, boxShadow: '0 4px 20px rgba(0,0,0,0.2)', fontSize: 13, fontWeight: 600, maxWidth: 400 }}>
-          ✗ {error}
+          Ã¢Å“â€” {error}
         </div>
       )}
 
       {stats && (
         <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
           <div style={S.statCard('#2A7B88')}>
-            <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600, textTransform: 'uppercase' }}>Total facturé</div>
+            <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600, textTransform: 'uppercase' }}>Total facturÃƒÂ©</div>
             <div style={{ fontSize: 22, fontWeight: 700, color: '#2A7B88' }}>{fmt(stats.total_invoiced)}</div>
           </div>
           <div style={S.statCard('#28A745')}>
-            <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600, textTransform: 'uppercase' }}>Payé</div>
+            <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600, textTransform: 'uppercase' }}>PayÃƒÂ©</div>
             <div style={{ fontSize: 22, fontWeight: 700, color: '#28A745' }}>{fmt(stats.total_paid)}</div>
           </div>
           <div style={S.statCard('#FFC107')}>
@@ -767,12 +768,13 @@ export default function InvoicesPage() {
 
       <nav style={S.tabs}>
         {[
-          { id: 'list', label: '📋 Factures' },
-          { id: 'generate', label: '⚡ Générer' },
-          { id: 'detail', label: '🔍 Détail', hidden: !selectedInvoice },
-          { id: 'reports', label: '📊 Rapports' },
-          { id: 'creditNotes', label: '📝 Notes de crédit' },
-          { id: 'anomalies', label: '⚠️ Anomalies' },
+          { id: 'list', label: 'Ã°Å¸â€œâ€¹ Factures' },
+          { id: 'generate', label: 'Ã¢Å¡Â¡ GÃƒÂ©nÃƒÂ©rer' },
+          { id: 'payroll', label: 'Paie' },
+          { id: 'detail', label: 'Ã°Å¸â€Â DÃƒÂ©tail', hidden: !selectedInvoice },
+          { id: 'reports', label: 'Ã°Å¸â€œÅ  Rapports' },
+          { id: 'creditNotes', label: 'Ã°Å¸â€œÂ Notes de crÃƒÂ©dit' },
+          { id: 'anomalies', label: 'Ã¢Å¡Â Ã¯Â¸Â Anomalies' },
         ].filter(t => !t.hidden).map(t => (
           <button
             key={t.id}
@@ -795,7 +797,7 @@ export default function InvoicesPage() {
             <div style={S.flexRow}>
               <input
                 style={{ ...S.input, width: isMobile ? '100%' : 220, minWidth: isMobile ? 0 : 220 }}
-                placeholder="Rechercher (# facture, client, employé)..."
+                placeholder="Rechercher (# facture, client, employÃƒÂ©)..."
                 value={filterSearch}
                 onChange={e => setFilterSearch(e.target.value)}
               />
@@ -812,7 +814,7 @@ export default function InvoicesPage() {
                 ))}
               </select>
               <select style={{ ...S.select, width: isMobile ? '100%' : undefined }} value={filterEmployeeId} onChange={e => setFilterEmployeeId(e.target.value)}>
-                <option value="">Tous les employés</option>
+                <option value="">Tous les employÃƒÂ©s</option>
                 {employees.map(emp => (
                   <option key={emp.id} value={emp.id}>{emp.name}</option>
                 ))}
@@ -821,13 +823,14 @@ export default function InvoicesPage() {
             <div style={S.flexRow}>
               {selected.size > 0 && (
                 <>
-                  <span style={{ fontSize: 12, color: '#6C757D' }}>{selected.size} sélectionnée(s)</span>
-                  <button style={S.btn('primary')} onClick={bulkValidate}>✓ Valider</button>
-                  <button style={S.btn('outline')} onClick={bulkSend}>📤 Envoyer</button>
-                  <button style={S.btn('danger')} onClick={bulkDelete}>🗑 Supprimer</button>
+                  <span style={{ fontSize: 12, color: '#6C757D' }}>{selected.size} sÃƒÂ©lectionnÃƒÂ©e(s)</span>
+                  <button style={S.btn('primary')} onClick={bulkValidate}>Ã¢Å“â€œ Valider</button>
+                  <button style={S.btn('outline')} onClick={bulkSend}>Ã°Å¸â€œÂ¤ Envoyer</button>
+                  <button style={S.btn('danger')} onClick={bulkDelete}>Ã°Å¸â€”â€˜ Supprimer</button>
                 </>
               )}
-              <button style={S.btn('primary')} onClick={() => setActiveTab('generate')}>+ Générer factures</button>
+              <button style={S.btn('primary')} onClick={() => setActiveTab('generate')}>+ Generer factures</button>
+              <button style={S.btn('outline')} onClick={() => setActiveTab('payroll')}>Paie</button>
             </div>
           </div>
 
@@ -871,7 +874,7 @@ export default function InvoicesPage() {
           {loading ? (
             <div style={S.empty}>Chargement...</div>
           ) : invoices.length === 0 ? (
-            <div style={S.empty}>Aucune facture trouvée</div>
+            <div style={S.empty}>Aucune facture trouvÃƒÂ©e</div>
           ) : isMobile ? (
             <div style={{ display: 'grid', gap: 12 }}>
               {invoices.map((inv) => (
@@ -896,9 +899,9 @@ export default function InvoicesPage() {
                   </div>
                   <div style={{ fontSize: 12, color: '#495057' }}>
                     <div style={{ fontWeight: 700 }}>{inv.client_name || 'Client'}</div>
-                    <div>{inv.employee_name || 'Employé non assigné'}</div>
+                    <div>{inv.employee_name || 'EmployÃƒÂ© non assignÃƒÂ©'}</div>
                     <div style={{ color: '#6C757D', marginTop: 3 }}>
-                      {fmtDate(inv.period_start)} → {fmtDate(inv.period_end)}
+                      {fmtDate(inv.period_start)} Ã¢â€ â€™ {fmtDate(inv.period_end)}
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
@@ -907,7 +910,7 @@ export default function InvoicesPage() {
                       <div style={{ fontWeight: 800 }}>{fmt(inv.total)}</div>
                     </div>
                     <div style={{ background: '#f3fbf6', borderRadius: 12, padding: 10 }}>
-                      <div style={{ fontSize: 10, color: '#6C757D', textTransform: 'uppercase' }}>Payé</div>
+                      <div style={{ fontSize: 10, color: '#6C757D', textTransform: 'uppercase' }}>PayÃƒÂ©</div>
                       <div style={{ fontWeight: 800, color: '#28A745' }}>{fmt(inv.amount_paid)}</div>
                     </div>
                     <div style={{ background: '#fff6f6', borderRadius: 12, padding: 10 }}>
@@ -933,13 +936,13 @@ export default function InvoicesPage() {
                     <th style={{ ...S.th, borderRadius: '8px 0 0 0', width: 30 }}>
                       <input type="checkbox" checked={selected.size === invoices.length && invoices.length > 0} onChange={toggleAll} />
                     </th>
-                    <th style={S.th}>Numéro</th>
+                    <th style={S.th}>NumÃƒÂ©ro</th>
                     <th style={S.th}>Date</th>
-                    <th style={S.th}>Période</th>
+                    <th style={S.th}>PÃƒÂ©riode</th>
                     <th style={S.th}>Client</th>
-                    <th style={S.th}>Employé</th>
+                    <th style={S.th}>EmployÃƒÂ©</th>
                     <th style={{ ...S.th, textAlign: 'right' }}>Total</th>
-                    <th style={{ ...S.th, textAlign: 'right' }}>Payé</th>
+                    <th style={{ ...S.th, textAlign: 'right' }}>PayÃƒÂ©</th>
                     <th style={{ ...S.th, textAlign: 'right' }}>Solde</th>
                     <th style={S.th}>Statut</th>
                     <th style={{ ...S.th, borderRadius: '0 8px 0 0' }}>Actions</th>
@@ -960,7 +963,7 @@ export default function InvoicesPage() {
                         {inv.number}
                       </td>
                       <td style={S.td}>{fmtDate(inv.date)}</td>
-                      <td style={{ ...S.td, fontSize: 11 }}>{fmtDate(inv.period_start)} → {fmtDate(inv.period_end)}</td>
+                      <td style={{ ...S.td, fontSize: 11 }}>{fmtDate(inv.period_start)} Ã¢â€ â€™ {fmtDate(inv.period_end)}</td>
                       <td style={S.td}>{inv.client_name}</td>
                       <td style={S.td}>
                         <div>{inv.employee_name}</div>
@@ -972,10 +975,10 @@ export default function InvoicesPage() {
                       <td style={S.td}><StatusBadge status={inv.status} /></td>
                       <td style={S.td} onClick={e => e.stopPropagation()}>
                         <div style={{ display: 'flex', gap: 4 }}>
-                          <button style={S.btn('ghost')} title="PDF" onClick={() => openPdf(inv.id)}>📄</button>
-                          <button style={S.btn('ghost')} title="Détail" onClick={() => openDetail(inv.id)}>👁</button>
+                          <button style={S.btn('ghost')} title="PDF" onClick={() => openPdf(inv.id)}>Ã°Å¸â€œâ€ž</button>
+                          <button style={S.btn('ghost')} title="DÃƒÂ©tail" onClick={() => openDetail(inv.id)}>Ã°Å¸â€˜Â</button>
                           {(inv.status === 'draft' || inv.status === 'validated' || inv.status === 'cancelled') && (
-                            <button style={S.btn('ghost')} title="Supprimer" onClick={() => deleteInvoice(inv.id)}>🗑</button>
+                            <button style={S.btn('ghost')} title="Supprimer" onClick={() => deleteInvoice(inv.id)}>Ã°Å¸â€”â€˜</button>
                           )}
                         </div>
                       </td>
@@ -990,9 +993,9 @@ export default function InvoicesPage() {
 
       {activeTab === 'generate' && (
         <div style={S.card}>
-          <h3 style={S.sectionTitle}>⚡ Générer les factures brouillon</h3>
+          <h3 style={S.sectionTitle}>Ã¢Å¡Â¡ GÃƒÂ©nÃƒÂ©rer les factures brouillon</h3>
           <p style={{ fontSize: 13, color: '#6C757D', marginBottom: 16 }}>
-            Génère automatiquement 1 facture par employé par client pour la période sélectionnée, à partir des horaires et FDT soumises.
+            GÃƒÂ©nÃƒÂ¨re automatiquement 1 facture par employÃƒÂ© par client pour la pÃƒÂ©riode sÃƒÂ©lectionnÃƒÂ©e, ÃƒÂ  partir des horaires et FDT soumises.
           </p>
 
           <div style={{ ...S.card, marginBottom: 18, background: '#f8fcfd', border: '1px solid #d8eef2' }}>
@@ -1140,41 +1143,41 @@ export default function InvoicesPage() {
 
           <div style={{ ...S.flexRow, marginBottom: 16 }}>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Début période (Dimanche)</label>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>DÃƒÂ©but pÃƒÂ©riode (Dimanche)</label>
               <input type="date" style={S.input} value={genStart} onChange={e => setGenStart(e.target.value)} />
             </div>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Fin période (Samedi)</label>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Fin pÃƒÂ©riode (Samedi)</label>
               <input type="date" style={S.input} value={genEnd} onChange={e => setGenEnd(e.target.value)} />
             </div>
           </div>
 
           <div style={S.flexRow}>
             <button style={S.btn('primary', 'md')} onClick={generateInvoices} disabled={loading}>
-              {loading ? 'Génération en cours...' : '⚡ Générer les factures'}
+              {loading ? 'GÃƒÂ©nÃƒÂ©ration en cours...' : 'Ã¢Å¡Â¡ GÃƒÂ©nÃƒÂ©rer les factures'}
             </button>
-            <button style={S.btn('outline')} onClick={() => setActiveTab('list')}>← Retour à la liste</button>
+            <button style={S.btn('outline')} onClick={() => setActiveTab('list')}>Ã¢â€ Â Retour ÃƒÂ  la liste</button>
           </div>
 
           <div style={{ marginTop: 20, padding: 16, background: '#E8F4F6', borderRadius: 8, fontSize: 12, color: '#1D5A63' }}>
-            <strong>Règles de génération:</strong>
+            <strong>RÃƒÂ¨gles de gÃƒÂ©nÃƒÂ©ration:</strong>
             <ul style={{ margin: '8px 0 0 16px', lineHeight: 1.8 }}>
-              <li>1 facture par employé par client pour la période</li>
-              <li>Les doublons (même employé + même période) sont ignorés</li>
-              <li>Les taux horaires suivent d'abord le catalogue des titres d'emploi configuré ci-dessus</li>
-              <li>Garde: 8h = 1h facturable à 86.23$/h</li>
-              <li>Km: 0.525$/km (max 750km), Déplacement: heures × taux</li>
-              <li>Clients exemptés TPS/TVQ: Inuulitsivik, Conseil Cri</li>
+              <li>1 facture par employÃƒÂ© par client pour la pÃƒÂ©riode</li>
+              <li>Les doublons (mÃƒÂªme employÃƒÂ© + mÃƒÂªme pÃƒÂ©riode) sont ignorÃƒÂ©s</li>
+              <li>Les taux horaires suivent d'abord le catalogue des titres d'emploi configurÃƒÂ© ci-dessus</li>
+              <li>Garde: 8h = 1h facturable ÃƒÂ  86.23$/h</li>
+              <li>Km: 0.525$/km (max 750km), DÃƒÂ©placement: heures Ãƒâ€” taux</li>
+              <li>Clients exemptÃƒÂ©s TPS/TVQ: Inuulitsivik, Conseil Cri</li>
             </ul>
           </div>
 
           <div style={{ ...S.card, marginTop: 20, background: '#f8f9fa', border: '1px solid #dee2e6' }}>
-            <h4 style={{ ...S.sectionTitle, fontSize: 13 }}>🎯 Générer une facture unique</h4>
+            <h4 style={{ ...S.sectionTitle, fontSize: 13 }}>Ã°Å¸Å½Â¯ GÃƒÂ©nÃƒÂ©rer une facture unique</h4>
             <div style={{ ...S.flexRow, marginBottom: 14 }}>
               <div>
-                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Employé</label>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>EmployÃƒÂ©</label>
                 <select style={S.select} value={genSingleEmployeeId} onChange={e => setGenSingleEmployeeId(e.target.value)}>
-                  <option value="">— Sélectionner —</option>
+                  <option value="">Ã¢â‚¬â€ SÃƒÂ©lectionner Ã¢â‚¬â€</option>
                   {employees.map(emp => (
                     <option key={emp.id} value={emp.id}>{emp.name}</option>
                   ))}
@@ -1183,7 +1186,7 @@ export default function InvoicesPage() {
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Client</label>
                 <select style={S.select} value={genSingleClientId} onChange={e => setGenSingleClientId(e.target.value)}>
-                  <option value="">— Sélectionner —</option>
+                  <option value="">Ã¢â‚¬â€ SÃƒÂ©lectionner Ã¢â‚¬â€</option>
                   {clients.map(c => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
@@ -1191,20 +1194,20 @@ export default function InvoicesPage() {
               </div>
             </div>
             <button style={S.btn('primary', 'md')} onClick={generateSingleInvoice} disabled={loading || !genSingleEmployeeId || !genSingleClientId}>
-              {loading ? 'Génération en cours...' : 'Créer la facture unique (depuis horaire)'}
+              {loading ? 'GÃƒÂ©nÃƒÂ©ration en cours...' : 'CrÃƒÂ©er la facture unique (depuis horaire)'}
             </button>
-            <p style={{ fontSize: 10, color: '#6C757D', marginTop: 6 }}>⚠️ Requiert des quarts existants dans l'horaire</p>
+            <p style={{ fontSize: 10, color: '#6C757D', marginTop: 6 }}>Ã¢Å¡Â Ã¯Â¸Â Requiert des quarts existants dans l'horaire</p>
           </div>
 
-          {/* Manual invoice creation — no schedule needed */}
+          {/* Manual invoice creation Ã¢â‚¬â€ no schedule needed */}
           <div style={{ ...S.card, marginTop: 20, background: '#FFF3E0', border: '1px solid #FFB74D' }}>
             <div style={{ ...S.flexBetween, marginBottom: 10 }}>
-              <h4 style={{ ...S.sectionTitle, fontSize: 13, margin: 0 }}>📝 Créer une facture manuelle</h4>
+              <h4 style={{ ...S.sectionTitle, fontSize: 13, margin: 0 }}>Ã°Å¸â€œÂ CrÃƒÂ©er une facture manuelle</h4>
               <button style={S.btn(showManualForm ? 'outline' : 'primary')} onClick={() => { setShowManualForm(!showManualForm); if (!showManualForm && manualLines.length === 0) addManualLine(); }}>
                 {showManualForm ? 'Masquer' : '+ Nouvelle facture manuelle'}
               </button>
             </div>
-            <p style={{ fontSize: 11, color: '#6C757D', marginBottom: 8 }}>Créer une facture sans avoir besoin de quarts dans l'horaire</p>
+            <p style={{ fontSize: 11, color: '#6C757D', marginBottom: 8 }}>CrÃƒÂ©er une facture sans avoir besoin de quarts dans l'horaire</p>
 
             {showManualForm && (
               <div>
@@ -1212,23 +1215,23 @@ export default function InvoicesPage() {
                   <div>
                     <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Client *</label>
                     <select style={S.select} value={manualClientId} onChange={e => setManualClientId(e.target.value)}>
-                      <option value="">— Sélectionner —</option>
+                      <option value="">Ã¢â‚¬â€ SÃƒÂ©lectionner Ã¢â‚¬â€</option>
                       {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Employé (optionnel)</label>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>EmployÃƒÂ© (optionnel)</label>
                     <select style={S.select} value={manualEmployeeId} onChange={e => setManualEmployeeId(e.target.value)}>
-                      <option value="">— Aucun —</option>
+                      <option value="">Ã¢â‚¬â€ Aucun Ã¢â‚¬â€</option>
                       {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
                     </select>
                   </div>
                   <div>
-                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Début période *</label>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>DÃƒÂ©but pÃƒÂ©riode *</label>
                     <input type="date" style={S.input} value={manualPeriodStart} onChange={e => setManualPeriodStart(e.target.value)} />
                   </div>
                   <div>
-                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Fin période *</label>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Fin pÃƒÂ©riode *</label>
                     <input type="date" style={S.input} value={manualPeriodEnd} onChange={e => setManualPeriodEnd(e.target.value)} />
                   </div>
                 </div>
@@ -1238,7 +1241,7 @@ export default function InvoicesPage() {
                     <input style={S.input} value={manualPoNumber} onChange={e => setManualPoNumber(e.target.value)} placeholder="PO-001" />
                   </div>
                   <div>
-                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Date échéance</label>
+                    <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Date ÃƒÂ©chÃƒÂ©ance</label>
                     <input type="date" style={S.input} value={manualDueDate} onChange={e => setManualDueDate(e.target.value)} />
                   </div>
                   <div>
@@ -1262,7 +1265,7 @@ export default function InvoicesPage() {
                     <table style={{ ...S.table, fontSize: 11 }}>
                       <thead>
                         <tr>
-                          {['Date', 'Début', 'Fin', 'Pause (min)', 'Heures', 'Taux', 'Montant', ''].map(h => (
+                          {['Date', 'DÃƒÂ©but', 'Fin', 'Pause (min)', 'Heures', 'Taux', 'Montant', ''].map(h => (
                             <th key={h} style={{ ...S.th, fontSize: 10, padding: '4px 6px' }}>{h}</th>
                           ))}
                         </tr>
@@ -1277,7 +1280,7 @@ export default function InvoicesPage() {
                             <td style={S.td}><input type="number" step="0.25" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 50 }} value={l.hours} onChange={e => updateManualLine(i, 'hours', e.target.value)} /></td>
                             <td style={S.td}><input type="number" step="0.01" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 60 }} value={l.rate} onChange={e => updateManualLine(i, 'rate', e.target.value)} /></td>
                             <td style={{ ...S.td, fontWeight: 600, textAlign: 'right' }}>{fmt(l.service_amount || 0)}</td>
-                            <td style={S.td}><button style={{ color: '#DC3545', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12 }} onClick={() => setManualLines(p => p.filter((_, j) => j !== i))}>✕</button></td>
+                            <td style={S.td}><button style={{ color: '#DC3545', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12 }} onClick={() => setManualLines(p => p.filter((_, j) => j !== i))}>Ã¢Å“â€¢</button></td>
                           </tr>
                         ))}
                       </tbody>
@@ -1288,14 +1291,14 @@ export default function InvoicesPage() {
                 {/* Expense lines */}
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ ...S.flexBetween, marginBottom: 6 }}>
-                    <h5 style={{ fontSize: 12, fontWeight: 600, margin: 0 }}>Frais / Dépenses</h5>
+                    <h5 style={{ fontSize: 12, fontWeight: 600, margin: 0 }}>Frais / DÃƒÂ©penses</h5>
                     <button style={{ ...S.btn('outline'), fontSize: 10, padding: '2px 8px' }} onClick={addManualExpense}>+ Ajouter frais</button>
                   </div>
                   {manualExpenseLines.length > 0 && (
                     <table style={{ ...S.table, fontSize: 11 }}>
                       <thead>
                         <tr>
-                          {['Type', 'Description', 'Quantité', 'Taux', 'Montant', ''].map(h => (
+                          {['Type', 'Description', 'QuantitÃƒÂ©', 'Taux', 'Montant', ''].map(h => (
                             <th key={h} style={{ ...S.th, fontSize: 10, padding: '4px 6px' }}>{h}</th>
                           ))}
                         </tr>
@@ -1305,8 +1308,8 @@ export default function InvoicesPage() {
                           <tr key={i}>
                             <td style={S.td}>
                               <select style={{ ...S.select, fontSize: 10, padding: '3px 4px', width: 100 }} value={e.type} onChange={ev => updateManualExpense(i, 'type', ev.target.value)}>
-                                <option value="km">Kilométrage</option>
-                                <option value="deplacement">Déplacement</option>
+                                <option value="km">KilomÃƒÂ©trage</option>
+                                <option value="deplacement">DÃƒÂ©placement</option>
                                 <option value="autre">Autre</option>
                               </select>
                             </td>
@@ -1314,7 +1317,7 @@ export default function InvoicesPage() {
                             <td style={S.td}><input type="number" step="0.01" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 60 }} value={e.quantity} onChange={ev => updateManualExpense(i, 'quantity', ev.target.value)} /></td>
                             <td style={S.td}><input type="number" step="0.01" style={{ ...S.input, fontSize: 10, padding: '3px 4px', width: 60 }} value={e.rate} onChange={ev => updateManualExpense(i, 'rate', ev.target.value)} /></td>
                             <td style={{ ...S.td, fontWeight: 600, textAlign: 'right' }}>{fmt(e.amount || 0)}</td>
-                            <td style={S.td}><button style={{ color: '#DC3545', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12 }} onClick={() => setManualExpenseLines(p => p.filter((_, j) => j !== i))}>✕</button></td>
+                            <td style={S.td}><button style={{ color: '#DC3545', border: 'none', background: 'none', cursor: 'pointer', fontSize: 12 }} onClick={() => setManualExpenseLines(p => p.filter((_, j) => j !== i))}>Ã¢Å“â€¢</button></td>
                           </tr>
                         ))}
                       </tbody>
@@ -1324,7 +1327,7 @@ export default function InvoicesPage() {
 
                 <div style={S.flexRow}>
                   <button style={S.btn('primary', 'md')} onClick={createManualInvoice} disabled={loading || !manualClientId}>
-                    {loading ? 'Création en cours...' : '📝 Créer la facture manuelle'}
+                    {loading ? 'CrÃƒÂ©ation en cours...' : 'Ã°Å¸â€œÂ CrÃƒÂ©er la facture manuelle'}
                   </button>
                   <button style={S.btn('outline')} onClick={() => { setShowManualForm(false); setManualLines([]); setManualExpenseLines([]); }}>Annuler</button>
                   <span style={{ fontSize: 11, color: '#6C757D' }}>
@@ -1335,6 +1338,22 @@ export default function InvoicesPage() {
             )}
           </div>
         </div>
+      )}
+
+      {activeTab === 'payroll' && (
+        <BillingPayrollTab
+          apiFetch={apiFetch}
+          employees={employees}
+          setError={setError}
+          setSuccess={setSuccess}
+          cardStyle={S.card}
+          sectionTitleStyle={S.sectionTitle}
+          buttonStyle={S.btn}
+          inputStyle={S.input}
+          tableStyle={S.table}
+          thStyle={S.th}
+          tdStyle={S.td}
+        />
       )}
 
       {activeTab === 'detail' && selectedInvoice && (
@@ -1483,7 +1502,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           accommodation_lines: processedAccom,
         })
       });
-      setSuccess('Facture modifiée');
+      setSuccess('Facture modifiÃƒÂ©e');
       setShowEdit(false);
       await onRefresh();
       await loadInvoices();
@@ -1553,8 +1572,8 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
   const addEditExpense = (type) => {
     const defaults = {
-      km: { type: 'km', description: 'Kilométrage', quantity: 0, rate: 0.525, amount: 0 },
-      deplacement: { type: 'deplacement', description: 'Frais de déplacement', quantity: 0, rate: editLines[0]?.rate || 0, amount: 0 },
+      km: { type: 'km', description: 'KilomÃƒÂ©trage', quantity: 0, rate: 0.525, amount: 0 },
+      deplacement: { type: 'deplacement', description: 'Frais de dÃƒÂ©placement', quantity: 0, rate: editLines[0]?.rate || 0, amount: 0 },
       autre: { type: 'autre', description: 'Autres frais', quantity: 1, rate: 0, amount: 0 },
     };
     setEditExpenseLines(prev => [...prev, defaults[type] || defaults.autre]);
@@ -1596,7 +1615,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Erreur upload');
       }
-      setSuccess('Pièce jointe ajoutée');
+      setSuccess('PiÃƒÂ¨ce jointe ajoutÃƒÂ©e');
       setAttDescription('');
       loadAttachments();
     } catch (e) {
@@ -1608,10 +1627,10 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
   };
 
   const deleteAttachment = async (attId) => {
-    if (!confirm('Supprimer cette pièce jointe?')) return;
+    if (!confirm('Supprimer cette piÃƒÂ¨ce jointe?')) return;
     try {
       await apiFetch(`/invoices/${inv.id}/attachments/${attId}`, { method: 'DELETE' });
-      setSuccess('Pièce jointe supprimée');
+      setSuccess('PiÃƒÂ¨ce jointe supprimÃƒÂ©e');
       loadAttachments();
     } catch (e) {
       setError(e.message);
@@ -1635,8 +1654,8 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const catLabels = { hebergement: 'Hébergement', deplacement: 'Déplacement', kilometrage: 'Kilométrage', autre: 'Autre' };
-  const typeIcons = { pdf: '📄', jpg: '🖼️', png: '🖼️', gif: '🖼️' };
+  const catLabels = { hebergement: 'HÃƒÂ©bergement', deplacement: 'DÃƒÂ©placement', kilometrage: 'KilomÃƒÂ©trage', autre: 'Autre' };
+  const typeIcons = { pdf: 'Ã°Å¸â€œâ€ž', jpg: 'Ã°Å¸â€“Â¼Ã¯Â¸Â', png: 'Ã°Å¸â€“Â¼Ã¯Â¸Â', gif: 'Ã°Å¸â€“Â¼Ã¯Â¸Â' };
 
   const addPayment = async () => {
     try {
@@ -1644,7 +1663,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
         method: 'POST',
         body: JSON.stringify({ amount: parseFloat(payAmount), date: payDate, reference: payRef, method: payMethod })
       });
-      setSuccess('Paiement enregistré');
+      setSuccess('Paiement enregistrÃƒÂ©');
       setShowPayment(false);
       setPayAmount('');
       setPayRef('');
@@ -1660,7 +1679,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     if (!confirm('Supprimer ce paiement?')) return;
     try {
       await apiFetch(`/invoices/${inv.id}/payments/${paymentId}`, { method: 'DELETE' });
-      setSuccess('Paiement supprimé');
+      setSuccess('Paiement supprimÃƒÂ©');
       onRefresh();
       loadInvoices();
       loadStats();
@@ -1673,27 +1692,27 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     const actions = [];
     switch (inv.status) {
       case 'draft':
-        actions.push({ label: 'Valider', status: 'validated', variant: 'primary', icon: '✓' });
-        actions.push({ label: 'Annuler', status: 'cancelled', variant: 'danger', icon: '✗' });
+        actions.push({ label: 'Valider', status: 'validated', variant: 'primary', icon: 'Ã¢Å“â€œ' });
+        actions.push({ label: 'Annuler', status: 'cancelled', variant: 'danger', icon: 'Ã¢Å“â€”' });
         break;
       case 'validated':
-        actions.push({ label: 'Marquer envoyée', status: 'sent', variant: 'primary', icon: '📤' });
-        actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: '💰' });
-        actions.push({ label: 'Retour brouillon', status: 'draft', variant: 'ghost', icon: '←' });
+        actions.push({ label: 'Marquer envoyÃƒÂ©e', status: 'sent', variant: 'primary', icon: 'Ã°Å¸â€œÂ¤' });
+        actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: 'Ã°Å¸â€™Â°' });
+        actions.push({ label: 'Retour brouillon', status: 'draft', variant: 'ghost', icon: 'Ã¢â€ Â' });
         break;
       case 'sent':
-        actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: '💰' });
-        actions.push({ label: 'Paiement partiel', fn: () => setShowPayment(true), variant: 'warning', icon: '💵' });
+        actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: 'Ã°Å¸â€™Â°' });
+        actions.push({ label: 'Paiement partiel', fn: () => setShowPayment(true), variant: 'warning', icon: 'Ã°Å¸â€™Âµ' });
         break;
       case 'partially_paid':
-        actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: '💰' });
-        actions.push({ label: 'Ajout paiement', fn: () => setShowPayment(true), variant: 'warning', icon: '💵' });
+        actions.push({ label: 'Paiement complet', fn: () => onMarkPaid(inv.id), variant: 'success', icon: 'Ã°Å¸â€™Â°' });
+        actions.push({ label: 'Ajout paiement', fn: () => setShowPayment(true), variant: 'warning', icon: 'Ã°Å¸â€™Âµ' });
         break;
       case 'paid':
-        actions.push({ label: 'Réouvrir', status: 'sent', variant: 'outline', icon: '↩' });
+        actions.push({ label: 'RÃƒÂ©ouvrir', status: 'sent', variant: 'outline', icon: 'Ã¢â€ Â©' });
         break;
       case 'cancelled':
-        actions.push({ label: 'Réactiver', status: 'draft', variant: 'outline', icon: '↩' });
+        actions.push({ label: 'RÃƒÂ©activer', status: 'draft', variant: 'outline', icon: 'Ã¢â€ Â©' });
         break;
     }
     return actions;
@@ -1703,17 +1722,17 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
     <div>
       <div style={{ ...S.flexBetween, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button style={S.btn('ghost')} onClick={onBack}>← Retour</button>
+          <button style={S.btn('ghost')} onClick={onBack}>Ã¢â€ Â Retour</button>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: '#2A7B88' }}>{inv.number}</h2>
           <StatusBadge status={inv.status} />
         </div>
         <div style={S.flexRow}>
-          <button style={S.btn('outline')} onClick={() => setShowEdit(true)}>✏️ Modifier</button>
-          <button style={S.btn('outline')} onClick={() => onPdf(inv.id)}>📄 PDF</button>
-          <button style={S.btn('outline')} onClick={() => onEmail(inv.id)}>✉️ Courriel</button>
-          <button style={S.btn('ghost')} onClick={() => onDuplicate(inv.id)}>📋 Dupliquer</button>
+          <button style={S.btn('outline')} onClick={() => setShowEdit(true)}>Ã¢Å“ÂÃ¯Â¸Â Modifier</button>
+          <button style={S.btn('outline')} onClick={() => onPdf(inv.id)}>Ã°Å¸â€œâ€ž PDF</button>
+          <button style={S.btn('outline')} onClick={() => onEmail(inv.id)}>Ã¢Å“â€°Ã¯Â¸Â Courriel</button>
+          <button style={S.btn('ghost')} onClick={() => onDuplicate(inv.id)}>Ã°Å¸â€œâ€¹ Dupliquer</button>
           {(inv.status === 'draft' || inv.status === 'validated' || inv.status === 'cancelled') && (
-            <button style={S.btn('danger')} onClick={() => onDelete(inv.id)}>🗑 Supprimer</button>
+            <button style={S.btn('danger')} onClick={() => onDelete(inv.id)}>Ã°Å¸â€”â€˜ Supprimer</button>
           )}
         </div>
       </div>
@@ -1739,11 +1758,11 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           <div style={{ fontSize: 11, color: '#6C757D' }}>{inv.employee_title}</div>
         </div>
         <div style={S.statCard('#2A7B88')}>
-          <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600 }}>PÉRIODE</div>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>{fmtDate(inv.period_start)} → {fmtDate(inv.period_end)}</div>
+          <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600 }}>PÃƒâ€°RIODE</div>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>{fmtDate(inv.period_start)} Ã¢â€ â€™ {fmtDate(inv.period_end)}</div>
         </div>
         <div style={S.statCard(inv.balance_due > 0 ? '#DC3545' : '#28A745')}>
-          <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600 }}>SOLDE DÛ</div>
+          <div style={{ fontSize: 11, color: '#6C757D', fontWeight: 600 }}>SOLDE DÃƒâ€º</div>
           <div style={{ fontSize: 22, fontWeight: 700, color: inv.balance_due > 0 ? '#DC3545' : '#28A745' }}>{fmt(inv.balance_due)}</div>
         </div>
       </div>
@@ -1751,14 +1770,14 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
       <div style={{ ...S.tabs, marginBottom: 12 }}>
         {['lines', 'payments', 'attachments', 'audit'].map(t => (
           <button key={t} style={S.tab(detailTab === t)} onClick={() => setDetailTab(t)}>
-            {t === 'lines' ? '📋 Lignes' : t === 'payments' ? `💰 Paiements (${(inv.payments || []).length})` : t === 'attachments' ? `📎 Pièces jointes (${attachments.length})` : `📜 Historique (${(inv.audit_logs || []).length})`}
+            {t === 'lines' ? 'Ã°Å¸â€œâ€¹ Lignes' : t === 'payments' ? `Ã°Å¸â€™Â° Paiements (${(inv.payments || []).length})` : t === 'attachments' ? `Ã°Å¸â€œÅ½ PiÃƒÂ¨ces jointes (${attachments.length})` : `Ã°Å¸â€œÅ“ Historique (${(inv.audit_logs || []).length})`}
           </button>
         ))}
       </div>
 
       {detailTab === 'lines' && (
         <div style={S.card}>
-          <div style={{ marginBottom: 10, fontSize: 12, color: '#6C757D' }}>Le détail complet de facture est conservé ici comme avant.</div>
+          <div style={{ marginBottom: 10, fontSize: 12, color: '#6C757D' }}>Le dÃƒÂ©tail complet de facture est conservÃƒÂ© ici comme avant.</div>
 
           {(inv.lines || []).length > 0 && (
             <>
@@ -1767,7 +1786,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                 <table style={S.table}>
                   <thead>
                     <tr>
-                      {['Date', 'Début', 'Fin', 'Pause', 'Heures', 'Taux', 'Services', 'Garde', 'Rappel'].map((h, i) => (
+                      {['Date', 'DÃƒÂ©but', 'Fin', 'Pause', 'Heures', 'Taux', 'Services', 'Garde', 'Rappel'].map((h, i) => (
                         <th key={h} style={{ ...S.th, fontSize: 10, ...(i >= 4 ? { textAlign: 'right' } : {}) }}>{h}</th>
                       ))}
                     </tr>
@@ -1782,8 +1801,8 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                         <td style={{ ...S.td, textAlign: 'right' }}>{l.hours?.toFixed?.(2) || l.hours}</td>
                         <td style={{ ...S.td, textAlign: 'right' }}>{fmt(l.rate)}</td>
                         <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>{fmt(l.service_amount)}</td>
-                        <td style={{ ...S.td, textAlign: 'right' }}>{l.garde_amount ? fmt(l.garde_amount) : '—'}</td>
-                        <td style={{ ...S.td, textAlign: 'right' }}>{l.rappel_amount ? fmt(l.rappel_amount) : '—'}</td>
+                        <td style={{ ...S.td, textAlign: 'right' }}>{l.garde_amount ? fmt(l.garde_amount) : 'Ã¢â‚¬â€'}</td>
+                        <td style={{ ...S.td, textAlign: 'right' }}>{l.rappel_amount ? fmt(l.rappel_amount) : 'Ã¢â‚¬â€'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1794,11 +1813,11 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
           {(inv.accommodation_lines || []).length > 0 && (
             <>
-              <h4 style={{ ...S.sectionTitle, fontSize: 13, marginTop: 20 }}>Hébergement</h4>
+              <h4 style={{ ...S.sectionTitle, fontSize: 13, marginTop: 20 }}>HÃƒÂ©bergement</h4>
               <table style={S.table}>
                 <thead>
                   <tr>
-                    {['Employé', 'Période', 'Jours', 'Coût/jour', 'Montant'].map((h, i) => (
+                    {['EmployÃƒÂ©', 'PÃƒÂ©riode', 'Jours', 'CoÃƒÂ»t/jour', 'Montant'].map((h, i) => (
                       <th key={h} style={{ ...S.th, fontSize: 10, ...(i >= 2 ? { textAlign: 'right' } : {}) }}>{h}</th>
                     ))}
                   </tr>
@@ -1824,7 +1843,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
               <table style={S.table}>
                 <thead>
                   <tr>
-                    {['Description', 'Quantité', 'Taux', 'Montant'].map((h, i) => (
+                    {['Description', 'QuantitÃƒÂ©', 'Taux', 'Montant'].map((h, i) => (
                       <th key={h} style={{ ...S.th, fontSize: 10, ...(i >= 1 ? { textAlign: 'right' } : {}) }}>{h}</th>
                     ))}
                   </tr>
@@ -1850,9 +1869,9 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                   ['Services', inv.subtotal_services],
                   inv.subtotal_garde && ['Garde', inv.subtotal_garde],
                   inv.subtotal_rappel && ['Rappel', inv.subtotal_rappel],
-                  inv.subtotal_accom && ['Hébergement', inv.subtotal_accom],
-                  inv.subtotal_deplacement && ['Déplacement', inv.subtotal_deplacement],
-                  inv.subtotal_km && ['Kilométrage', inv.subtotal_km],
+                  inv.subtotal_accom && ['HÃƒÂ©bergement', inv.subtotal_accom],
+                  inv.subtotal_deplacement && ['DÃƒÂ©placement', inv.subtotal_deplacement],
+                  inv.subtotal_km && ['KilomÃƒÂ©trage', inv.subtotal_km],
                   inv.subtotal_autres_frais && ['Autres frais', inv.subtotal_autres_frais],
                 ].filter(Boolean).map(([label, val]) => (
                   <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: 13 }}>
@@ -1877,7 +1896,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                 )}
 
                 {!inv.include_tax && (
-                  <div style={{ padding: '3px 0', fontSize: 12, color: '#28A745', fontStyle: 'italic' }}>Exempté de taxes</div>
+                  <div style={{ padding: '3px 0', fontSize: 12, color: '#28A745', fontStyle: 'italic' }}>ExemptÃƒÂ© de taxes</div>
                 )}
 
                 <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 12px', fontSize: 18, fontWeight: 700, background: '#2A7B88', color: '#fff', borderRadius: 8, marginTop: 8 }}>
@@ -1887,10 +1906,10 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                 {inv.amount_paid > 0 && (
                   <>
                     <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, marginTop: 8, color: '#28A745' }}>
-                      <span>Payé</span><span>{fmt(inv.amount_paid)}</span>
+                      <span>PayÃƒÂ©</span><span>{fmt(inv.amount_paid)}</span>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 15, fontWeight: 700, color: inv.balance_due > 0 ? '#DC3545' : '#28A745' }}>
-                      <span>Solde dû</span><span>{fmt(inv.balance_due)}</span>
+                      <span>Solde dÃƒÂ»</span><span>{fmt(inv.balance_due)}</span>
                     </div>
                   </>
                 )}
@@ -1903,18 +1922,18 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
       {detailTab === 'payments' && (
         <div style={S.card}>
           <div style={S.flexBetween}>
-            <h4 style={{ ...S.sectionTitle, margin: 0 }}>💰 Paiements</h4>
+            <h4 style={{ ...S.sectionTitle, margin: 0 }}>Ã°Å¸â€™Â° Paiements</h4>
             {!['draft', 'cancelled', 'paid'].includes(inv.status) && (
               <button style={S.btn('success')} onClick={() => setShowPayment(true)}>+ Nouveau paiement</button>
             )}
           </div>
           {(inv.payments || []).length === 0 ? (
-            <div style={S.empty}>Aucun paiement enregistré</div>
+            <div style={S.empty}>Aucun paiement enregistrÃƒÂ©</div>
           ) : (
             <table style={{ ...S.table, marginTop: 12 }}>
               <thead>
                 <tr>
-                  {['Date', 'Montant', 'Méthode', 'Référence', 'Notes', ''].map(h => (
+                  {['Date', 'Montant', 'MÃƒÂ©thode', 'RÃƒÂ©fÃƒÂ©rence', 'Notes', ''].map(h => (
                     <th key={h} style={{ ...S.th, fontSize: 10 }}>{h}</th>
                   ))}
                 </tr>
@@ -1925,10 +1944,10 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                     <td style={S.td}>{fmtDate(p.date)}</td>
                     <td style={{ ...S.td, fontWeight: 600, color: '#28A745' }}>{fmt(p.amount)}</td>
                     <td style={S.td}>{p.method}</td>
-                    <td style={S.td}>{p.reference || '—'}</td>
-                    <td style={S.td}>{p.notes || '—'}</td>
+                    <td style={S.td}>{p.reference || 'Ã¢â‚¬â€'}</td>
+                    <td style={S.td}>{p.notes || 'Ã¢â‚¬â€'}</td>
                     <td style={S.td}>
-                      <button style={S.btn('danger', 'sm')} onClick={() => deletePayment(p.id)}>🗑</button>
+                      <button style={S.btn('danger', 'sm')} onClick={() => deletePayment(p.id)}>Ã°Å¸â€”â€˜</button>
                     </td>
                   </tr>
                 ))}
@@ -1940,52 +1959,52 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
       {detailTab === 'attachments' && (
         <div style={S.card}>
-          <h4 style={{ ...S.sectionTitle, margin: '0 0 12px 0' }}>📎 Pièces jointes</h4>
+          <h4 style={{ ...S.sectionTitle, margin: '0 0 12px 0' }}>Ã°Å¸â€œÅ½ PiÃƒÂ¨ces jointes</h4>
 
           <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 14, marginBottom: 16, border: '1px dashed #ced4da' }}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div style={{ flex: 1, minWidth: 140 }}>
-                <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Catégorie</label>
+                <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>CatÃƒÂ©gorie</label>
                 <select style={{ ...S.select, width: '100%' }} value={attCategory} onChange={e => setAttCategory(e.target.value)}>
-                  <option value="hebergement">Hébergement</option>
-                  <option value="deplacement">Déplacement</option>
-                  <option value="kilometrage">Kilométrage</option>
+                  <option value="hebergement">HÃƒÂ©bergement</option>
+                  <option value="deplacement">DÃƒÂ©placement</option>
+                  <option value="kilometrage">KilomÃƒÂ©trage</option>
                   <option value="autre">Autre</option>
                 </select>
               </div>
               <div style={{ flex: 2, minWidth: 180 }}>
                 <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 4 }}>Description (opt.)</label>
-                <input style={{ ...S.input, width: '100%' }} value={attDescription} onChange={e => setAttDescription(e.target.value)} placeholder="Reçu hôtel, facture..." />
+                <input style={{ ...S.input, width: '100%' }} value={attDescription} onChange={e => setAttDescription(e.target.value)} placeholder="ReÃƒÂ§u hÃƒÂ´tel, facture..." />
               </div>
               <div>
                 <label style={{ ...S.btn('primary', 'sm'), cursor: 'pointer', display: 'inline-block' }}>
-                  {attUploading ? '⏳ Upload...' : '📤 Ajouter fichier'}
+                  {attUploading ? 'Ã¢ÂÂ³ Upload...' : 'Ã°Å¸â€œÂ¤ Ajouter fichier'}
                   <input type="file" accept=".pdf,.jpg,.jpeg,.png,.gif" style={{ display: 'none' }} onChange={handleAttUpload} disabled={attUploading} />
                 </label>
               </div>
             </div>
-            <div style={{ fontSize: 11, color: '#6C757D', marginTop: 6 }}>Formats acceptés : PDF, JPG, PNG, GIF — Max 10 MB</div>
+            <div style={{ fontSize: 11, color: '#6C757D', marginTop: 6 }}>Formats acceptÃƒÂ©s : PDF, JPG, PNG, GIF Ã¢â‚¬â€ Max 10 MB</div>
           </div>
 
           {attLoading ? (
             <div style={S.empty}>Chargement...</div>
           ) : attachments.length === 0 ? (
-            <div style={S.empty}>Aucune pièce jointe</div>
+            <div style={S.empty}>Aucune piÃƒÂ¨ce jointe</div>
           ) : (
             <div>
               {attachments.map(att => (
                 <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #f0f0f0' }}>
-                  <span style={{ fontSize: 24 }}>{typeIcons[att.file_type] || '📄'}</span>
+                  <span style={{ fontSize: 24 }}>{typeIcons[att.file_type] || 'Ã°Å¸â€œâ€ž'}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.filename}</div>
                     <div style={{ fontSize: 11, color: '#6C757D' }}>
                       <span style={{ background: '#e9ecef', borderRadius: 4, padding: '1px 6px', marginRight: 6 }}>{catLabels[att.category] || att.category}</span>
-                      {fmtSize(att.file_size)} — {fmtDate(att.created_at?.split('T')[0])}
-                      {att.description && <span style={{ marginLeft: 6 }}>— {att.description}</span>}
+                      {fmtSize(att.file_size)} Ã¢â‚¬â€ {fmtDate(att.created_at?.split('T')[0])}
+                      {att.description && <span style={{ marginLeft: 6 }}>Ã¢â‚¬â€ {att.description}</span>}
                     </div>
                   </div>
-                  <button style={{ ...S.btn('outline', 'sm'), padding: '4px 8px' }} onClick={() => viewAttachment(att.id)} title="Voir">👁️</button>
-                  <button style={{ ...S.btn('danger', 'sm'), padding: '4px 8px' }} onClick={() => deleteAttachment(att.id)} title="Supprimer">🗑️</button>
+                  <button style={{ ...S.btn('outline', 'sm'), padding: '4px 8px' }} onClick={() => viewAttachment(att.id)} title="Voir">Ã°Å¸â€˜ÂÃ¯Â¸Â</button>
+                  <button style={{ ...S.btn('danger', 'sm'), padding: '4px 8px' }} onClick={() => deleteAttachment(att.id)} title="Supprimer">Ã°Å¸â€”â€˜Ã¯Â¸Â</button>
                 </div>
               ))}
             </div>
@@ -1994,7 +2013,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           {attachments.length > 0 && (
             <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e9ecef' }}>
               <button style={S.btn('primary', 'md')} onClick={downloadPdfWithAttachments}>
-                📥 Télécharger PDF facture + pièces jointes
+                Ã°Å¸â€œÂ¥ TÃƒÂ©lÃƒÂ©charger PDF facture + piÃƒÂ¨ces jointes
               </button>
             </div>
           )}
@@ -2003,9 +2022,9 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
       {detailTab === 'audit' && (
         <div style={S.card}>
-          <h4 style={{ ...S.sectionTitle, margin: '0 0 12px 0' }}>📜 Historique des modifications</h4>
+          <h4 style={{ ...S.sectionTitle, margin: '0 0 12px 0' }}>Ã°Å¸â€œÅ“ Historique des modifications</h4>
           {(inv.audit_logs || []).length === 0 ? (
-            <div style={S.empty}>Aucun événement</div>
+            <div style={S.empty}>Aucun ÃƒÂ©vÃƒÂ©nement</div>
           ) : (
             <div>
               {inv.audit_logs.map(log => (
@@ -2015,7 +2034,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                     <span style={{ fontWeight: 600 }}>{log.action}</span>
                     {log.old_status && log.new_status && (
                       <span style={{ marginLeft: 8 }}>
-                        <StatusBadge status={log.old_status} /> → <StatusBadge status={log.new_status} />
+                        <StatusBadge status={log.old_status} /> Ã¢â€ â€™ <StatusBadge status={log.new_status} />
                       </span>
                     )}
                     {log.details && <div style={{ color: '#6C757D', marginTop: 2, fontSize: 12 }}>{log.details}</div>}
@@ -2039,21 +2058,21 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
             <input type="date" style={{ ...S.input, width: '100%' }} value={payDate} onChange={e => setPayDate(e.target.value)} />
           </div>
           <div>
-            <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Méthode</label>
+            <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>MÃƒÂ©thode</label>
             <select style={{ ...S.select, width: '100%' }} value={payMethod} onChange={e => setPayMethod(e.target.value)}>
               <option value="virement">Virement</option>
-              <option value="cheque">Chèque</option>
+              <option value="cheque">ChÃƒÂ¨que</option>
               <option value="eft">EFT</option>
               <option value="carte">Carte</option>
               <option value="autre">Autre</option>
             </select>
           </div>
           <div>
-            <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Référence</label>
-            <input style={{ ...S.input, width: '100%' }} value={payRef} onChange={e => setPayRef(e.target.value)} placeholder="# chèque, # virement..." />
+            <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>RÃƒÂ©fÃƒÂ©rence</label>
+            <input style={{ ...S.input, width: '100%' }} value={payRef} onChange={e => setPayRef(e.target.value)} placeholder="# chÃƒÂ¨que, # virement..." />
           </div>
           <button style={S.btn('success', 'md')} onClick={addPayment} disabled={!payAmount || parseFloat(payAmount) <= 0}>
-            💰 Enregistrer le paiement
+            Ã°Å¸â€™Â° Enregistrer le paiement
           </button>
         </div>
       </Modal>
@@ -2065,16 +2084,16 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Client</label>
               <select style={{ ...S.select, width: '100%' }} value={editClientId} onChange={e => setEditClientId(e.target.value)}>
-                <option value="">— Aucun —</option>
+                <option value="">Ã¢â‚¬â€ Aucun Ã¢â‚¬â€</option>
                 {clients.map(c => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
             </div>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Employé</label>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>EmployÃƒÂ©</label>
               <select style={{ ...S.select, width: '100%' }} value={editEmployeeId} onChange={e => setEditEmployeeId(e.target.value)}>
-                <option value="">— Aucun —</option>
+                <option value="">Ã¢â‚¬â€ Aucun Ã¢â‚¬â€</option>
                 {employees.map(emp => (
                   <option key={emp.id} value={emp.id}>{emp.name}</option>
                 ))}
@@ -2088,7 +2107,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
               <input style={{ ...S.input, width: '100%' }} value={editPoNumber} onChange={e => setEditPoNumber(e.target.value)} />
             </div>
             <div>
-              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Échéance</label>
+              <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Ãƒâ€°chÃƒÂ©ance</label>
               <input type="date" style={{ ...S.input, width: '100%' }} value={editDueDate || ''} onChange={e => setEditDueDate(e.target.value)} />
             </div>
           </div>
@@ -2101,7 +2120,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           {/* Service Lines (Shifts/Quarts) */}
           <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12 }}>
             <div style={{ ...S.flexBetween, marginBottom: 8 }}>
-              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>📋 Quarts / Services</h4>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>Ã°Å¸â€œâ€¹ Quarts / Services</h4>
               <button style={S.btn('outline', 'sm')} onClick={addEditLine}>+ Ajouter quart</button>
             </div>
             {editLines.length === 0 ? (
@@ -2111,7 +2130,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                 <table style={{ ...S.table, fontSize: 11 }}>
                   <thead>
                     <tr>
-                      {['Date', 'Début', 'Fin', 'Pause (min)', 'Heures', 'Taux', 'Garde h', 'Rappel h', ''].map(h => (
+                      {['Date', 'DÃƒÂ©but', 'Fin', 'Pause (min)', 'Heures', 'Taux', 'Garde h', 'Rappel h', ''].map(h => (
                         <th key={h} style={{ ...S.th, fontSize: 10, padding: '6px 4px' }}>{h}</th>
                       ))}
                     </tr>
@@ -2127,7 +2146,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                         <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 65 }} value={l.rate || 0} onChange={e => updateEditLine(i, 'rate', e.target.value)} /></td>
                         <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.5" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 50 }} value={l.garde_hours || 0} onChange={e => updateEditLine(i, 'garde_hours', e.target.value)} /></td>
                         <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.5" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 50 }} value={l.rappel_hours || 0} onChange={e => updateEditLine(i, 'rappel_hours', e.target.value)} /></td>
-                        <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditLine(i)}>✗</button></td>
+                        <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditLine(i)}>Ã¢Å“â€”</button></td>
                       </tr>
                     ))}
                   </tbody>
@@ -2139,10 +2158,10 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           {/* Expense Lines */}
           <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12 }}>
             <div style={{ ...S.flexBetween, marginBottom: 8 }}>
-              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>💲 Frais</h4>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>Ã°Å¸â€™Â² Frais</h4>
               <div style={{ display: 'flex', gap: 4 }}>
                 <button style={S.btn('outline', 'sm')} onClick={() => addEditExpense('km')}>+ Km</button>
-                <button style={S.btn('outline', 'sm')} onClick={() => addEditExpense('deplacement')}>+ Déplacement</button>
+                <button style={S.btn('outline', 'sm')} onClick={() => addEditExpense('deplacement')}>+ DÃƒÂ©placement</button>
                 <button style={S.btn('outline', 'sm')} onClick={() => addEditExpense('autre')}>+ Autre</button>
               </div>
             </div>
@@ -2152,7 +2171,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
               <table style={{ ...S.table, fontSize: 11 }}>
                 <thead>
                   <tr>
-                    {['Type', 'Description', 'Quantité', 'Taux', ''].map(h => (
+                    {['Type', 'Description', 'QuantitÃƒÂ©', 'Taux', ''].map(h => (
                       <th key={h} style={{ ...S.th, fontSize: 10, padding: '6px 4px' }}>{h}</th>
                     ))}
                   </tr>
@@ -2162,15 +2181,15 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                     <tr key={i}>
                       <td style={{ ...S.td, padding: '4px 2px' }}>
                         <select style={{ ...S.select, fontSize: 11, padding: '4px 6px' }} value={e.type || 'autre'} onChange={ev => updateEditExpense(i, 'type', ev.target.value)}>
-                          <option value="km">Kilométrage</option>
-                          <option value="deplacement">Déplacement</option>
+                          <option value="km">KilomÃƒÂ©trage</option>
+                          <option value="deplacement">DÃƒÂ©placement</option>
                           <option value="autre">Autre</option>
                         </select>
                       </td>
                       <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: '100%' }} value={e.description || ''} onChange={ev => updateEditExpense(i, 'description', ev.target.value)} /></td>
                       <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={e.quantity || 0} onChange={ev => updateEditExpense(i, 'quantity', ev.target.value)} /></td>
                       <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={e.rate || 0} onChange={ev => updateEditExpense(i, 'rate', ev.target.value)} /></td>
-                      <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditExpense(i)}>✗</button></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditExpense(i)}>Ã¢Å“â€”</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -2181,16 +2200,16 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
           {/* Accommodation Lines */}
           <div style={{ background: '#f8f9fa', borderRadius: 8, padding: 12 }}>
             <div style={{ ...S.flexBetween, marginBottom: 8 }}>
-              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>🏠 Hébergement</h4>
-              <button style={S.btn('outline', 'sm')} onClick={addEditAccom}>+ Ajouter hébergement</button>
+              <h4 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: '#2A7B88' }}>Ã°Å¸ÂÂ  HÃƒÂ©bergement</h4>
+              <button style={S.btn('outline', 'sm')} onClick={addEditAccom}>+ Ajouter hÃƒÂ©bergement</button>
             </div>
             {editAccomLines.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#6C757D', textAlign: 'center', padding: 8 }}>Aucun hébergement</div>
+              <div style={{ fontSize: 12, color: '#6C757D', textAlign: 'center', padding: 8 }}>Aucun hÃƒÂ©bergement</div>
             ) : (
               <table style={{ ...S.table, fontSize: 11 }}>
                 <thead>
                   <tr>
-                    {['Employé', 'Période', 'Jours', '$/jour', 'Montant', ''].map(h => (
+                    {['EmployÃƒÂ©', 'PÃƒÂ©riode', 'Jours', '$/jour', 'Montant', ''].map(h => (
                       <th key={h} style={{ ...S.th, fontSize: 10, padding: '6px 4px' }}>{h}</th>
                     ))}
                   </tr>
@@ -2199,11 +2218,11 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
                   {editAccomLines.map((a, i) => (
                     <tr key={i}>
                       <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 120 }} value={a.employee || ''} onChange={e => updateEditAccom(i, 'employee', e.target.value)} /></td>
-                      <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: '100%' }} value={a.period || ''} onChange={e => updateEditAccom(i, 'period', e.target.value)} placeholder="ex: 2026-03-01 → 2026-03-07" /></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><input style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: '100%' }} value={a.period || ''} onChange={e => updateEditAccom(i, 'period', e.target.value)} placeholder="ex: 2026-03-01 Ã¢â€ â€™ 2026-03-07" /></td>
                       <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="1" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 55 }} value={a.days || 0} onChange={e => updateEditAccom(i, 'days', e.target.value)} /></td>
                       <td style={{ ...S.td, padding: '4px 2px' }}><input type="number" step="0.01" style={{ ...S.input, fontSize: 11, padding: '4px 6px', width: 70 }} value={a.cost_per_day || 0} onChange={e => updateEditAccom(i, 'cost_per_day', e.target.value)} /></td>
                       <td style={{ ...S.td, padding: '4px 2px', fontWeight: 600, fontSize: 11 }}>{((parseFloat(a.days) || 0) * (parseFloat(a.cost_per_day) || 0)).toFixed(2)} $</td>
-                      <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditAccom(i)}>✗</button></td>
+                      <td style={{ ...S.td, padding: '4px 2px' }}><button style={{ ...S.btn('danger', 'sm'), padding: '2px 6px', fontSize: 10 }} onClick={() => removeEditAccom(i)}>Ã¢Å“â€”</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -2219,7 +2238,7 @@ function InvoiceDetail({ invoice: inv, onBack, onRefresh, onStatusChange, onMark
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 8, borderTop: '1px solid #e9ecef' }}>
             <button style={S.btn('outline')} onClick={() => setShowEdit(false)}>Annuler</button>
-            <button style={S.btn('primary')} onClick={saveInvoiceEdits}>💾 Enregistrer les modifications</button>
+            <button style={S.btn('primary')} onClick={saveInvoiceEdits}>Ã°Å¸â€™Â¾ Enregistrer les modifications</button>
           </div>
         </div>
       </Modal>
@@ -2257,7 +2276,7 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
         tax_exempt: false,
       };
       await apiFetch('/clients/', { method: 'POST', body: JSON.stringify(payload) });
-      setSuccess && setSuccess(`Client "${newClient.name}" créé`);
+      setSuccess && setSuccess(`Client "${newClient.name}" crÃƒÂ©ÃƒÂ©`);
       setShowNewClient(false);
       setNewClient({ name: '', address: '', email: '', phone: '' });
       if (loadClients) await loadClients();
@@ -2276,13 +2295,13 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
     if (!reportData || !reportData.length) return;
     let csv = '';
     if (reportType === 'by-client') {
-      csv = 'Client,Facturé,Payé,En cours,En retard,Nb factures\n';
+      csv = 'Client,FacturÃƒÂ©,PayÃƒÂ©,En cours,En retard,Nb factures\n';
       reportData.forEach(c => csv += `"${c.client_name}",${c.total_invoiced},${c.total_paid},${c.total_outstanding},${c.total_overdue},${c.invoice_count}\n`);
     } else if (reportType === 'by-employee') {
-      csv = 'Employé,Titre,Facturé,Heures,Nb factures\n';
+      csv = 'EmployÃƒÂ©,Titre,FacturÃƒÂ©,Heures,Nb factures\n';
       reportData.forEach(e => csv += `"${e.employee_name}","${e.employee_title}",${e.total_invoiced},${e.total_hours},${e.invoice_count}\n`);
     } else {
-      csv = 'Mois,Services,Garde,Rappel,Hébergement,Frais,Sous-total,Taxes,Total\n';
+      csv = 'Mois,Services,Garde,Rappel,HÃƒÂ©bergement,Frais,Sous-total,Taxes,Total\n';
       reportData.forEach(m => csv += `${m.period},${m.services},${m.garde},${m.rappel},${m.accommodation},${m.expenses},${m.subtotal},${m.taxes},${m.total}\n`);
     }
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -2301,21 +2320,21 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
     csv += `ID Client,${clientDetail.client_id || 'N/A'}\n`;
     if (clientDetail.client_address) csv += `Adresse,"${clientDetail.client_address}"\n`;
     if (clientDetail.client_email) csv += `Courriel,${clientDetail.client_email}\n`;
-    if (clientDetail.client_phone) csv += `Téléphone,${clientDetail.client_phone}\n`;
+    if (clientDetail.client_phone) csv += `TÃƒÂ©lÃƒÂ©phone,${clientDetail.client_phone}\n`;
     csv += `Date du rapport,${new Date().toLocaleDateString('fr-CA')}\n`;
     csv += `\n`;
     // Summary
-    csv += `Facturé,${clientDetail.total_invoiced || 0}\n`;
-    csv += `Payé,${clientDetail.total_paid || 0}\n`;
+    csv += `FacturÃƒÂ©,${clientDetail.total_invoiced || 0}\n`;
+    csv += `PayÃƒÂ©,${clientDetail.total_paid || 0}\n`;
     csv += `En cours,${clientDetail.total_outstanding || 0}\n`;
     csv += `En retard,${clientDetail.total_overdue || 0}\n`;
     csv += `Nombre de factures,${clientDetail.invoice_count || clientDetail.invoices.length}\n`;
     csv += `\n`;
     // Invoice details
-    csv += 'Numéro,Date,Employé,Période,Total,Payé,Solde,Statut\n';
+    csv += 'NumÃƒÂ©ro,Date,EmployÃƒÂ©,PÃƒÂ©riode,Total,PayÃƒÂ©,Solde,Statut\n';
     clientDetail.invoices.forEach(inv => {
-      const statusLabel = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' }[inv.status] || inv.status;
-      csv += `"${inv.number}","${inv.date}","${inv.employee_name}","${inv.period_start} → ${inv.period_end}",${inv.total},${inv.amount_paid},${inv.balance_due},"${statusLabel}"\n`;
+      const statusLabel = { draft: 'Brouillon', validated: 'ValidÃƒÂ©e', sent: 'EnvoyÃƒÂ©e', paid: 'PayÃƒÂ©e', partially_paid: 'Partiel', cancelled: 'AnnulÃƒÂ©e' }[inv.status] || inv.status;
+      csv += `"${inv.number}","${inv.date}","${inv.employee_name}","${inv.period_start} Ã¢â€ â€™ ${inv.period_end}",${inv.total},${inv.amount_paid},${inv.balance_due},"${statusLabel}"\n`;
     });
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -2328,11 +2347,11 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
     if (!clientDetail) return;
     // Generate a printable HTML and open as PDF
     const invoiceRows = (clientDetail.invoices || []).map(inv => {
-      const statusLabel = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' }[inv.status] || inv.status;
-      return `<tr><td>${inv.number}</td><td>${inv.date}</td><td>${inv.employee_name}</td><td>${inv.period_start} → ${inv.period_end}</td><td style="text-align:right">${Number(inv.total||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.amount_paid||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.balance_due||0).toFixed(2)}$</td><td>${statusLabel}</td></tr>`;
+      const statusLabel = { draft: 'Brouillon', validated: 'ValidÃƒÂ©e', sent: 'EnvoyÃƒÂ©e', paid: 'PayÃƒÂ©e', partially_paid: 'Partiel', cancelled: 'AnnulÃƒÂ©e' }[inv.status] || inv.status;
+      return `<tr><td>${inv.number}</td><td>${inv.date}</td><td>${inv.employee_name}</td><td>${inv.period_start} Ã¢â€ â€™ ${inv.period_end}</td><td style="text-align:right">${Number(inv.total||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.amount_paid||0).toFixed(2)}$</td><td style="text-align:right">${Number(inv.balance_due||0).toFixed(2)}$</td><td>${statusLabel}</td></tr>`;
     }).join('');
-    const clientInfoHtml = `<div style="margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:6px;border-left:4px solid #2A7B88"><div style="font-size:11px;color:#666">ID Client: ${clientDetail.client_id || 'N/A'}</div>${clientDetail.client_address ? `<div style="font-size:11px;color:#444">${clientDetail.client_address}</div>` : ''}${clientDetail.client_email ? `<div style="font-size:11px;color:#444">✉ ${clientDetail.client_email}</div>` : ''}${clientDetail.client_phone ? `<div style="font-size:11px;color:#444">☎ ${clientDetail.client_phone}</div>` : ''}</div>`;
-    const html = `<!DOCTYPE html><html><head><title>Rapport - ${clientDetail.client_name || 'Client'}</title><style>body{font-family:Arial,sans-serif;margin:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;font-size:12px}th{background:#2A7B88;color:#fff}h1{color:#2A7B88;font-size:18px}h2{font-size:14px;margin-top:20px}.summary{display:flex;gap:20px;margin:10px 0}.summary div{background:#f0f0f0;padding:8px 12px;border-radius:6px;font-size:12px}.summary strong{display:block;font-size:16px}</style></head><body><h1>Rapport Client — ${clientDetail.client_name || 'Client'}</h1>${clientInfoHtml}<div class="summary"><div>Facturé<strong>${Number(clientDetail.total_invoiced||0).toFixed(2)}$</strong></div><div>Payé<strong>${Number(clientDetail.total_paid||0).toFixed(2)}$</strong></div><div>En cours<strong>${Number(clientDetail.total_outstanding||0).toFixed(2)}$</strong></div><div>En retard<strong>${Number(clientDetail.total_overdue||0).toFixed(2)}$</strong></div></div><h2>Factures (${clientDetail.invoices?.length || 0})</h2><table><thead><tr><th>Numéro</th><th>Date</th><th>Employé</th><th>Période</th><th>Total</th><th>Payé</th><th>Solde</th><th>Statut</th></tr></thead><tbody>${invoiceRows}</tbody></table><p style="margin-top:20px;font-size:10px;color:#888">Généré le ${new Date().toLocaleDateString('fr-CA')}</p></body></html>`;
+    const clientInfoHtml = `<div style="margin-bottom:15px;padding:10px;background:#f8f9fa;border-radius:6px;border-left:4px solid #2A7B88"><div style="font-size:11px;color:#666">ID Client: ${clientDetail.client_id || 'N/A'}</div>${clientDetail.client_address ? `<div style="font-size:11px;color:#444">${clientDetail.client_address}</div>` : ''}${clientDetail.client_email ? `<div style="font-size:11px;color:#444">Ã¢Å“â€° ${clientDetail.client_email}</div>` : ''}${clientDetail.client_phone ? `<div style="font-size:11px;color:#444">Ã¢ËœÅ½ ${clientDetail.client_phone}</div>` : ''}</div>`;
+    const html = `<!DOCTYPE html><html><head><title>Rapport - ${clientDetail.client_name || 'Client'}</title><style>body{font-family:Arial,sans-serif;margin:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:6px 10px;font-size:12px}th{background:#2A7B88;color:#fff}h1{color:#2A7B88;font-size:18px}h2{font-size:14px;margin-top:20px}.summary{display:flex;gap:20px;margin:10px 0}.summary div{background:#f0f0f0;padding:8px 12px;border-radius:6px;font-size:12px}.summary strong{display:block;font-size:16px}</style></head><body><h1>Rapport Client Ã¢â‚¬â€ ${clientDetail.client_name || 'Client'}</h1>${clientInfoHtml}<div class="summary"><div>FacturÃƒÂ©<strong>${Number(clientDetail.total_invoiced||0).toFixed(2)}$</strong></div><div>PayÃƒÂ©<strong>${Number(clientDetail.total_paid||0).toFixed(2)}$</strong></div><div>En cours<strong>${Number(clientDetail.total_outstanding||0).toFixed(2)}$</strong></div><div>En retard<strong>${Number(clientDetail.total_overdue||0).toFixed(2)}$</strong></div></div><h2>Factures (${clientDetail.invoices?.length || 0})</h2><table><thead><tr><th>NumÃƒÂ©ro</th><th>Date</th><th>EmployÃƒÂ©</th><th>PÃƒÂ©riode</th><th>Total</th><th>PayÃƒÂ©</th><th>Solde</th><th>Statut</th></tr></thead><tbody>${invoiceRows}</tbody></table><p style="margin-top:20px;font-size:10px;color:#888">GÃƒÂ©nÃƒÂ©rÃƒÂ© le ${new Date().toLocaleDateString('fr-CA')}</p></body></html>`;
     const w = window.open('', '_blank');
     w.document.write(html);
     w.document.close();
@@ -2342,32 +2361,32 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
   // Client detail view
   if (clientDetail) {
     const statusColors = { draft: '#6C757D', validated: '#2A7B88', sent: '#0D6EFD', paid: '#28A745', partially_paid: '#FFC107', cancelled: '#DC3545' };
-    const statusLabels = { draft: 'Brouillon', validated: 'Validée', sent: 'Envoyée', paid: 'Payée', partially_paid: 'Partiel', cancelled: 'Annulée' };
+    const statusLabels = { draft: 'Brouillon', validated: 'ValidÃƒÂ©e', sent: 'EnvoyÃƒÂ©e', paid: 'PayÃƒÂ©e', partially_paid: 'Partiel', cancelled: 'AnnulÃƒÂ©e' };
     return (
       <div>
         <div style={{ ...S.flexBetween, marginBottom: 16 }}>
           <div style={S.flexRow}>
-            <button style={S.btn('outline')} onClick={() => setClientDetail(null)}>← Retour aux rapports</button>
+            <button style={S.btn('outline')} onClick={() => setClientDetail(null)}>Ã¢â€ Â Retour aux rapports</button>
             <div>
-              <h3 style={{ ...S.sectionTitle, margin: 0 }}>📋 {clientDetail.client_name || 'Client'}</h3>
+              <h3 style={{ ...S.sectionTitle, margin: 0 }}>Ã°Å¸â€œâ€¹ {clientDetail.client_name || 'Client'}</h3>
               <div style={{ fontSize: 11, color: '#6C757D', marginTop: 2 }}>
                 {clientDetail.client_id ? `ID: ${clientDetail.client_id}` : ''}
-                {clientDetail.client_email ? ` · ${clientDetail.client_email}` : ''}
-                {clientDetail.client_phone ? ` · ${clientDetail.client_phone}` : ''}
-                {clientDetail.client_address ? ` · ${clientDetail.client_address}` : ''}
+                {clientDetail.client_email ? ` Ã‚Â· ${clientDetail.client_email}` : ''}
+                {clientDetail.client_phone ? ` Ã‚Â· ${clientDetail.client_phone}` : ''}
+                {clientDetail.client_address ? ` Ã‚Â· ${clientDetail.client_address}` : ''}
               </div>
             </div>
           </div>
           <div style={S.flexRow}>
-            <button style={S.btn('outline')} onClick={downloadClientCSV}>📥 CSV</button>
-            <button style={S.btn('outline')} onClick={downloadClientPDF}>📄 PDF</button>
+            <button style={S.btn('outline')} onClick={downloadClientCSV}>Ã°Å¸â€œÂ¥ CSV</button>
+            <button style={S.btn('outline')} onClick={downloadClientPDF}>Ã°Å¸â€œâ€ž PDF</button>
           </div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
           {[
-            { label: 'Facturé', val: clientDetail.total_invoiced, color: '#2A7B88' },
-            { label: 'Payé', val: clientDetail.total_paid, color: '#28A745' },
+            { label: 'FacturÃƒÂ©', val: clientDetail.total_invoiced, color: '#2A7B88' },
+            { label: 'PayÃƒÂ©', val: clientDetail.total_paid, color: '#28A745' },
             { label: 'En cours', val: clientDetail.total_outstanding, color: '#FFC107' },
             { label: 'En retard', val: clientDetail.total_overdue, color: '#DC3545' },
           ].map(s => (
@@ -2384,7 +2403,7 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
         <table style={S.table}>
           <thead>
             <tr>
-              {['Numéro', 'Date', 'Employé', 'Période', 'Total', 'Payé', 'Solde', 'Statut', ''].map((h, i) => (
+              {['NumÃƒÂ©ro', 'Date', 'EmployÃƒÂ©', 'PÃƒÂ©riode', 'Total', 'PayÃƒÂ©', 'Solde', 'Statut', ''].map((h, i) => (
                 <th key={h+i} style={{ ...S.th, ...(i >= 4 && i <= 6 ? { textAlign: 'right' } : {}) }}>{h}</th>
               ))}
             </tr>
@@ -2395,7 +2414,7 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
                 <td style={{ ...S.td, fontWeight: 600 }}>{inv.number}</td>
                 <td style={S.td}>{fmtDate(inv.date)}</td>
                 <td style={S.td}>{inv.employee_name}</td>
-                <td style={{ ...S.td, fontSize: 11 }}>{fmtDate(inv.period_start)} → {fmtDate(inv.period_end)}</td>
+                <td style={{ ...S.td, fontSize: 11 }}>{fmtDate(inv.period_start)} Ã¢â€ â€™ {fmtDate(inv.period_end)}</td>
                 <td style={{ ...S.td, textAlign: 'right', fontWeight: 600 }}>{fmt(inv.total)}</td>
                 <td style={{ ...S.td, textAlign: 'right', color: '#28A745' }}>{fmt(inv.amount_paid)}</td>
                 <td style={{ ...S.td, textAlign: 'right', color: inv.balance_due > 0 ? '#DC3545' : '#6C757D' }}>{fmt(inv.balance_due)}</td>
@@ -2423,9 +2442,9 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
       <div style={{ ...S.flexBetween, marginBottom: 16 }}>
         <div style={S.flexRow}>
           {[
-            { id: 'by-client', label: '📊 Par client' },
-            { id: 'by-employee', label: '👤 Par employé' },
-            { id: 'by-period', label: '📅 Par mois' }
+            { id: 'by-client', label: 'Ã°Å¸â€œÅ  Par client' },
+            { id: 'by-employee', label: 'Ã°Å¸â€˜Â¤ Par employÃƒÂ©' },
+            { id: 'by-period', label: 'Ã°Å¸â€œâ€¦ Par mois' }
           ].map(r => (
             <button key={r.id} style={S.btn(reportType === r.id ? 'primary' : 'outline')} onClick={() => onLoadReport(r.id)}>
               {r.label}
@@ -2434,7 +2453,7 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
         </div>
         <div style={S.flexRow}>
           {reportData && reportData.length > 0 && (
-            <button style={S.btn('outline')} onClick={downloadCSV}>📥 Télécharger CSV</button>
+            <button style={S.btn('outline')} onClick={downloadCSV}>Ã°Å¸â€œÂ¥ TÃƒÂ©lÃƒÂ©charger CSV</button>
           )}
           <button style={S.btn('primary')} onClick={() => setShowNewClient(true)}>+ Nouveau client</button>
         </div>
@@ -2443,7 +2462,7 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
       {/* Create new client form */}
       {showNewClient && (
         <div style={{ ...S.card, marginBottom: 16, background: '#E8F4F6', border: '1px solid #B5D8DC' }}>
-          <h4 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>➕ Créer un nouveau client</h4>
+          <h4 style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Ã¢Å¾â€¢ CrÃƒÂ©er un nouveau client</h4>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Nom *</label>
@@ -2458,13 +2477,13 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
               <input style={S.input} value={newClient.address} onChange={e => setNewClient(p => ({ ...p, address: e.target.value }))} placeholder="Adresse" />
             </div>
             <div>
-              <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>Téléphone</label>
+              <label style={{ fontSize: 11, fontWeight: 600, display: 'block', marginBottom: 3 }}>TÃƒÂ©lÃƒÂ©phone</label>
               <input style={S.input} value={newClient.phone} onChange={e => setNewClient(p => ({ ...p, phone: e.target.value }))} placeholder="514-000-0000" />
             </div>
           </div>
           <div style={S.flexRow}>
             <button style={S.btn('primary')} onClick={createNewClient} disabled={creatingClient}>
-              {creatingClient ? 'Création...' : 'Créer le client'}
+              {creatingClient ? 'CrÃƒÂ©ation...' : 'CrÃƒÂ©er le client'}
             </button>
             <button style={S.btn('outline')} onClick={() => setShowNewClient(false)}>Annuler</button>
           </div>
@@ -2472,13 +2491,13 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
       )}
 
       {!reportData ? (
-        <div style={S.empty}>Sélectionnez un rapport</div>
+        <div style={S.empty}>SÃƒÂ©lectionnez un rapport</div>
       ) : reportType === 'by-client' ? (
         <div>
           <table style={S.table}>
             <thead>
               <tr>
-                {['Client', 'Facturé', 'Payé', 'En cours', 'En retard', 'Nb factures', ''].map((h, i) => (
+                {['Client', 'FacturÃƒÂ©', 'PayÃƒÂ©', 'En cours', 'En retard', 'Nb factures', ''].map((h, i) => (
                   <th key={h+i} style={{ ...S.th, ...(i >= 1 && i <= 4 ? { textAlign: 'right' } : {}), ...(i === 0 ? { borderRadius: '8px 0 0 0' } : i === 6 ? { borderRadius: '0 8px 0 0' } : {}) }}>{h}</th>
                 ))}
               </tr>
@@ -2493,19 +2512,19 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
                   <td style={{ ...S.td, textAlign: 'right', color: c.total_overdue > 0 ? '#DC3545' : '#6C757D', fontWeight: c.total_overdue > 0 ? 700 : 400 }}>{fmt(c.total_overdue)}</td>
                   <td style={{ ...S.td, textAlign: 'center' }}>{c.invoice_count}</td>
                   <td style={S.td}>
-                    <button style={{ ...S.btn('outline'), fontSize: 10, padding: '2px 8px' }} onClick={(e) => { e.stopPropagation(); loadClientDetail(c.client_id); }}>📋 Détail</button>
+                    <button style={{ ...S.btn('outline'), fontSize: 10, padding: '2px 8px' }} onClick={(e) => { e.stopPropagation(); loadClientDetail(c.client_id); }}>Ã°Å¸â€œâ€¹ DÃƒÂ©tail</button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-          <p style={{ fontSize: 11, color: '#6C757D', marginTop: 8 }}>💡 Cliquez sur un client pour voir ses factures en détail</p>
+          <p style={{ fontSize: 11, color: '#6C757D', marginTop: 8 }}>Ã°Å¸â€™Â¡ Cliquez sur un client pour voir ses factures en dÃƒÂ©tail</p>
         </div>
       ) : reportType === 'by-employee' ? (
         <table style={S.table}>
           <thead>
             <tr>
-              {['Employé', 'Titre', 'Facturé', 'Heures', 'Nb factures'].map((h, i) => (
+              {['EmployÃƒÂ©', 'Titre', 'FacturÃƒÂ©', 'Heures', 'Nb factures'].map((h, i) => (
                 <th key={h} style={{ ...S.th, ...(i >= 2 ? { textAlign: 'right' } : {}) }}>{h}</th>
               ))}
             </tr>
@@ -2526,7 +2545,7 @@ function ReportsTab({ reportData, reportType, onLoadReport, onOpenInvoice, onMar
         <table style={S.table}>
           <thead>
             <tr>
-              {['Mois', 'Services', 'Garde', 'Rappel', 'Héberg.', 'Frais', 'Sous-total', 'Taxes', 'Total'].map((h, i) => (
+              {['Mois', 'Services', 'Garde', 'Rappel', 'HÃƒÂ©berg.', 'Frais', 'Sous-total', 'Taxes', 'Total'].map((h, i) => (
                 <th key={h} style={{ ...S.th, ...(i >= 1 ? { textAlign: 'right' } : {}) }}>{h}</th>
               ))}
             </tr>
@@ -2580,7 +2599,7 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
           notes: cnNotes,
         })
       });
-      setSuccess(`Note de crédit ${res.number} créée — Total: ${fmt(res.total)}`);
+      setSuccess(`Note de crÃƒÂ©dit ${res.number} crÃƒÂ©ÃƒÂ©e Ã¢â‚¬â€ Total: ${fmt(res.total)}`);
       setShowCreate(false);
       setCnInvoiceId(''); setCnClientId(''); setCnReason(''); setCnAmount(''); setCnIncludeTax(true); setCnNotes('');
       onRefresh();
@@ -2593,20 +2612,20 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
   return (
     <div>
       <div style={{ ...S.flexBetween, marginBottom: 16 }}>
-        <h3 style={S.sectionTitle}>📝 Notes de crédit</h3>
+        <h3 style={S.sectionTitle}>Ã°Å¸â€œÂ Notes de crÃƒÂ©dit</h3>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button style={S.btn('primary')} onClick={() => setShowCreate(true)}>+ Créer une note de crédit</button>
-          <button style={S.btn('outline')} onClick={onRefresh}>🔄 Actualiser</button>
+          <button style={S.btn('primary')} onClick={() => setShowCreate(true)}>+ CrÃƒÂ©er une note de crÃƒÂ©dit</button>
+          <button style={S.btn('outline')} onClick={onRefresh}>Ã°Å¸â€â€ž Actualiser</button>
         </div>
       </div>
 
       {showCreate && (
         <div style={{ ...S.card, marginBottom: 16, border: '2px solid #2A7B88' }}>
-          <h4 style={{ ...S.sectionTitle, fontSize: 14, marginBottom: 14 }}>Nouvelle note de crédit</h4>
+          <h4 style={{ ...S.sectionTitle, fontSize: 14, marginBottom: 14 }}>Nouvelle note de crÃƒÂ©dit</h4>
           <div style={{ display: 'grid', gap: 12 }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div>
-                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Facture de référence (optionnel)</label>
+                <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Facture de rÃƒÂ©fÃƒÂ©rence (optionnel)</label>
                 <select style={{ ...S.select, width: '100%' }} value={cnInvoiceId} onChange={e => {
                   setCnInvoiceId(e.target.value);
                   if (e.target.value) {
@@ -2614,16 +2633,16 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
                     if (inv && inv.client_id) setCnClientId(String(inv.client_id));
                   }
                 }}>
-                  <option value="">— Aucune —</option>
+                  <option value="">Ã¢â‚¬â€ Aucune Ã¢â‚¬â€</option>
                   {invoices.map(inv => (
-                    <option key={inv.id} value={inv.id}>{inv.number} — {inv.client_name} ({fmt(inv.total)})</option>
+                    <option key={inv.id} value={inv.id}>{inv.number} Ã¢â‚¬â€ {inv.client_name} ({fmt(inv.total)})</option>
                   ))}
                 </select>
               </div>
               <div>
                 <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Client</label>
                 <select style={{ ...S.select, width: '100%' }} value={cnClientId} onChange={e => setCnClientId(e.target.value)}>
-                  <option value="">— Sélectionner —</option>
+                  <option value="">Ã¢â‚¬â€ SÃƒÂ©lectionner Ã¢â‚¬â€</option>
                   {clients.map(c => (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
@@ -2654,14 +2673,14 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
                     <div style={{ fontWeight: 700, color: '#DC3545', marginTop: 4 }}>Total: {fmt(parseFloat(cnAmount) * 1.14975)}</div>
                   </>
                 ) : (
-                  <div style={{ color: '#28A745', fontStyle: 'italic' }}>Exempté de taxes — Total: {fmt(parseFloat(cnAmount))}</div>
+                  <div style={{ color: '#28A745', fontStyle: 'italic' }}>ExemptÃƒÂ© de taxes Ã¢â‚¬â€ Total: {fmt(parseFloat(cnAmount))}</div>
                 )}
               </div>
             )}
 
             <div>
               <label style={{ fontSize: 12, fontWeight: 600, display: 'block', marginBottom: 4 }}>Raison *</label>
-              <textarea style={{ ...S.input, width: '100%', minHeight: 60 }} value={cnReason} onChange={e => setCnReason(e.target.value)} placeholder="Raison de la note de crédit..." />
+              <textarea style={{ ...S.input, width: '100%', minHeight: 60 }} value={cnReason} onChange={e => setCnReason(e.target.value)} placeholder="Raison de la note de crÃƒÂ©dit..." />
             </div>
 
             <div>
@@ -2672,7 +2691,7 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button style={S.btn('outline')} onClick={() => setShowCreate(false)}>Annuler</button>
               <button style={S.btn('primary')} onClick={createCreditNote} disabled={creating || !cnReason || !cnAmount}>
-                {creating ? '⏳ Création...' : '📝 Créer la note de crédit'}
+                {creating ? 'Ã¢ÂÂ³ CrÃƒÂ©ation...' : 'Ã°Å¸â€œÂ CrÃƒÂ©er la note de crÃƒÂ©dit'}
               </button>
             </div>
           </div>
@@ -2680,12 +2699,12 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
       )}
 
       {creditNotes.length === 0 ? (
-        <div style={S.empty}>Aucune note de crédit</div>
+        <div style={S.empty}>Aucune note de crÃƒÂ©dit</div>
       ) : (
         <table style={S.table}>
           <thead>
             <tr>
-              {['Numéro', 'Date', 'Client', 'Facture réf.', 'Raison', 'Montant', 'TPS', 'TVQ', 'Total', 'Statut'].map((h, i) => (
+              {['NumÃƒÂ©ro', 'Date', 'Client', 'Facture rÃƒÂ©f.', 'Raison', 'Montant', 'TPS', 'TVQ', 'Total', 'Statut'].map((h, i) => (
                 <th key={h} style={{ ...S.th, ...(i >= 5 && i <= 8 ? { textAlign: 'right' } : {}) }}>{h}</th>
               ))}
             </tr>
@@ -2695,16 +2714,16 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
               <tr key={cn.id} style={{ background: i % 2 === 0 ? '#fff' : '#f8f9fa' }}>
                 <td style={{ ...S.td, fontWeight: 600, color: '#DC3545' }}>{cn.number}</td>
                 <td style={S.td}>{fmtDate(cn.date)}</td>
-                <td style={S.td}>{cn.client_name || '—'}</td>
-                <td style={S.td}>{cn.invoice_number || '—'}</td>
+                <td style={S.td}>{cn.client_name || 'Ã¢â‚¬â€'}</td>
+                <td style={S.td}>{cn.invoice_number || 'Ã¢â‚¬â€'}</td>
                 <td style={{ ...S.td, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cn.reason}</td>
                 <td style={{ ...S.td, textAlign: 'right' }}>{fmt(cn.amount)}</td>
-                <td style={{ ...S.td, textAlign: 'right', fontSize: 11, color: '#6C757D' }}>{cn.tps ? fmt(cn.tps) : '—'}</td>
-                <td style={{ ...S.td, textAlign: 'right', fontSize: 11, color: '#6C757D' }}>{cn.tvq ? fmt(cn.tvq) : '—'}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontSize: 11, color: '#6C757D' }}>{cn.tps ? fmt(cn.tps) : 'Ã¢â‚¬â€'}</td>
+                <td style={{ ...S.td, textAlign: 'right', fontSize: 11, color: '#6C757D' }}>{cn.tvq ? fmt(cn.tvq) : 'Ã¢â‚¬â€'}</td>
                 <td style={{ ...S.td, textAlign: 'right', fontWeight: 600, color: '#DC3545' }}>{fmt(cn.total)}</td>
                 <td style={S.td}>
                   <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 600, background: cn.status === 'active' ? '#E8F4F6' : '#f8d7da', color: cn.status === 'active' ? '#2A7B88' : '#DC3545' }}>
-                    {cn.status === 'active' ? 'Active' : 'Annulée'}
+                    {cn.status === 'active' ? 'Active' : 'AnnulÃƒÂ©e'}
                   </span>
                 </td>
               </tr>
@@ -2719,28 +2738,28 @@ function CreditNotesTab({ creditNotes, onRefresh, setError, setSuccess, clients,
 function AnomaliesTab({ anomalies, onRefresh, onOpenInvoice }) {
   const sevColor = { error: '#DC3545', warning: '#FFC107' };
   const typeLabels = {
-    duplicate: '🔄 Doublon',
-    excessive_hours: '⏰ Heures excessives',
-    rate_mismatch: '💲 Taux incorrect',
-    no_client: '❌ Sans client'
+    duplicate: 'Ã°Å¸â€â€ž Doublon',
+    excessive_hours: 'Ã¢ÂÂ° Heures excessives',
+    rate_mismatch: 'Ã°Å¸â€™Â² Taux incorrect',
+    no_client: 'Ã¢ÂÅ’ Sans client'
   };
 
   return (
     <div>
       <div style={{ ...S.flexBetween, marginBottom: 16 }}>
-        <h3 style={S.sectionTitle}>⚠️ Détection d'anomalies</h3>
-        <button style={S.btn('outline')} onClick={onRefresh}>🔄 Actualiser</button>
+        <h3 style={S.sectionTitle}>Ã¢Å¡Â Ã¯Â¸Â DÃƒÂ©tection d'anomalies</h3>
+        <button style={S.btn('outline')} onClick={onRefresh}>Ã°Å¸â€â€ž Actualiser</button>
       </div>
 
       {anomalies.length === 0 ? (
         <div style={{ ...S.card, textAlign: 'center', padding: 40 }}>
-          <div style={{ fontSize: 40, marginBottom: 8 }}>✅</div>
-          <div style={{ fontSize: 16, fontWeight: 600, color: '#28A745' }}>Aucune anomalie détectée</div>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>Ã¢Å“â€¦</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: '#28A745' }}>Aucune anomalie dÃƒÂ©tectÃƒÂ©e</div>
           <div style={{ fontSize: 13, color: '#6C757D', marginTop: 4 }}>Toutes les factures semblent correctes</div>
         </div>
       ) : (
         <div>
-          <div style={{ marginBottom: 12, fontSize: 13, color: '#6C757D' }}>{anomalies.length} anomalie(s) détectée(s)</div>
+          <div style={{ marginBottom: 12, fontSize: 13, color: '#6C757D' }}>{anomalies.length} anomalie(s) dÃƒÂ©tectÃƒÂ©e(s)</div>
           {anomalies.map((a, i) => (
             <div key={i} style={{ ...S.card, borderLeft: `4px solid ${sevColor[a.severity] || '#FFC107'}`, display: 'flex', alignItems: 'center', gap: 16, padding: '12px 16px' }}>
               <div style={{ flex: 1 }}>
@@ -2753,7 +2772,7 @@ function AnomaliesTab({ anomalies, onRefresh, onOpenInvoice }) {
                 <div style={{ fontSize: 13, color: '#495057' }}>{a.description}</div>
                 <div style={{ fontSize: 11, color: '#6C757D', marginTop: 2 }}>Facture: {a.invoice_number}</div>
               </div>
-              <button style={S.btn('outline')} onClick={() => onOpenInvoice(a.invoice_id)}>Voir la facture →</button>
+              <button style={S.btn('outline')} onClick={() => onOpenInvoice(a.invoice_id)}>Voir la facture Ã¢â€ â€™</button>
             </div>
           ))}
         </div>

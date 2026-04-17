@@ -53,6 +53,13 @@ class EmployeeCreate(BaseModel):
     rate: float = 0
     salary: float = 0
     perdiem: float = 0
+    payroll_company: str = ""
+    payroll_statement_number: str = ""
+    payroll_transaction_type: str = ""
+    payroll_division: str = ""
+    payroll_service: str = ""
+    payroll_department: str = ""
+    payroll_subdepartment: str = ""
     client_id: Optional[int] = None
 
 class EmployeeUpdate(BaseModel):
@@ -64,6 +71,13 @@ class EmployeeUpdate(BaseModel):
     rate: Optional[float] = None
     salary: Optional[float] = None
     perdiem: Optional[float] = None
+    payroll_company: Optional[str] = None
+    payroll_statement_number: Optional[str] = None
+    payroll_transaction_type: Optional[str] = None
+    payroll_division: Optional[str] = None
+    payroll_service: Optional[str] = None
+    payroll_department: Optional[str] = None
+    payroll_subdepartment: Optional[str] = None
     client_id: Optional[int] = None
     is_active: Optional[bool] = None
 
@@ -77,6 +91,13 @@ class EmployeeOut(BaseModel):
     rate: float
     salary: float
     perdiem: float
+    payroll_company: str = ""
+    payroll_statement_number: str = ""
+    payroll_transaction_type: str = ""
+    payroll_division: str = ""
+    payroll_service: str = ""
+    payroll_department: str = ""
+    payroll_subdepartment: str = ""
     client_id: Optional[int]
     is_active: bool
     deactivated_at: Optional[datetime] = None
@@ -340,6 +361,7 @@ class AccommodationCreate(BaseModel):
     days_worked: int = 0
     cost_per_day: float = 0
     notes: str = ""
+    reminder_enabled: bool = True
 
 class AccommodationUpdate(BaseModel):
     employee_id: int | None = None
@@ -349,6 +371,7 @@ class AccommodationUpdate(BaseModel):
     days_worked: int | None = None
     cost_per_day: float | None = None
     notes: str | None = None
+    reminder_enabled: bool | None = None
 
 class AccommodationOut(BaseModel):
     id: str
@@ -359,6 +382,12 @@ class AccommodationOut(BaseModel):
     days_worked: int
     cost_per_day: float
     notes: str
+    reminder_enabled: bool = True
+    reminder_status: str = "scheduled"
+    reminder_scheduled_for: Optional[date] = None
+    reminder_sent_at: Optional[datetime] = None
+    reminder_cancelled_at: Optional[datetime] = None
+    reminder_last_error: str = ""
     class Config:
         from_attributes = True
 

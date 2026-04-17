@@ -2593,6 +2593,109 @@ async def sync_timesheet_attachments_to_invoice(
     return created
 
 
+async def sync_accommodation_attachments_to_invoice(
+    db: AsyncSession,
+    accommodation_ids: list[str],
+    invoice: Optional[Invoice],
+) -> int:
+    if not invoice or not accommodation_ids:
+        return 0
+
+    existing_result = await db.execute(
+        select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id)
+    )
+    existing_items = existing_result.scalars().all()
+    existing_keys = {
+        (
+            (item.original_filename or "").strip().lower(),
+            int(item.file_size or 0),
+            (item.category or "").strip().lower(),
+        )
+        for item in existing_items
+    }
+
+    attachments_result = await db.execute(
+        select(AccommodationAttachment)
+        .where(AccommodationAttachment.accommodation_id.in_(accommodation_ids))
+        .order_by(AccommodationAttachment.created_at)
+    )
+    created = 0
+    for attachment in attachments_result.scalars().all():
+        key = (
+            (attachment.original_filename or "").strip().lower(),
+            int(attachment.file_size or 0),
+            "hebergement",
+        )
+        if key in existing_keys:
+            continue
+        db.add(
+            InvoiceAttachment(
+                invoice_id=invoice.id,
+                filename=attachment.filename,
+                original_filename=attachment.original_filename,
+                file_type=attachment.file_type,
+                file_size=attachment.file_size,
+                file_data=attachment.file_data,
+                category="hebergement",
+                description=attachment.description or "Piece d'hebergement",
+                uploaded_by=attachment.uploaded_by or "system",
+            )
+        )
+        existing_keys.add(key)
+        created += 1
+    await db.flush()
+    return created
+
+
+async def sync_supporting_attachments_to_invoice(
+    db: AsyncSession,
+    invoice: Optional[Invoice],
+    employee_id: int | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+) -> int:
+    if not invoice:
+        return 0
+
+    resolved_employee_id = employee_id or getattr(invoice, "employee_id", None)
+    resolved_period_start = period_start or getattr(invoice, "period_start", None)
+    resolved_period_end = period_end or getattr(invoice, "period_end", None)
+    if not resolved_employee_id or not resolved_period_start or not resolved_period_end:
+        return 0
+
+    created = 0
+    timesheets_result = await db.execute(
+        select(Timesheet).where(
+            Timesheet.employee_id == resolved_employee_id,
+            Timesheet.period_start == resolved_period_start,
+            Timesheet.period_end == resolved_period_end,
+        )
+    )
+    for timesheet in timesheets_result.scalars().all():
+        created += await sync_timesheet_attachments_to_invoice(db, timesheet, invoice)
+
+    accommodations_result = await db.execute(
+        select(Accommodation.id).where(
+            Accommodation.employee_id == resolved_employee_id,
+            (
+                (Accommodation.start_date >= resolved_period_start)
+                & (Accommodation.start_date <= resolved_period_end)
+            )
+            | (
+                (Accommodation.end_date >= resolved_period_start)
+                & (Accommodation.end_date <= resolved_period_end)
+            )
+            | (
+                (Accommodation.start_date <= resolved_period_start)
+                & (Accommodation.end_date >= resolved_period_end)
+            ),
+        )
+    )
+    accommodation_ids = [row[0] for row in accommodations_result.all() if row and row[0]]
+    created += await sync_accommodation_attachments_to_invoice(db, accommodation_ids, invoice)
+    return created
+
+
 async def index_recent_timesheet_email_documents(
     db: AsyncSession,
     documents: list[dict],

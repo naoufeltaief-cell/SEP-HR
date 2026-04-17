@@ -319,6 +319,8 @@ class ApiClient {
   createAccommodation(data) { return this.post('/accommodations/', data); }
   updateAccommodation(id, data) { return this.put(`/accommodations/${id}`, data); }
   deleteAccommodation(id) { return this.del(`/accommodations/${id}`); }
+  cancelAccommodationReminder(id) { return this.post(`/accommodations/${id}/reminder/cancel`, {}); }
+  reactivateAccommodationReminder(id) { return this.post(`/accommodations/${id}/reminder/reactivate`, {}); }
   async uploadAccommodationAttachment(accommodationId, file, category = 'hebergement', description = '') {
     const formData = new FormData();
     formData.append('file', file);
@@ -333,6 +335,10 @@ class ApiClient {
   openAccommodationAttachment(accommodationId, attId, fallbackFilename = 'hebergement') {
     return this.openProtectedFile(`/accommodations/${accommodationId}/attachments/${attId}`, fallbackFilename);
   }
+
+  getPayrollDesjardinsPreview(payload) { return this.post('/payroll/desjardins/preview', payload); }
+  getPayrollDesjardinsBatches() { return this.get('/payroll/desjardins/batches'); }
+  exportPayrollDesjardins(payload) { return this.post('/payroll/desjardins/export', payload); }
 
   getClients() { return this.get('/clients/'); }
   createClient(data) { return this.post('/clients/', data); }

@@ -10,8 +10,9 @@ import os
 from sqlalchemy import text
 
 from .database import engine, Base
+from .models import models_payroll  # noqa: F401
 from .services.automation_service import automation_loop, cancel_automation_task
-from .routers import auth, employees, schedules, schedule_reviews, schedule_catalogs, timesheets, invoices, accommodations, clients, chatbot, invoices_approved, invoices_bulk, billing_email
+from .routers import auth, employees, schedules, schedule_reviews, schedule_catalogs, timesheets, invoices, accommodations, clients, chatbot, invoices_approved, invoices_bulk, billing_email, payroll
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,6 +26,20 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("UPDATE employees SET matricule = '' WHERE matricule IS NULL"))
         await conn.execute(text("UPDATE employees SET salary = 0 WHERE salary IS NULL"))
         await conn.execute(text("UPDATE employees SET perdiem = 0 WHERE perdiem IS NULL"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS payroll_company VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS payroll_statement_number VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS payroll_transaction_type VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS payroll_division VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS payroll_service VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS payroll_department VARCHAR DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE employees ADD COLUMN IF NOT EXISTS payroll_subdepartment VARCHAR DEFAULT ''"))
+        await conn.execute(text("UPDATE employees SET payroll_company = '' WHERE payroll_company IS NULL"))
+        await conn.execute(text("UPDATE employees SET payroll_statement_number = '' WHERE payroll_statement_number IS NULL"))
+        await conn.execute(text("UPDATE employees SET payroll_transaction_type = '' WHERE payroll_transaction_type IS NULL"))
+        await conn.execute(text("UPDATE employees SET payroll_division = '' WHERE payroll_division IS NULL"))
+        await conn.execute(text("UPDATE employees SET payroll_service = '' WHERE payroll_service IS NULL"))
+        await conn.execute(text("UPDATE employees SET payroll_department = '' WHERE payroll_department IS NULL"))
+        await conn.execute(text("UPDATE employees SET payroll_subdepartment = '' WHERE payroll_subdepartment IS NULL"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_employees_matricule ON employees (matricule)"))
         await conn.execute(text("ALTER TABLE schedule_catalog_items ADD COLUMN IF NOT EXISTS hourly_rate DOUBLE PRECISION DEFAULT 0"))
         await conn.execute(text("ALTER TABLE schedule_catalog_items ADD COLUMN IF NOT EXISTS billable_rate DOUBLE PRECISION DEFAULT 0"))
@@ -44,6 +59,15 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("UPDATE timesheet_shifts SET location = '' WHERE location IS NULL"))
         await conn.execute(text("ALTER TABLE employee_documents ADD COLUMN IF NOT EXISTS visible_to_employee BOOLEAN DEFAULT FALSE"))
         await conn.execute(text("UPDATE employee_documents SET visible_to_employee = FALSE WHERE visible_to_employee IS NULL"))
+        await conn.execute(text("ALTER TABLE accommodations ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN DEFAULT TRUE"))
+        await conn.execute(text("ALTER TABLE accommodations ADD COLUMN IF NOT EXISTS reminder_status VARCHAR DEFAULT 'scheduled'"))
+        await conn.execute(text("ALTER TABLE accommodations ADD COLUMN IF NOT EXISTS reminder_scheduled_for DATE"))
+        await conn.execute(text("ALTER TABLE accommodations ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMP"))
+        await conn.execute(text("ALTER TABLE accommodations ADD COLUMN IF NOT EXISTS reminder_cancelled_at TIMESTAMP"))
+        await conn.execute(text("ALTER TABLE accommodations ADD COLUMN IF NOT EXISTS reminder_last_error TEXT DEFAULT ''"))
+        await conn.execute(text("UPDATE accommodations SET reminder_enabled = TRUE WHERE reminder_enabled IS NULL"))
+        await conn.execute(text("UPDATE accommodations SET reminder_status = 'scheduled' WHERE reminder_status IS NULL"))
+        await conn.execute(text("UPDATE accommodations SET reminder_last_error = '' WHERE reminder_last_error IS NULL"))
     task = asyncio.create_task(automation_loop())
     try:
         yield
@@ -95,6 +119,7 @@ app.include_router(billing_email.router, prefix="/api/billing-email", tags=["Bil
 app.include_router(invoices_bulk.router, prefix="/api/invoices", tags=["Invoices Bulk"])
 app.include_router(invoices.router, prefix="/api/invoices", tags=["Invoices"])
 app.include_router(invoices_approved.router, prefix="/api/invoices-approved", tags=["Invoices Approved"])
+app.include_router(payroll.router, prefix="/api/payroll", tags=["Payroll"])
 app.include_router(accommodations.router, prefix="/api/accommodations", tags=["Accommodations"])
 app.include_router(clients.router, prefix="/api/clients", tags=["Clients"])
 app.include_router(chatbot.router, prefix="/api/chatbot", tags=["Chatbot"])

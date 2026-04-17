@@ -15,7 +15,7 @@ import io
 
 from ..database import get_db
 from ..services.auth_service import require_admin
-from ..models.models import Client, Employee, InvoiceAttachment, Schedule, Accommodation
+from ..models.models import Client, Employee, InvoiceAttachment, Schedule, Accommodation, AccommodationAttachment, Timesheet
 from ..models.models_invoice import (
     Invoice, Payment, InvoiceAuditLog, CreditNote,
     InvoiceStatus, AuditAction
@@ -39,6 +39,7 @@ from ..services.invoice_service import (
 )
 from ..services.invoice_delivery import email_invoice_and_mark_sent
 from ..services.invoice_pdf import generate_invoice_pdf, generate_credit_note_pdf
+from ..services.timesheet_service import sync_supporting_attachments_to_invoice, sync_timesheet_attachments_to_invoice
 
 router = APIRouter()
 
@@ -153,6 +154,78 @@ def _serialize_invoice(inv, include_relations=False):
         except Exception:
             d["credit_notes"] = []
     return d
+
+
+async def _sync_invoice_supporting_attachments(db: AsyncSession, invoice: Invoice) -> int:
+    if not invoice or not invoice.employee_id or not invoice.period_start or not invoice.period_end:
+        return 0
+
+    created = 0
+    timesheets_result = await db.execute(
+        select(Timesheet).where(
+            Timesheet.employee_id == invoice.employee_id,
+            Timesheet.period_start == invoice.period_start,
+            Timesheet.period_end == invoice.period_end,
+        )
+    )
+    for timesheet in timesheets_result.scalars().all():
+        created += await sync_timesheet_attachments_to_invoice(db, timesheet, invoice)
+
+    accommodations_result = await db.execute(
+        select(Accommodation).where(
+            Accommodation.employee_id == invoice.employee_id,
+            or_(
+                and_(Accommodation.start_date >= invoice.period_start, Accommodation.start_date <= invoice.period_end),
+                and_(Accommodation.end_date >= invoice.period_start, Accommodation.end_date <= invoice.period_end),
+                and_(Accommodation.start_date <= invoice.period_start, Accommodation.end_date >= invoice.period_end),
+            ),
+        )
+    )
+    accommodation_ids = [item.id for item in accommodations_result.scalars().all()]
+    if not accommodation_ids:
+        return created
+
+    existing_result = await db.execute(
+        select(InvoiceAttachment).where(InvoiceAttachment.invoice_id == invoice.id)
+    )
+    existing_keys = {
+        (
+            (item.original_filename or "").strip().lower(),
+            int(item.file_size or 0),
+            (item.category or "").strip().lower(),
+        )
+        for item in existing_result.scalars().all()
+    }
+    accommodation_attachments_result = await db.execute(
+        select(AccommodationAttachment)
+        .where(AccommodationAttachment.accommodation_id.in_(accommodation_ids))
+        .order_by(AccommodationAttachment.created_at)
+    )
+    for attachment in accommodation_attachments_result.scalars().all():
+        key = (
+            (attachment.original_filename or "").strip().lower(),
+            int(attachment.file_size or 0),
+            "hebergement",
+        )
+        if key in existing_keys:
+            continue
+        db.add(
+            InvoiceAttachment(
+                invoice_id=invoice.id,
+                filename=attachment.filename,
+                original_filename=attachment.original_filename,
+                file_type=attachment.file_type,
+                file_size=attachment.file_size,
+                file_data=attachment.file_data,
+                category="hebergement",
+                description=attachment.description or "Pièce d'hébergement",
+                uploaded_by=attachment.uploaded_by or "system",
+            )
+        )
+        existing_keys.add(key)
+        created += 1
+
+    return created
 
 
 # â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”
@@ -665,6 +738,7 @@ async def create_invoice(
         user_email=getattr(user, "email", ""), details="Manual creation",
     )
     db.add(audit)
+    await _sync_invoice_supporting_attachments(db, invoice)
     await db.commit()
     await db.refresh(invoice)
     return _serialize_invoice(invoice)
@@ -791,6 +865,11 @@ async def generate_invoices(
         client_id=data.client_id, employee_id=data.employee_id,
         user_email=getattr(user, "email", ""),
     )
+    synced_attachments = 0
+    for invoice in invoices:
+        synced_attachments += await _sync_invoice_supporting_attachments(db, invoice)
+    if synced_attachments:
+        await db.commit()
     return [_serialize_invoice(inv) for inv in invoices]
 
 

@@ -76,6 +76,13 @@ class Employee(Base):
     rate = Column(Float, default=0)
     salary = Column(Float, default=0)
     perdiem = Column(Float, default=0)
+    payroll_company = Column(String, default="")
+    payroll_statement_number = Column(String, default="")
+    payroll_transaction_type = Column(String, default="")
+    payroll_division = Column(String, default="")
+    payroll_service = Column(String, default="")
+    payroll_department = Column(String, default="")
+    payroll_subdepartment = Column(String, default="")
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     deactivated_at = Column(DateTime, nullable=True)
@@ -255,6 +262,12 @@ class Accommodation(Base):
     cost_per_day = Column(Float, default=0)
     pdf_name = Column(String, default="")
     notes = Column(Text, default="")
+    reminder_enabled = Column(Boolean, default=True)
+    reminder_status = Column(String, default="scheduled")
+    reminder_scheduled_for = Column(Date, nullable=True)
+    reminder_sent_at = Column(DateTime, nullable=True)
+    reminder_cancelled_at = Column(DateTime, nullable=True)
+    reminder_last_error = Column(Text, default="")
 
 
 class AccommodationAttachment(Base):

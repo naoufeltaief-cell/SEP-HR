@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 
 from ..database import async_session
-from ..models.models import AutomationRun
+from ..models.models import Accommodation, AutomationRun
 from ..models.models_invoice import Invoice, InvoiceStatus
 from .billing_gmail_oauth import (
     BILLING_SENDER_EMAIL,
@@ -18,7 +18,7 @@ from .billing_gmail_oauth import (
     list_recent_billing_gmail_documents,
     send_via_connected_billing_gmail,
 )
-from .email_service import _send_email
+from .email_service import _send_email, send_email_message
 from .invoice_service import generate_invoices_from_timesheets
 from .schedule_notification_service import process_pending_schedule_change_notifications
 from .timesheet_service import (
@@ -29,6 +29,7 @@ from .timesheet_service import (
     index_recent_timesheet_email_documents,
     requested_timesheet_period,
     sync_recent_timesheet_documents_for_period,
+    sync_supporting_attachments_to_invoice,
     sync_timesheet_attachments_to_invoice,
 )
 
@@ -47,6 +48,16 @@ SCHEDULE_NOTIFICATION_POLL_SECONDS = max(
     30,
     int(os.getenv("SCHEDULE_NOTIFICATION_POLL_SECONDS", "60") or 60),
 )
+ACCOMMODATION_REMINDER_ENABLED = str(
+    os.getenv("ACCOMMODATION_REMINDER_ENABLED", "true")
+).strip().lower() in {"1", "true", "yes", "on"}
+ACCOMMODATION_REMINDER_LEAD_DAYS = max(
+    0,
+    int(os.getenv("ACCOMMODATION_REMINDER_LEAD_DAYS", "2") or 2),
+)
+ACCOMMODATION_REMINDER_TO = (
+    os.getenv("ACCOMMODATION_REMINDER_TO") or BILLING_SENDER_EMAIL
+).strip()
 DEFAULT_REMINDER_RECIPIENTS = [
     "ines_achour@hotmail.ca",
     "vaniecote1960@hotmail.fr",
@@ -219,7 +230,13 @@ async def _maybe_auto_draft_invoices(db, indexing_result: dict) -> list[dict]:
                 })
                 continue
 
-            attached_count = await sync_timesheet_attachments_to_invoice(db, timesheet, invoice)
+            attached_count = await sync_supporting_attachments_to_invoice(
+                db,
+                invoice,
+                employee_id=employee_id,
+                period_start=date.fromisoformat(period_start),
+                period_end=date.fromisoformat(period_end),
+            )
             await db.commit()
             drafted.append({
                 "employee_id": employee_id,
@@ -359,9 +376,13 @@ async def _draft_invoices_from_schedule_sync(db, sync_result: dict) -> list[dict
             continue
 
         timesheet = await find_timesheet(db, employee_id, period_start, period_end)
-        attached_count = 0
-        if timesheet:
-            attached_count = await sync_timesheet_attachments_to_invoice(db, timesheet, invoice)
+        attached_count = await sync_supporting_attachments_to_invoice(
+            db,
+            invoice,
+            employee_id=employee_id,
+            period_start=period_start,
+            period_end=period_end,
+        )
         await db.commit()
         drafted.append(
             {
@@ -703,7 +724,144 @@ def get_automation_config() -> dict:
             "enabled": TIMESHEET_AUTO_DRAFT_ENABLED,
             "min_confidence": TIMESHEET_AUTO_DRAFT_MIN_CONFIDENCE,
         },
+        "accommodation_reminder": {
+            "enabled": ACCOMMODATION_REMINDER_ENABLED,
+            "lead_days": ACCOMMODATION_REMINDER_LEAD_DAYS,
+            "to_email": ACCOMMODATION_REMINDER_TO,
+        },
     }
+
+
+def compute_accommodation_reminder_date(end_date_value: date | None) -> date | None:
+    if not end_date_value:
+        return None
+    return end_date_value - timedelta(days=ACCOMMODATION_REMINDER_LEAD_DAYS)
+
+
+def sync_accommodation_reminder_state(accommodation: Accommodation) -> Accommodation:
+    scheduled_for = compute_accommodation_reminder_date(getattr(accommodation, "end_date", None))
+    accommodation.reminder_scheduled_for = scheduled_for
+    if not bool(getattr(accommodation, "reminder_enabled", True)):
+        accommodation.reminder_status = "cancelled"
+        if not getattr(accommodation, "reminder_cancelled_at", None):
+            accommodation.reminder_cancelled_at = datetime.utcnow()
+        return accommodation
+
+    accommodation.reminder_cancelled_at = None
+    if getattr(accommodation, "reminder_sent_at", None):
+        accommodation.reminder_status = "sent"
+    else:
+        accommodation.reminder_status = "scheduled"
+    return accommodation
+
+
+def _accommodation_reminder_subject(accommodation: Accommodation, employee_name: str) -> str:
+    start_date = getattr(accommodation, "start_date", None)
+    end_date = getattr(accommodation, "end_date", None)
+    if start_date and end_date:
+        return f"Rappel paiement h\u00e9bergement - {employee_name} ({start_date.isoformat()} au {end_date.isoformat()})"
+    return f"Rappel paiement h\u00e9bergement - {employee_name}"
+
+
+def _accommodation_reminder_text(accommodation: Accommodation, employee_name: str) -> str:
+    return (
+        "Bonjour,\n\n"
+        "Rappel de paiement d'h\u00e9bergement.\n\n"
+        f"Employ\u00e9: {employee_name}\n"
+        f"P\u00e9riode: {getattr(accommodation, 'start_date', None)} au {getattr(accommodation, 'end_date', None)}\n"
+        f"Co\u00fbt total: {round(float(getattr(accommodation, 'total_cost', 0) or 0), 2):.2f} $\n"
+        f"Co\u00fbt par jour: {round(float(getattr(accommodation, 'cost_per_day', 0) or 0), 2):.2f} $\n"
+        f"Jours travaill\u00e9s: {int(getattr(accommodation, 'days_worked', 0) or 0)}\n\n"
+        f"Notes: {getattr(accommodation, 'notes', '') or '-'}\n\n"
+        "Merci."
+    )
+
+
+def _accommodation_reminder_html(accommodation: Accommodation, employee_name: str) -> str:
+    total_cost = round(float(getattr(accommodation, "total_cost", 0) or 0), 2)
+    cost_per_day = round(float(getattr(accommodation, "cost_per_day", 0) or 0), 2)
+    days_worked = int(getattr(accommodation, "days_worked", 0) or 0)
+    notes = getattr(accommodation, "notes", "") or "-"
+    return f"""
+    <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.6;color:#1f2937;max-width:720px;margin:0 auto;padding:24px">
+      <p>Bonjour,</p>
+      <p>Rappel de paiement d'h\u00e9bergement \u00e0 traiter.</p>
+      <table style="border-collapse:collapse;width:100%;margin:18px 0">
+        <tr><td style="padding:6px 0;font-weight:700">Employ\u00e9</td><td style="padding:6px 0">{employee_name}</td></tr>
+        <tr><td style="padding:6px 0;font-weight:700">P\u00e9riode</td><td style="padding:6px 0">{getattr(accommodation, 'start_date', None)} au {getattr(accommodation, 'end_date', None)}</td></tr>
+        <tr><td style="padding:6px 0;font-weight:700">Co\u00fbt total</td><td style="padding:6px 0">{total_cost:.2f} $</td></tr>
+        <tr><td style="padding:6px 0;font-weight:700">Co\u00fbt par jour</td><td style="padding:6px 0">{cost_per_day:.2f} $</td></tr>
+        <tr><td style="padding:6px 0;font-weight:700">Jours travaill\u00e9s</td><td style="padding:6px 0">{days_worked}</td></tr>
+        <tr><td style="padding:6px 0;font-weight:700">Notes</td><td style="padding:6px 0">{notes}</td></tr>
+      </table>
+      <p>Merci.</p>
+    </div>
+    """
+
+
+async def process_pending_accommodation_payment_reminders(triggered_by: str = "system") -> dict:
+    if not ACCOMMODATION_REMINDER_ENABLED:
+        return {"status": "disabled", "processed": 0, "sent": 0}
+
+    now = datetime.now(AUTOMATION_TIMEZONE)
+    today = now.date()
+
+    async with async_session() as db:
+        result = await db.execute(
+            select(Accommodation).where(
+                Accommodation.reminder_enabled == True,
+                Accommodation.reminder_status.in_(["scheduled", "error"]),
+                Accommodation.reminder_scheduled_for != None,
+                Accommodation.reminder_scheduled_for <= today,
+                Accommodation.reminder_sent_at == None,
+            )
+        )
+        accommodations = result.scalars().all()
+        if not accommodations:
+            return {"status": "idle", "processed": 0, "sent": 0}
+
+        employee_ids = sorted({item.employee_id for item in accommodations if item.employee_id})
+        employees_result = await db.execute(select(Employee).where(Employee.id.in_(employee_ids)))
+        employees = {employee.id: employee for employee in employees_result.scalars().all()}
+
+        sent_count = 0
+        for accommodation in accommodations:
+            employee = employees.get(accommodation.employee_id)
+            employee_name = getattr(employee, "name", "") or f"Employe #{accommodation.employee_id}"
+            try:
+                delivery = await send_email_message(
+                    to_email=ACCOMMODATION_REMINDER_TO,
+                    subject=_accommodation_reminder_subject(accommodation, employee_name),
+                    body_text=_accommodation_reminder_text(accommodation, employee_name),
+                    body_html=_accommodation_reminder_html(accommodation, employee_name),
+                    db=db,
+                    prefer_billing_gmail=True,
+                )
+                accommodation.reminder_status = "sent"
+                accommodation.reminder_sent_at = now.replace(tzinfo=None)
+                accommodation.reminder_last_error = ""
+                sent_count += 1
+                db.add(
+                    AutomationRun(
+                        job_key="accommodation_payment_reminder",
+                        period_key=f"{accommodation.id}:{today.isoformat()}",
+                        status="sent",
+                        details=(
+                            f"hebergement={accommodation.id} employe={employee_name} "
+                            f"transport={delivery.get('transport', 'unknown')}"
+                        ),
+                        triggered_by=triggered_by or "system",
+                    )
+                )
+            except Exception as exc:
+                accommodation.reminder_status = "error"
+                accommodation.reminder_last_error = str(exc)[:1000]
+        await db.commit()
+        return {
+            "status": "processed",
+            "processed": len(accommodations),
+            "sent": sent_count,
+        }
 
 
 async def draft_weekly_timesheet_reminder(triggered_by: str = "system") -> dict:
@@ -829,6 +987,7 @@ async def run_pending_automations() -> None:
     async with async_session() as db:
         await process_pending_schedule_change_notifications(db)
         await db.commit()
+    await process_pending_accommodation_payment_reminders(triggered_by="scheduler")
     if TIMESHEET_INBOX_MONITOR_ENABLED:
         await process_requested_period_timesheets(
             triggered_by="scheduler",

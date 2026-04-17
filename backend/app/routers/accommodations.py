@@ -7,6 +7,7 @@ from ..database import get_db
 from ..models.models import Accommodation, AccommodationAttachment, Employee, new_id
 from ..models.schemas import AccommodationCreate, AccommodationOut, AccommodationUpdate
 from ..services.auth_service import require_admin
+from ..services.automation_service import sync_accommodation_reminder_state
 
 router = APIRouter()
 
@@ -16,6 +17,23 @@ router = APIRouter()
 async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     result = await db.execute(select(Accommodation).order_by(Accommodation.start_date.desc()))
     accommodations = result.scalars().all()
+    dirty = False
+    for accommodation in accommodations:
+        previous = (
+            accommodation.reminder_enabled,
+            accommodation.reminder_status,
+            accommodation.reminder_scheduled_for,
+            accommodation.reminder_cancelled_at,
+        )
+        sync_accommodation_reminder_state(accommodation)
+        current = (
+            accommodation.reminder_enabled,
+            accommodation.reminder_status,
+            accommodation.reminder_scheduled_for,
+            accommodation.reminder_cancelled_at,
+        )
+        if current != previous:
+            dirty = True
     ids = [a.id for a in accommodations]
     attachment_counts = {}
     if ids:
@@ -25,6 +43,8 @@ async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(r
             .group_by(AccommodationAttachment.accommodation_id)
         )
         attachment_counts = {row[0]: int(row[1] or 0) for row in count_result.all()}
+    if dirty:
+        await db.commit()
     return [
         {
             **AccommodationOut.model_validate(accommodation).model_dump(),
@@ -37,6 +57,7 @@ async def list_accommodations(db: AsyncSession = Depends(get_db), user=Depends(r
 @router.post("/", status_code=201)
 async def create_accommodation(data: AccommodationCreate, db: AsyncSession = Depends(get_db), user=Depends(require_admin)):
     accom = Accommodation(id=new_id(), **data.model_dump())
+    sync_accommodation_reminder_state(accom)
     db.add(accom)
     await db.commit()
     await db.refresh(accom)
@@ -65,7 +86,44 @@ async def update_accommodation(
 
     for field, value in payload.items():
         setattr(accom, field, value)
+    sync_accommodation_reminder_state(accom)
 
+    await db.commit()
+    await db.refresh(accom)
+    return AccommodationOut.model_validate(accom)
+
+
+@router.post("/{aid}/reminder/cancel")
+async def cancel_accommodation_reminder(
+    aid: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(select(Accommodation).where(Accommodation.id == aid))
+    accom = result.scalar_one_or_none()
+    if not accom:
+        raise HTTPException(status_code=404, detail="Hébergement introuvable")
+    accom.reminder_enabled = False
+    sync_accommodation_reminder_state(accom)
+    await db.commit()
+    await db.refresh(accom)
+    return AccommodationOut.model_validate(accom)
+
+
+@router.post("/{aid}/reminder/reactivate")
+async def reactivate_accommodation_reminder(
+    aid: str,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require_admin),
+):
+    result = await db.execute(select(Accommodation).where(Accommodation.id == aid))
+    accom = result.scalar_one_or_none()
+    if not accom:
+        raise HTTPException(status_code=404, detail="Hébergement introuvable")
+    accom.reminder_enabled = True
+    accom.reminder_sent_at = None
+    accom.reminder_last_error = ""
+    sync_accommodation_reminder_state(accom)
     await db.commit()
     await db.refresh(accom)
     return AccommodationOut.model_validate(accom)

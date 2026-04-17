@@ -58,6 +58,13 @@ function emptyEmployeeForm() {
     rate: 0,
     salary: 0,
     perdiem: 0,
+    payroll_company: '',
+    payroll_statement_number: '',
+    payroll_transaction_type: '',
+    payroll_division: '',
+    payroll_service: '',
+    payroll_department: '',
+    payroll_subdepartment: '',
     client_id: null,
     is_active: true,
   };
@@ -216,6 +223,13 @@ export default function EmployeesPage({ toast }) {
         rate: Number(employee.rate || 0),
         salary: Number(employee.salary || 0),
         perdiem: Number(employee.perdiem || 0),
+        payroll_company: employee.payroll_company || '',
+        payroll_statement_number: employee.payroll_statement_number || '',
+        payroll_transaction_type: employee.payroll_transaction_type || '',
+        payroll_division: employee.payroll_division || '',
+        payroll_service: employee.payroll_service || '',
+        payroll_department: employee.payroll_department || '',
+        payroll_subdepartment: employee.payroll_subdepartment || '',
         client_id: employee.client_id || null,
         is_active: employee.is_active !== false,
       },
@@ -233,6 +247,13 @@ export default function EmployeesPage({ toast }) {
         rate: Number(modal.data.rate || 0),
         salary: Number(modal.data.salary || 0),
         perdiem: Number(modal.data.perdiem || 0),
+        payroll_company: modal.data.payroll_company || '',
+        payroll_statement_number: modal.data.payroll_statement_number || '',
+        payroll_transaction_type: modal.data.payroll_transaction_type || '',
+        payroll_division: modal.data.payroll_division || '',
+        payroll_service: modal.data.payroll_service || '',
+        payroll_department: modal.data.payroll_department || '',
+        payroll_subdepartment: modal.data.payroll_subdepartment || '',
         client_id: modal.data.client_id || null,
         is_active: Boolean(modal.data.is_active),
       };
@@ -634,6 +655,19 @@ export default function EmployeesPage({ toast }) {
                 <DetailField label="Per diem" value={fmtMoney(detail.perdiem)} />
               </div>
 
+              <div style={{ marginBottom: 22 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Profil paie / Export</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 16 }}>
+                  <DetailField label="Compagnie" value={detail.payroll_company} />
+                  <DetailField label="No releve" value={detail.payroll_statement_number} />
+                  <DetailField label="Type transaction" value={detail.payroll_transaction_type} />
+                  <DetailField label="Division" value={detail.payroll_division} />
+                  <DetailField label="Service" value={detail.payroll_service} />
+                  <DetailField label="Departement" value={detail.payroll_department} />
+                  <DetailField label="Sous-departement" value={detail.payroll_subdepartment} />
+                </div>
+              </div>
+
               <div style={{ display: 'grid', gridTemplateColumns: '1.2fr .8fr', gap: 18 }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Notes internes</div>
@@ -775,6 +809,40 @@ export default function EmployeesPage({ toast }) {
               <div className="field">
                 <label>Per diem</label>
                 <input className="input" type="number" step="0.01" value={modal.data.perdiem} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, perdiem: parseFloat(event.target.value) || 0 } }))} />
+              </div>
+            </div>
+
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Profil paie / Export Desjardins</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                <div className="field">
+                  <label>Compagnie</label>
+                  <input className="input" value={modal.data.payroll_company || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_company: event.target.value } }))} />
+                </div>
+                <div className="field">
+                  <label>No releve</label>
+                  <input className="input" value={modal.data.payroll_statement_number || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_statement_number: event.target.value } }))} />
+                </div>
+                <div className="field">
+                  <label>Type transaction</label>
+                  <input className="input" value={modal.data.payroll_transaction_type || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_transaction_type: event.target.value } }))} />
+                </div>
+                <div className="field">
+                  <label>Division</label>
+                  <input className="input" value={modal.data.payroll_division || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_division: event.target.value } }))} />
+                </div>
+                <div className="field">
+                  <label>Service</label>
+                  <input className="input" value={modal.data.payroll_service || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_service: event.target.value } }))} />
+                </div>
+                <div className="field">
+                  <label>Departement</label>
+                  <input className="input" value={modal.data.payroll_department || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_department: event.target.value } }))} />
+                </div>
+                <div className="field">
+                  <label>Sous-departement</label>
+                  <input className="input" value={modal.data.payroll_subdepartment || ''} onChange={(event) => setModal((current) => ({ ...current, data: { ...current.data, payroll_subdepartment: event.target.value } }))} />
+                </div>
               </div>
             </div>
 

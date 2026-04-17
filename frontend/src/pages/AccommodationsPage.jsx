@@ -51,6 +51,19 @@ function groupAccommodations(items, mode = 'month') {
     .sort((a, b) => String(b.key).localeCompare(String(a.key)));
 }
 
+function reminderBadge(reminderStatus) {
+  switch (String(reminderStatus || 'scheduled')) {
+    case 'sent':
+      return { label: 'Rappel envoye', background: '#ecfdf3', color: '#027a48' };
+    case 'cancelled':
+      return { label: 'Rappel annule', background: '#fef3f2', color: '#b42318' };
+    case 'error':
+      return { label: 'Erreur rappel', background: '#fff7ed', color: '#c2410c' };
+    default:
+      return { label: 'Rappel planifie', background: 'var(--brand-xl)', color: 'var(--brand)' };
+  }
+}
+
 export default function AccommodationsPage({ toast }) {
   const [accommodations, setAccommodations] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -164,6 +177,7 @@ export default function AccommodationsPage({ toast }) {
       days_worked: 0,
       cost_per_day: 0,
       notes: '',
+      reminder_enabled: true,
       id: null,
     });
   };
@@ -179,6 +193,7 @@ export default function AccommodationsPage({ toast }) {
       days_worked: Number(accommodation.days_worked || 0),
       cost_per_day: Number(accommodation.cost_per_day || 0),
       notes: accommodation.notes || '',
+      reminder_enabled: accommodation.reminder_enabled !== false,
     });
     await loadAttachments(accommodation.id, { syncModal: true });
   };
@@ -226,6 +241,7 @@ export default function AccommodationsPage({ toast }) {
         employee_id: Number(modal.employee_id),
         days_worked: daysWorked,
         cost_per_day: costPerDay,
+        reminder_enabled: modal.reminder_enabled !== false,
       };
       const saved = modal.id
         ? await api.updateAccommodation(modal.id, payload)
@@ -243,6 +259,24 @@ export default function AccommodationsPage({ toast }) {
       }));
       await reload();
       await loadAttachments(saved.id, { syncModal: true });
+    } catch (err) {
+      toast?.(`Erreur: ${err.message}`);
+    }
+  };
+
+  const toggleReminder = async (accommodation) => {
+    try {
+      if (accommodation.reminder_status === 'cancelled' || accommodation.reminder_enabled === false) {
+        await api.reactivateAccommodationReminder(accommodation.id);
+        toast?.('Rappel reactive');
+      } else {
+        await api.cancelAccommodationReminder(accommodation.id);
+        toast?.('Rappel annule');
+      }
+      await reload();
+      if (modal?.id === accommodation.id) {
+        await openEdit({ ...accommodation, id: accommodation.id });
+      }
     } catch (err) {
       toast?.(`Erreur: ${err.message}`);
     }
@@ -353,6 +387,7 @@ export default function AccommodationsPage({ toast }) {
         const isExpanded = !!expandedRows[accommodation.id];
         const attachments = attachmentsByAccommodation[accommodation.id] || [];
         const attachmentCount = Number(accommodation.attachment_count || attachments.length || 0);
+        const reminderMeta = reminderBadge(accommodation.reminder_status);
 
         return (
           <div key={accommodation.id} className="card" style={{ marginBottom: 10 }}>
@@ -373,9 +408,15 @@ export default function AccommodationsPage({ toast }) {
                     <Paperclip size={11} /> {attachmentCount}
                   </span>
                 )}
+                <span className="badge" style={{ background: reminderMeta.background, color: reminderMeta.color }}>
+                  {reminderMeta.label}
+                </span>
                 <div style={{ textAlign: 'right', minWidth: 140 }}>
                   <div style={{ fontWeight: 700, fontSize: 16, color: 'var(--purple)' }}>{fmtMoney(accommodation.total_cost)}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>{fmtMoney(accommodation.cost_per_day)}/jour</div>
+                  <div style={{ fontSize: 11, color: 'var(--text3)' }}>
+                    {fmtMoney(accommodation.cost_per_day)}/jour
+                    {accommodation.reminder_scheduled_for ? ` • rappel ${accommodation.reminder_scheduled_for}` : ''}
+                  </div>
                 </div>
                 <button className="btn btn-outline btn-sm" onClick={() => toggleExpand(accommodation.id)}>
                   {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -383,6 +424,9 @@ export default function AccommodationsPage({ toast }) {
                 </button>
                 <button className="btn btn-outline btn-sm" onClick={() => openEdit(accommodation)}>
                   Lier employe
+                </button>
+                <button className="btn btn-outline btn-sm" onClick={() => toggleReminder(accommodation)}>
+                  {accommodation.reminder_status === 'cancelled' || accommodation.reminder_enabled === false ? 'Reactiver rappel' : 'Annuler rappel'}
                 </button>
                 <button className="btn btn-outline btn-sm" style={{ color: 'var(--red)' }} onClick={() => deleteAccommodation(accommodation.id)}>
                   <Trash2 size={14} /> Supprimer
@@ -557,6 +601,24 @@ export default function AccommodationsPage({ toast }) {
               placeholder="Optionnel..."
             />
           </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--text2)', marginBottom: 16 }}>
+            <input
+              type="checkbox"
+              checked={modal.reminder_enabled !== false}
+              onChange={(event) => setModal((prev) => ({ ...prev, reminder_enabled: event.target.checked }))}
+            />
+            Activer le rappel de paiement de cet hebergement vers la fin de la periode
+          </label>
+
+          {modal.id ? (
+            <div style={{ background: 'var(--surface2)', borderRadius: 'var(--r)', padding: 12, marginBottom: 16, fontSize: 12 }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Etat du rappel</div>
+              <div>Statut: {reminderBadge(accommodations.find((item) => item.id === modal.id)?.reminder_status).label}</div>
+              <div>Planifie pour: {accommodations.find((item) => item.id === modal.id)?.reminder_scheduled_for || '-'}</div>
+              <div>Envoye le: {accommodations.find((item) => item.id === modal.id)?.reminder_sent_at || '-'}</div>
+            </div>
+          ) : null}
 
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <button

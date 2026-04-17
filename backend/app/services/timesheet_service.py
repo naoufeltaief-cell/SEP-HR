@@ -139,11 +139,31 @@ TIMESHEET_ATTACHMENT_MODEL = (
     or os.getenv("OPENAI_MODEL")
     or "gpt-4o"
 ).strip()
-TIMESHEET_TEXT_MODEL = (
-    os.getenv("TIMESHEET_TEXT_MODEL")
-    or ("deepseek-reasoner" if TIMESHEET_AI_PROVIDER == "deepseek" else TIMESHEET_ATTACHMENT_MODEL)
-    or "deepseek-reasoner"
+TIMESHEET_TEXT_MODEL_ENV = (os.getenv("TIMESHEET_TEXT_MODEL") or "").strip()
+TIMESHEET_FAST_TEXT_MODEL = (
+    os.getenv("TIMESHEET_FAST_TEXT_MODEL")
+    or (
+        TIMESHEET_TEXT_MODEL_ENV
+        if TIMESHEET_AI_PROVIDER == "deepseek"
+        and TIMESHEET_TEXT_MODEL_ENV
+        and "reasoner" not in TIMESHEET_TEXT_MODEL_ENV.lower()
+        else ("deepseek-chat" if TIMESHEET_AI_PROVIDER == "deepseek" else TIMESHEET_ATTACHMENT_MODEL)
+    )
+    or ("deepseek-chat" if TIMESHEET_AI_PROVIDER == "deepseek" else TIMESHEET_ATTACHMENT_MODEL)
+    or "deepseek-chat"
 ).strip()
+TIMESHEET_REASONING_TEXT_MODEL = (
+    os.getenv("TIMESHEET_REASONING_TEXT_MODEL")
+    or (
+        TIMESHEET_TEXT_MODEL_ENV
+        if TIMESHEET_AI_PROVIDER == "deepseek"
+        and TIMESHEET_TEXT_MODEL_ENV
+        and "reasoner" in TIMESHEET_TEXT_MODEL_ENV.lower()
+        else ("deepseek-reasoner" if TIMESHEET_AI_PROVIDER == "deepseek" else TIMESHEET_ATTACHMENT_MODEL)
+    )
+    or TIMESHEET_FAST_TEXT_MODEL
+).strip()
+TIMESHEET_TEXT_MODEL = TIMESHEET_FAST_TEXT_MODEL
 TIMESHEET_ATTACHMENT_REASONING_EFFORT = (
     os.getenv("TIMESHEET_ATTACHMENT_REASONING_EFFORT")
     or os.getenv("OPENAI_REASONING_EFFORT")
@@ -583,6 +603,7 @@ async def _call_timesheet_text_model(
     prompt: str,
     max_output_tokens: int = 1800,
     raise_on_error: bool = False,
+    prefer_reasoning: bool = False,
 ) -> str:
     if not _timesheet_llm_enabled():
         if raise_on_error:
@@ -598,8 +619,9 @@ async def _call_timesheet_text_model(
     try:
         async with httpx.AsyncClient(timeout=90) as client:
             if _timesheet_uses_deepseek():
+                model_name = TIMESHEET_REASONING_TEXT_MODEL if prefer_reasoning else TIMESHEET_FAST_TEXT_MODEL
                 payload = {
-                    "model": TIMESHEET_TEXT_MODEL,
+                    "model": model_name,
                     "messages": [
                         {"role": "system", "content": instructions},
                         {"role": "user", "content": prompt},
@@ -1988,6 +2010,7 @@ async def _extract_timesheet_shift_summary_from_transcript(
         prompt=prompt_text,
         max_output_tokens=1800,
         raise_on_error=raise_on_error,
+        prefer_reasoning=True,
     )
     parsed = _parse_json_object(raw)
     return _normalize_timesheet_summary_payload(parsed)

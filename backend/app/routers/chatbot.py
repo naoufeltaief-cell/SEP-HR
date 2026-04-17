@@ -53,11 +53,31 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4")
 OPENAI_REASONING_EFFORT = (os.getenv("OPENAI_REASONING_EFFORT", "high") or "high").strip().lower()
 CHATBOT_PROVIDER = (os.getenv("CHATBOT_PROVIDER", "openai") or "openai").strip().lower()
-CHATBOT_MODEL = (
-    os.getenv("CHATBOT_MODEL")
+CHATBOT_MODEL_ENV = (os.getenv("CHATBOT_MODEL") or "").strip()
+CHATBOT_FAST_MODEL = (
+    os.getenv("CHATBOT_FAST_MODEL")
+    or (
+        CHATBOT_MODEL_ENV
+        if CHATBOT_PROVIDER == "deepseek"
+        and CHATBOT_MODEL_ENV
+        and "reasoner" not in CHATBOT_MODEL_ENV.lower()
+        else ("deepseek-chat" if CHATBOT_PROVIDER == "deepseek" else OPENAI_MODEL)
+    )
     or ("deepseek-chat" if CHATBOT_PROVIDER == "deepseek" else OPENAI_MODEL)
     or "gpt-5.4"
 ).strip()
+CHATBOT_REASONING_MODEL = (
+    os.getenv("CHATBOT_REASONING_MODEL")
+    or (
+        CHATBOT_MODEL_ENV
+        if CHATBOT_PROVIDER == "deepseek"
+        and CHATBOT_MODEL_ENV
+        and "reasoner" in CHATBOT_MODEL_ENV.lower()
+        else ("deepseek-reasoner" if CHATBOT_PROVIDER == "deepseek" else CHATBOT_FAST_MODEL)
+    )
+    or CHATBOT_FAST_MODEL
+).strip()
+CHATBOT_MODEL = CHATBOT_FAST_MODEL
 CHATBOT_API_KEY = (
     os.getenv("CHATBOT_API_KEY")
     or (os.getenv("DEEPSEEK_API_KEY") if CHATBOT_PROVIDER == "deepseek" else OPENAI_API_KEY)
@@ -2850,6 +2870,73 @@ def _chatbot_uses_deepseek() -> bool:
     return CHATBOT_PROVIDER == "deepseek"
 
 
+def _deepseek_reasoning_keywords() -> tuple[str, ...]:
+    return (
+        "pourquoi",
+        "why",
+        "cause",
+        "root cause",
+        "diagnostic",
+        "diagnose",
+        "investigue",
+        "investigation",
+        "explique",
+        "explain",
+        "analyse",
+        "analyze",
+        "raisonne",
+        "reason",
+        "reasoning",
+        "compare",
+        "comparaison",
+        "difference",
+        "diff",
+        "ecart",
+        "contradiction",
+        "incoher",
+        "challenge",
+        "verifie",
+        "verification",
+        "debug",
+        "corrige la logique",
+        "reconcil",
+        "conciliation",
+    )
+
+
+def _should_use_deepseek_reasoning(message: str, history: list[dict] | None = None) -> bool:
+    if not _chatbot_uses_deepseek():
+        return False
+    normalized = _norm(message)
+    if not normalized:
+        return False
+    if "deepseek reasoner" in normalized or "mode reasoning" in normalized:
+        return True
+    if any(keyword in normalized for keyword in _deepseek_reasoning_keywords()):
+        return True
+    if len(normalized) >= 260 and any(
+        keyword in normalized for keyword in ("fdt", "facture", "paie", "horaire", "courriel", "export")
+    ):
+        return True
+    last_assistant = next(
+        (
+            _norm(item.get("content") or "")
+            for item in reversed(history or [])
+            if str(item.get("role") or "").strip().lower() == "assistant"
+        ),
+        "",
+    )
+    if last_assistant and normalized in {"pourquoi", "explique", "why", "compare", "analyse"}:
+        return True
+    return False
+
+
+def _select_chatbot_model(message: str, history: list[dict] | None = None) -> str:
+    if _chatbot_uses_deepseek() and _should_use_deepseek_reasoning(message, history):
+        return CHATBOT_REASONING_MODEL
+    return CHATBOT_FAST_MODEL
+
+
 def _chatbot_label() -> str:
     return "DeepSeek" if _chatbot_uses_deepseek() else "OpenAI"
 
@@ -2876,9 +2963,9 @@ def _build_openai_request_payload(system_prompt, inputs):
     return payload
 
 
-def _build_deepseek_request_payload(system_prompt, messages):
+def _build_deepseek_request_payload(system_prompt, messages, model_name: str):
     payload = {
-        "model": CHATBOT_MODEL,
+        "model": model_name,
         "messages": [{"role": "system", "content": system_prompt}, *messages],
         "tools": CHAT_COMPLETION_TOOLS,
         "tool_choice": "auto",
@@ -3044,6 +3131,7 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
             )
     if _chatbot_uses_deepseek():
         messages = _history_to_messages(msg.history, msg.message)
+        selected_model = _select_chatbot_model(msg.message, msg.history)
         async with httpx.AsyncClient(timeout=120) as client:
             try:
                 data = None
@@ -3052,7 +3140,7 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                     resp = await client.post(
                         _chatbot_api_base(CHATBOT_BASE_URL, "/chat/completions"),
                         headers={'Authorization': f'Bearer {CHATBOT_API_KEY}', 'Content-Type': 'application/json'},
-                        json=_build_deepseek_request_payload(system_prompt, messages),
+                        json=_build_deepseek_request_payload(system_prompt, messages, selected_model),
                     )
                     resp.raise_for_status()
                     data = resp.json()
@@ -3082,7 +3170,7 @@ async def chat(msg: ChatMessage, db: AsyncSession = Depends(get_db), user=Depend
                     'reply': _extract_chat_completion_text(last_message or {}) or "Je n'ai pas pu générer de réponse.",
                     'usage': (data or {}).get('usage', {}),
                     'agent': agent_name,
-                    'model': CHATBOT_MODEL,
+                    'model': selected_model,
                     'reasoning_effort': None,
                     'provider': 'deepseek',
                 }

@@ -341,7 +341,7 @@ async def send_email_message(
         connection = None
         try:
             connection = await get_billing_gmail_connection(db)
-            return await send_via_connected_billing_gmail(
+            delivery = await send_via_connected_billing_gmail(
                 db=db,
                 to_email=to_email,
                 subject=subject,
@@ -350,6 +350,8 @@ async def send_email_message(
                 reply_to_email=reply_to_email or "",
                 attachments=attachments or [],
             )
+            if delivery:
+                return delivery
         except Exception as gmail_exc:
             if (
                 STRICT_CONNECTED_BILLING_GMAIL

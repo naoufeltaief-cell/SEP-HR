@@ -55,22 +55,40 @@ def _name_variants(value: str) -> list[str]:
     return variants
 
 
+def _normalize_headers(raw_headers: list[object]) -> list[str]:
+    return [_clean_str(cell) for cell in (raw_headers or [])]
+
+
+def _find_header_row(rows: list[tuple]) -> tuple[int, list[str]] | tuple[None, list[str]]:
+    for index, raw_row in enumerate(rows):
+        headers = _normalize_headers(list(raw_row or ()))
+        normalized = {_normalize_name(value) for value in headers if value}
+        if "matricule" in normalized and "nom" in normalized:
+            return index, headers
+    return None, []
+
+
 def _iter_rows_from_xlsx(file_bytes: bytes) -> Iterable[dict[str, str]]:
     workbook = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
-    sheet = workbook.active
-    rows = list(sheet.iter_rows(values_only=True))
-    if not rows:
-        return []
-    headers = [_clean_str(cell) for cell in rows[0]]
     items: list[dict[str, str]] = []
-    for raw_row in rows[1:]:
-        row = {
-            headers[index]: raw_row[index]
-            for index in range(min(len(headers), len(raw_row)))
-            if headers[index]
-        }
-        if any(_clean_str(value) for value in row.values()):
-            items.append(row)
+    for sheet in workbook.worksheets:
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            continue
+        header_index, headers = _find_header_row(rows)
+        if header_index is None:
+            continue
+        for raw_row in rows[header_index + 1 :]:
+            row = {
+                headers[index]: raw_row[index]
+                for index in range(min(len(headers), len(raw_row)))
+                if headers[index]
+            }
+            normalized = {_normalize_name(key): _clean_str(value) for key, value in row.items()}
+            if not normalized.get("matricule") and not normalized.get("nom"):
+                continue
+            if any(_clean_str(value) for value in row.values()):
+                items.append(row)
     return items
 
 

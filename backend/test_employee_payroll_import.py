@@ -35,6 +35,34 @@ class EmployeePayrollImportTests(unittest.TestCase):
         self.assertEqual(rows[0].matricule, "150")
         self.assertEqual(rows[0].name, "SOUVERAIN, NEPHTALY")
 
+    def test_parse_xlsx_rows_across_multiple_sheets_with_offset_headers(self):
+        workbook = Workbook()
+        sheet1 = workbook.active
+        sheet1.title = "Sheet1"
+        sheet1.append(["Division", "Matricule", "Nom", "Statut"])
+        sheet1.append(["99-1-52-999", 150, "SOUVERAIN, NEPHTALY", "Actif"])
+
+        sheet2 = workbook.create_sheet("Sheet2")
+        sheet2.append(["", "", "", ""])
+        sheet2.append(["Division", "Matricule", "Nom", "Statut"])
+        sheet2.append(["99-1-52-111", 151, "TAIEF, NAOUFEL", "Actif"])
+
+        sheet3 = workbook.create_sheet("Sheet3")
+        sheet3.append(["Liste administrative", "", "", ""])
+        sheet3.append(["", "", "", ""])
+        sheet3.append(["Division", "Matricule", "Nom", "Statut"])
+        sheet3.append(["99-1-52-222", 152, "BOUTAINA, TAIEF", "Actif"])
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+
+        rows = parse_desjardins_employee_file(buffer.getvalue(), "liste.xlsx")
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([row.matricule for row in rows], ["150", "151", "152"])
+        self.assertEqual(rows[1].name, "TAIEF, NAOUFEL")
+        self.assertEqual(rows[2].division, "99-1-52-222")
+
     def test_apply_rows_updates_employee_matricule_and_division(self):
         employees = [
             SimpleNamespace(

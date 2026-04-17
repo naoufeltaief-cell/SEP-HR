@@ -331,6 +331,8 @@ export default function InvoicesPage() {
         if (res.transport) deliveryBits.push(`transport: ${res.transport}`);
         if (res.from_email) deliveryBits.push(`depuis: ${res.from_email}`);
         if (res.message_id) deliveryBits.push(`message_id: ${res.message_id}`);
+        if (res.thread_id) deliveryBits.push(`thread_id: ${res.thread_id}`);
+        if (res.verified_labels?.length) deliveryBits.push(`labels: ${res.verified_labels.join(',')}`);
         setSuccess(
           res.message || `Courriel envoye${deliveryBits.length ? ` (${deliveryBits.join(' | ')})` : ''}`
         );
@@ -396,6 +398,9 @@ export default function InvoicesPage() {
       const deliveryBits = [];
       if (res.transport) deliveryBits.push(`transport: ${res.transport}`);
       if (res.from_email) deliveryBits.push(`depuis: ${res.from_email}`);
+      if (res.message_id) deliveryBits.push(`message_id: ${res.message_id}`);
+      if (res.thread_id) deliveryBits.push(`thread_id: ${res.thread_id}`);
+      if (res.verified_labels?.length) deliveryBits.push(`labels: ${res.verified_labels.join(',')}`);
       setSuccess(
         res.message || `Courriel envoye${deliveryBits.length ? ` (${deliveryBits.join(' | ')})` : ''}`
       );

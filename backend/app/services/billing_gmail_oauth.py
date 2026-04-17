@@ -648,15 +648,87 @@ async def send_via_connected_billing_gmail(
         await db.commit()
         raise RuntimeError(f"Envoi Gmail échoué: {response.text}")
 
+    result = response.json()
+    message_id = (result.get("id") or "").strip()
+    thread_id_value = (result.get("threadId") or "").strip()
+    if not message_id:
+        conn.last_error = "Reponse Gmail sans identifiant de message"
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(
+            "Gmail a repondu sans identifiant de message. L'envoi n'a pas ete confirme."
+        )
+
+    async def _fetch_message_details(token: str):
+        async with httpx.AsyncClient(timeout=30.0) as verify_client:
+            return await verify_client.get(
+                f"{GMAIL_MESSAGES_URL}/{message_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "format": "metadata",
+                    "metadataHeaders": ["To", "From", "Subject", "Date", "Message-ID"],
+                },
+            )
+
+    verify_response = await _fetch_message_details(access_token)
+    if verify_response.status_code == 401:
+        access_token = await _refresh_access_token(db, conn)
+        verify_response = await _fetch_message_details(access_token)
+
+    if verify_response.status_code != 200:
+        conn.last_error = (
+            f"Message Gmail accepte mais verification impossible "
+            f"(HTTP {verify_response.status_code}): {verify_response.text}"
+        )
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(
+            "Gmail a accepte le message, mais la verification dans la boite Envoyes a echoue."
+        )
+
+    verification = verify_response.json()
+    label_ids = [str(label).strip().upper() for label in (verification.get("labelIds") or []) if str(label).strip()]
+    payload_headers = ((verification.get("payload") or {}).get("headers") or [])
+    verified_to = _header_value(payload_headers, "To")
+    verified_subject = _header_value(payload_headers, "Subject")
+    internet_message_id = _header_value(payload_headers, "Message-ID")
+
+    normalized_recipients = {value.lower() for value in _normalize_recipient_list([verified_to])}
+    expected_to = (to_email or "").strip().lower()
+    if expected_to and expected_to not in normalized_recipients:
+        conn.last_error = (
+            f"Verification Gmail incoherente: destinataire attendu={to_email}, "
+            f"trouve={verified_to}"
+        )
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(
+            "Le message Gmail a ete cree, mais le destinataire verifie ne correspond pas a la facture."
+        )
+
+    if "SENT" not in label_ids:
+        conn.last_error = (
+            f"Message Gmail {message_id} introuvable dans Envoyes. Labels detectes: {label_ids}"
+        )
+        conn.updated_at = datetime.utcnow()
+        await db.commit()
+        raise RuntimeError(
+            "Le message Gmail a ete accepte, mais aucune trace n'a ete confirmee dans les courriels envoyes."
+        )
+
     conn.last_error = ""
     conn.updated_at = datetime.utcnow()
     await db.commit()
-    result = response.json()
     return {
         "transport": "gmail_oauth",
         "from_email": BILLING_SENDER_EMAIL,
         "account_email": conn.email,
-        "message_id": result.get("id", ""),
+        "message_id": message_id,
+        "thread_id": thread_id_value or (verification.get("threadId") or ""),
+        "internet_message_id": internet_message_id,
+        "verified_to": verified_to,
+        "verified_subject": verified_subject,
+        "verified_labels": label_ids,
     }
 
 

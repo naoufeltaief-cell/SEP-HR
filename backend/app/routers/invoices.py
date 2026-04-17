@@ -1553,6 +1553,8 @@ async def email_invoice(
         "transport": delivery.get("transport", "unknown"),
         "from_email": delivery.get("account_email") or delivery.get("from_email") or "",
         "message_id": delivery.get("message_id") or "",
+        "thread_id": delivery.get("thread_id") or "",
+        "verified_labels": delivery.get("verified_labels") or [],
     }
 
 

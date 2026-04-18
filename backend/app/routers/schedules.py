@@ -3,10 +3,10 @@ from datetime import timedelta, date as date_type, datetime
 from types import SimpleNamespace
 import io, csv, re, logging
 import unicodedata
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func, text
+from sqlalchemy import select, and_, func, text, update
 from sqlalchemy.exc import IntegrityError
 from ..database import get_db
 from ..models.models import Schedule, ScheduleApproval, Employee, Client, TimesheetShift, new_id
@@ -230,9 +230,70 @@ def _is_employees_pk_conflict(exc: Exception) -> bool:
     return "employees_pkey" in message and "duplicate key value" in message
 
 
+def _find_employee_for_import_row(row, emp_by_name: dict, emp_by_email: dict) -> Employee | None:
+    prenom = str(row.get("prenom", "") or "").strip()
+    nom = str(row.get("nom", "") or "").strip()
+    row_email = _normalize_email(row.get("courriel", ""))
+    if row_email:
+        matched = emp_by_email.get(row_email)
+        if matched:
+            return matched
+
+    full_name = f"{prenom} {nom}".strip().lower()
+    reverse_name = f"{nom} {prenom}".strip().lower()
+    matched = emp_by_name.get(full_name) or emp_by_name.get(reverse_name)
+    if matched:
+        return matched
+
+    for key, existing in emp_by_name.items():
+        if prenom.lower() in key and nom.lower() in key:
+            return existing
+    return None
+
+
+def _parse_import_shift_date(date_str: str) -> date_type | None:
+    raw = str(date_str or "").strip()
+    if not raw or raw == "nan":
+        return None
+    try:
+        return date_type.fromisoformat(raw)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+async def _detach_timesheet_links_for_schedule_ids(
+    db: AsyncSession,
+    schedule_ids: list[str],
+) -> int:
+    normalized_ids = [str(item).strip() for item in schedule_ids if str(item).strip()]
+    if not normalized_ids:
+        return 0
+    linked_count = await db.scalar(
+        select(func.count())
+        .select_from(TimesheetShift)
+        .where(TimesheetShift.schedule_id.in_(normalized_ids))
+    )
+    detached_count = int(linked_count or 0)
+    if detached_count:
+        await db.execute(
+            update(TimesheetShift)
+            .where(TimesheetShift.schedule_id.in_(normalized_ids))
+            .values(schedule_id=None)
+        )
+    return detached_count
+
+
 @router.post("/import-csv")
 async def import_csv(
     file: UploadFile = File(...),
+    replace_existing: bool = Form(False),
+    import_notes: bool = Form(False),
     db: AsyncSession = Depends(get_db),
     user=Depends(require_admin),
 ):
@@ -325,20 +386,6 @@ async def import_csv(
     clients_db = client_result.scalars().all()
     client_by_name = {c.name.strip().lower(): c for c in clients_db}
 
-    existing_sched_result = await db.execute(select(Schedule))
-    existing_schedule_index = {}
-    for s in existing_sched_result.scalars().all():
-        schedule_key = (
-            s.employee_id,
-            s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date),
-            _normalise_time(s.start),
-            _normalise_time(s.end),
-        )
-        existing_schedule_index.setdefault(schedule_key, []).append(s)
-
-    timesheet_shift_result = await db.execute(select(TimesheetShift.schedule_id))
-    timesheet_linked_schedule_ids = {row[0] for row in timesheet_shift_result.all() if row[0]}
-
     created_employees = 0
     for _, row in df.iterrows():
         raw_prenom = _clean_text(row.get('prenom', ''))
@@ -414,6 +461,53 @@ async def import_csv(
                 emp_by_name[reverse_name_key] = seeded_emp
 
     # ── Process rows ──
+    replaced_existing_count = 0
+    detached_timesheet_link_count = 0
+    if replace_existing:
+        replace_employee_ids = set()
+        replace_dates = []
+        for _, row in df.iterrows():
+            emp = _find_employee_for_import_row(row, emp_by_name, emp_by_email)
+            shift_date = _parse_import_shift_date(row.get("date_du_quart", ""))
+            if not emp or not shift_date:
+                continue
+            replace_employee_ids.add(emp.id)
+            replace_dates.append(shift_date)
+        if replace_employee_ids and replace_dates:
+            replace_start = min(replace_dates)
+            replace_end = max(replace_dates)
+            existing_to_replace_result = await db.execute(
+                select(Schedule).where(
+                    Schedule.employee_id.in_(replace_employee_ids),
+                    Schedule.date >= replace_start,
+                    Schedule.date <= replace_end,
+                )
+            )
+            schedules_to_replace = existing_to_replace_result.scalars().all()
+            if schedules_to_replace:
+                detached_timesheet_link_count += await _detach_timesheet_links_for_schedule_ids(
+                    db,
+                    [str(item.id) for item in schedules_to_replace if getattr(item, "id", None)],
+                )
+                for sched in schedules_to_replace:
+                    await db.delete(sched)
+                replaced_existing_count = len(schedules_to_replace)
+                await db.flush()
+
+    existing_sched_result = await db.execute(select(Schedule))
+    existing_schedule_index = {}
+    for s in existing_sched_result.scalars().all():
+        schedule_key = (
+            s.employee_id,
+            s.date.isoformat() if hasattr(s.date, "isoformat") else str(s.date),
+            _normalise_time(s.start),
+            _normalise_time(s.end),
+        )
+        existing_schedule_index.setdefault(schedule_key, []).append(s)
+
+    timesheet_shift_result = await db.execute(select(TimesheetShift.schedule_id))
+    timesheet_linked_schedule_ids = {row[0] for row in timesheet_shift_result.all() if row[0]}
+
     success_count = 0
     error_details = []
     created_ids = []
@@ -427,10 +521,7 @@ async def import_csv(
             # ── Find employee ──
             prenom = str(row.get('prenom', '') or '').strip()
             nom = str(row.get('nom', '') or '').strip()
-            full_name = f"{prenom} {nom}".strip().lower()
-            reverse_name = f"{nom} {prenom}".strip().lower()
-            
-            emp = emp_by_name.get(full_name) or emp_by_name.get(reverse_name)
+            emp = _find_employee_for_import_row(row, emp_by_name, emp_by_email)
             if not emp:
                 # Try partial matching
                 for key, e in emp_by_name.items():
@@ -443,22 +534,13 @@ async def import_csv(
 
             # ── Parse date ──
             date_str = str(row.get('date_du_quart', '') or '').strip()
-            if not date_str or date_str == 'nan':
-                error_details.append({"row": row_num, "error": "Date manquante"})
-                continue
-            try:
-                shift_date = date_type.fromisoformat(date_str)
-            except ValueError:
-                # Try other formats
-                for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y/%m/%d'):
-                    try:
-                        shift_date = datetime.strptime(date_str, fmt).date()
-                        break
-                    except ValueError:
-                        continue
+            shift_date = _parse_import_shift_date(date_str)
+            if not shift_date:
+                if not date_str or date_str == 'nan':
+                    error_details.append({"row": row_num, "error": "Date manquante"})
                 else:
                     error_details.append({"row": row_num, "error": f"Format de date invalide: {date_str}"})
-                    continue
+                continue
 
             # ── Parse times ──
             start_time = _normalise_time(row.get('heure_debut', ''))
@@ -478,12 +560,14 @@ async def import_csv(
                 lieu = f"{lieu} - {sous_lieu}" if lieu else sous_lieu
 
             # ── Notes ──
-            note_parts = []
-            for nf in ('note', 'note_employe', 'note_interne'):
-                v = str(row.get(nf, '') or '').strip()
-                if v and v != 'nan':
-                    note_parts.append(v)
-            notes = '; '.join(note_parts)
+            notes = ""
+            if import_notes:
+                note_parts = []
+                for nf in ('note', 'note_employe', 'note_interne'):
+                    v = str(row.get(nf, '') or '').strip()
+                    if v and v != 'nan':
+                        note_parts.append(v)
+                notes = '; '.join(note_parts)
 
             # ── Client lookup from location ──
             client_id = None
@@ -595,7 +679,7 @@ async def import_csv(
     updated_count = len(updated_schedule_keys)
     created_count = len(created_ids)
 
-    if created_ids or updated_schedule_keys or created_employees or cleaned_duplicate_count:
+    if created_ids or updated_schedule_keys or created_employees or cleaned_duplicate_count or replaced_existing_count:
         await db.commit()
 
     return {
@@ -605,6 +689,8 @@ async def import_csv(
         "created": created_count,
         "updated": updated_count,
         "cleaned_duplicates": cleaned_duplicate_count,
+        "replaced_existing": replaced_existing_count,
+        "detached_timesheet_links": detached_timesheet_link_count,
         "created_employees": created_employees,
         "error_details": error_details[:100],  # Cap at 100 errors
         "message": f"{success_count} quarts importés ou mis à jour avec succès"
@@ -855,6 +941,8 @@ async def bulk_delete_schedules(
     if not schedules:
         raise HTTPException(status_code=404, detail="Aucun quart introuvable")
 
+    schedule_ids = [str(item.id) for item in schedules if getattr(item, "id", None)]
+    detached_links = await _detach_timesheet_links_for_schedule_ids(db, schedule_ids)
     deleted = 0
     for sched in schedules:
         before = _clone_schedule(sched)
@@ -867,7 +955,7 @@ async def bulk_delete_schedules(
         await db.delete(sched)
         deleted += 1
     await db.commit()
-    return {"deleted": deleted}
+    return {"deleted": deleted, "detached_timesheet_links": detached_links}
 
 
 @router.put("/{sid}")
@@ -898,6 +986,7 @@ async def delete_schedule(sid: str, db: AsyncSession = Depends(get_db), user=Dep
     sched = result.scalar_one_or_none()
     if not sched:
         raise HTTPException(status_code=404, detail="Quart introuvable")
+    detached_links = await _detach_timesheet_links_for_schedule_ids(db, [sid])
     before = _clone_schedule(sched)
     await enqueue_schedule_change_notification(
         db,
@@ -907,7 +996,7 @@ async def delete_schedule(sid: str, db: AsyncSession = Depends(get_db), user=Dep
     )
     await db.delete(sched)
     await db.commit()
-    return {"message": "Quart supprime"}
+    return {"message": "Quart supprime", "detached_timesheet_links": detached_links}
 
 
 @router.post("/{sid}/publish")

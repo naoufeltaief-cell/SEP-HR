@@ -207,6 +207,35 @@ input, select, textarea { font-family: 'Plus Jakarta Sans', system-ui, sans-seri
   position: sticky; right: 0; background: var(--surface); z-index: 1;
 }
 .schedule-grid tbody td:hover { background: var(--brand-xl); }
+.schedule-grid::-webkit-scrollbar { height: 12px; }
+.schedule-grid::-webkit-scrollbar-thumb {
+  background: rgba(42, 123, 136, 0.45);
+  border-radius: 999px;
+}
+.schedule-grid::-webkit-scrollbar-track {
+  background: rgba(212, 224, 225, 0.75);
+  border-radius: 999px;
+}
+.schedule-bottom-scrollbar {
+  margin-top: 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(212, 224, 225, 0.75);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.06);
+}
+.schedule-bottom-scrollbar::-webkit-scrollbar { height: 14px; }
+.schedule-bottom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(42, 123, 136, 0.55);
+  border-radius: 999px;
+  border: 3px solid rgba(212, 224, 225, 0.8);
+}
+.schedule-bottom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
 .shift-pill {
   border-radius: 8px; padding: 5px 7px; font-size: 10px; line-height: 1.35;
   cursor: pointer; margin-bottom: 2px; transition: box-shadow .1s; position: relative;

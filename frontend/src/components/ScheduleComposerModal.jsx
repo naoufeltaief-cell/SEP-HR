@@ -8,7 +8,6 @@ import {
   MapPin,
   Route,
   Search,
-  StickyNote,
   Trash2,
   UsersRound,
   Wallet,
@@ -1125,23 +1124,6 @@ export default function ScheduleComposerModal({
               </div>
             </InfoRow>
 
-            <InfoRow
-              icon={StickyNote}
-              label="Notes"
-              helper={
-                selectedClient
-                  ? `Client selectionne: ${selectedClient.name}`
-                  : "Ajoute un contexte utile pour le recruteur"
-              }
-            >
-              <textarea
-                className="input"
-                rows={3}
-                value={modal.data.notes}
-                onChange={(event) => onChangeField("notes", event.target.value)}
-                style={{ resize: "vertical", minHeight: 88 }}
-              />
-            </InfoRow>
           </div>
 
           <div

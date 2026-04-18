@@ -368,7 +368,13 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [selectionBox, setSelectionBox] = useState(null);
   const [selectionDrag, setSelectionDrag] = useState(null);
   const gridRef = useRef(null);
+  const bottomScrollRef = useRef(null);
+  const scrollSyncSourceRef = useRef(null);
   const shiftRefs = useRef(new Map());
+  const [bottomScrollMetrics, setBottomScrollMetrics] = useState({
+    visible: false,
+    width: 0,
+  });
   const isMobile = useMobileBreakpoint(920);
 
   const reload = useCallback(async () => {
@@ -1089,7 +1095,11 @@ export default function SchedulesPage({ toast, onNavigate }) {
       setModal(null);
       await reload();
     } catch (err) {
-      toast?.("Erreur: " + err.message);
+      const detail = formatNetworkError(
+        err,
+        "Impossible de supprimer ce quart. Les liens relies a la FDT sont detaches automatiquement, mais il faut verifier les logs si l'erreur persiste.",
+      );
+      toast?.("Erreur: " + detail);
     }
   };
 
@@ -1384,6 +1394,95 @@ export default function SchedulesPage({ toast, onNavigate }) {
     });
     setSelectedShiftIds((prev) => prev.filter((id) => visibleIds.has(String(id))));
   }, [visibleSchedules]);
+
+  const updateBottomScrollMetrics = useCallback(() => {
+    const grid = gridRef.current;
+    if (!grid) {
+      setBottomScrollMetrics((prev) =>
+        prev.visible || prev.width ? { visible: false, width: 0 } : prev,
+      );
+      return;
+    }
+
+    const nextWidth = Math.max(grid.scrollWidth, 0);
+    const nextVisible = !isMobile && nextWidth > grid.clientWidth + 8;
+    setBottomScrollMetrics((prev) => {
+      if (prev.visible === nextVisible && prev.width === nextWidth) return prev;
+      return { visible: nextVisible, width: nextWidth };
+    });
+
+    const bottomScroll = bottomScrollRef.current;
+    if (bottomScroll && Math.abs(bottomScroll.scrollLeft - grid.scrollLeft) > 1) {
+      bottomScroll.scrollLeft = grid.scrollLeft;
+    }
+  }, [isMobile]);
+
+  useEffect(() => {
+    const syncMetrics = () => {
+      if (typeof window !== "undefined") {
+        window.requestAnimationFrame(updateBottomScrollMetrics);
+      } else {
+        updateBottomScrollMetrics();
+      }
+    };
+
+    syncMetrics();
+    if (typeof window !== "undefined") {
+      window.addEventListener("resize", syncMetrics);
+    }
+
+    const grid = gridRef.current;
+    let observer = null;
+    if (typeof ResizeObserver !== "undefined" && grid) {
+      observer = new ResizeObserver(syncMetrics);
+      observer.observe(grid);
+      const table = grid.querySelector("table");
+      if (table) observer.observe(table);
+    }
+
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("resize", syncMetrics);
+      }
+      observer?.disconnect();
+    };
+  }, [
+    activeEmps.length,
+    updateBottomScrollMetrics,
+    viewDates.length,
+    visibleSchedules.length,
+  ]);
+
+  useEffect(() => {
+    const grid = gridRef.current;
+    const bottomScroll = bottomScrollRef.current;
+    if (!grid || !bottomScroll || !bottomScrollMetrics.visible) return undefined;
+
+    const handleGridScroll = () => {
+      if (scrollSyncSourceRef.current === "bottom") return;
+      scrollSyncSourceRef.current = "grid";
+      bottomScroll.scrollLeft = grid.scrollLeft;
+      scrollSyncSourceRef.current = null;
+    };
+
+    const handleBottomScroll = () => {
+      if (scrollSyncSourceRef.current === "grid") return;
+      scrollSyncSourceRef.current = "bottom";
+      grid.scrollLeft = bottomScroll.scrollLeft;
+      scrollSyncSourceRef.current = null;
+    };
+
+    grid.addEventListener("scroll", handleGridScroll, { passive: true });
+    bottomScroll.addEventListener("scroll", handleBottomScroll, {
+      passive: true,
+    });
+    handleGridScroll();
+
+    return () => {
+      grid.removeEventListener("scroll", handleGridScroll);
+      bottomScroll.removeEventListener("scroll", handleBottomScroll);
+    };
+  }, [bottomScrollMetrics.visible]);
 
   useEffect(() => {
     if (!selectionDrag || !selectionMode) return undefined;
@@ -1943,6 +2042,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const [importReplaceExisting, setImportReplaceExisting] = useState(true);
+  const [importNotesEnabled, setImportNotesEnabled] = useState(false);
   const [exportModal, setExportModal] = useState(false);
   const [exportOpts, setExportOpts] = useState({
     date_start: "",
@@ -2078,6 +2179,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
     try {
       const formData = new FormData();
       formData.append("file", importFile);
+      formData.append("replace_existing", String(importReplaceExisting));
+      formData.append("import_notes", String(importNotesEnabled));
       const data = await api.postForm("/schedules/import-csv", formData);
       setImportResult(data);
       if (data.success > 0) {
@@ -2239,6 +2342,8 @@ export default function SchedulesPage({ toast, onNavigate }) {
             onClick={() => {
               setImportFile(null);
               setImportResult(null);
+              setImportReplaceExisting(true);
+              setImportNotesEnabled(false);
               setImportModal(true);
             }}
           >
@@ -2985,6 +3090,7 @@ export default function SchedulesPage({ toast, onNavigate }) {
             })}
           </div>
         ) : (
+        <>
         <div
           className="schedule-grid"
           ref={gridRef}
@@ -3404,6 +3510,21 @@ export default function SchedulesPage({ toast, onNavigate }) {
           </tbody>
         </table>
         </div>
+        {!isMobile && bottomScrollMetrics.visible && (
+          <div
+            ref={bottomScrollRef}
+            className="schedule-bottom-scrollbar"
+            aria-label="Defilement horizontal de l'horaire"
+          >
+            <div
+              style={{
+                width: bottomScrollMetrics.width,
+                height: 1,
+              }}
+            />
+          </div>
+        )}
+        </>
         )
       ) : (
         isMobile ? (
@@ -3712,6 +3833,64 @@ export default function SchedulesPage({ toast, onNavigate }) {
             />
           </div>
 
+          <div
+            style={{
+              display: "grid",
+              gap: 10,
+              padding: 14,
+              borderRadius: 10,
+              border: "1px solid var(--border)",
+              background: "var(--brand-xl)",
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "flex-start",
+                fontSize: 12,
+                color: "var(--text)",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={importReplaceExisting}
+                onChange={(e) => setImportReplaceExisting(e.target.checked)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <strong>Remplacer les quarts existants sur la periode du fichier</strong>
+                <div style={{ color: "var(--text2)", marginTop: 2 }}>
+                  Les quarts existants des employes et dates couverts par le fichier
+                  seront retires avant import pour eviter les doublons.
+                </div>
+              </span>
+            </label>
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "flex-start",
+                fontSize: 12,
+                color: "var(--text)",
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={importNotesEnabled}
+                onChange={(e) => setImportNotesEnabled(e.target.checked)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <strong>Importer les notes</strong>
+                <div style={{ color: "var(--text2)", marginTop: 2 }}>
+                  Laisse cette option decochee pour ne pas remplir les notes du
+                  Detail a partir du fichier importe.
+                </div>
+              </span>
+            </label>
+          </div>
+
           {importResult && (
             <div
               style={{
@@ -3730,6 +3909,24 @@ export default function SchedulesPage({ toast, onNavigate }) {
                   {importResult.total_rows} lignes
                 </div>
               )}
+              {importResult.success > 0 &&
+                (Number(importResult.replaced_existing || 0) > 0 ||
+                  Number(importResult.detached_timesheet_links || 0) > 0) && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      fontSize: 12,
+                      color: "#0f5132",
+                    }}
+                  >
+                    {Number(importResult.replaced_existing || 0) > 0
+                      ? `${importResult.replaced_existing} quart(s) existant(s) remplace(s). `
+                      : ""}
+                    {Number(importResult.detached_timesheet_links || 0) > 0
+                      ? `${importResult.detached_timesheet_links} liaison(s) FDT detachee(s).`
+                      : ""}
+                  </div>
+                )}
               {importResult.errors > 0 && (
                 <div style={{ marginTop: 8 }}>
                   <div
@@ -5205,13 +5402,13 @@ function ShiftPill({
                 )}
               </div>
             )}
-            {(shift.notes || orientation || cancelled) && (
+            {(orientation || cancelled) && (
               <div style={{ color: "var(--text2)" }}>
                 {cancelled
                   ? "Quart annule. Il reste visible pour suivi, mais n'entre plus dans les totaux."
                   : orientation
                     ? "Quart facture en orientation (0 $/h)."
-                    : shift.notes}
+                    : ""}
               </div>
             )}
           </div>

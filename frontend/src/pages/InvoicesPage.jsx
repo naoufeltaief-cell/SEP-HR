@@ -224,9 +224,10 @@ export default function InvoicesPage() {
   const catalogGridTemplate = isMobile ? '1fr' : 'minmax(220px, 1fr) 160px 160px auto';
   const manualMetaGridTemplate = isMobile ? '1fr' : '1fr 1fr 1fr 1fr';
 
-  const loadInvoices = useCallback(async () => {
+  const loadInvoices = useCallback(async (options = {}) => {
+    const { clearError = true } = options;
     setLoading(true);
-    setError('');
+    if (clearError) setError('');
     try {
       const params = new URLSearchParams();
       if (filterStatus) params.set('status', filterStatus);
@@ -734,11 +735,17 @@ export default function InvoicesPage() {
         const reasons = skipped.slice(0, 3).map(item => item.reason).filter(Boolean).join(' | ');
         setError(`Aucune facture envoyee. ${reasons || `${skipped.length} facture(s) ignoree(s)`}`);
         setSelected(new Set());
-        loadInvoices();
+        loadInvoices({ clearError: false });
         loadStats();
         return;
       }
-      setSuccess(`${res.sent?.length || 0} facture(s) envoye(s)`);
+      const skippedCount = skipped.length;
+      const reasonPreview = skipped.slice(0, 2).map(item => item.reason).filter(Boolean).join(' | ');
+      setSuccess(
+        skippedCount > 0
+          ? `${res.sent?.length || 0} facture(s) envoyee(s), ${skippedCount} ignoree(s)${reasonPreview ? ` (${reasonPreview})` : ''}`
+          : `${res.sent?.length || 0} facture(s) envoye(s)`
+      );
       setSelected(new Set());
       loadInvoices();
       loadStats();

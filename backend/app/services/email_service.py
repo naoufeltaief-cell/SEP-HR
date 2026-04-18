@@ -338,7 +338,13 @@ async def send_email_message(
     html = (body_html or "").strip() or _plain_text_to_html(body_text)
     text = (body_text or "").strip()
 
-    if prefer_billing_gmail and BILLING_EMAIL_TRANSPORT != "smtp" and db is not None:
+    should_try_billing_gmail = (
+        prefer_billing_gmail
+        and db is not None
+        and (require_billing_gmail or BILLING_EMAIL_TRANSPORT != "smtp")
+    )
+
+    if should_try_billing_gmail:
         connection = None
         try:
             connection = await get_billing_gmail_connection(db)

@@ -64,35 +64,35 @@ async def _create_invoice_from_approved(data: dict, db: AsyncSession, user, auto
     er = await db.execute(select(Employee).where(Employee.id == employee_id))
     employee = er.scalar_one_or_none()
     if not employee:
-        raise HTTPException(404, 'EmployÃ© non trouvÃ©')
+        raise HTTPException(404, "Employ\u00e9 non trouv\u00e9")
     effective_client_id = client_id or getattr(employee, 'client_id', None)
     if not effective_client_id:
-        raise HTTPException(400, 'Aucun client associÃ© Ã  cet employÃ©')
+        raise HTTPException(400, "Aucun client associ\u00e9 \u00e0 cet employ\u00e9")
 
     existing = await db.execute(select(Invoice).where(Invoice.employee_id == employee_id, Invoice.client_id == effective_client_id, Invoice.period_start == ps, Invoice.period_end == pe, Invoice.status != 'cancelled'))
     if existing.scalar_one_or_none():
-        raise HTTPException(400, 'Une facture existe dÃ©jÃ  pour cet employÃ©/client/pÃ©riode')
+        raise HTTPException(400, "Une facture existe d\u00e9j\u00e0 pour cet employ\u00e9/client/p\u00e9riode")
 
     approval_result = await db.execute(select(ScheduleApproval).where(ScheduleApproval.employee_id == employee_id, ScheduleApproval.client_id == effective_client_id, ScheduleApproval.week_start == ps, ScheduleApproval.week_end == pe, ScheduleApproval.status == 'approved'))
     approval = approval_result.scalar_one_or_none()
     if not approval:
-        raise HTTPException(400, 'Cette semaine doit Ãªtre approuvÃ©e avant de gÃ©nÃ©rer une facture approuvÃ©e')
+        raise HTTPException(400, "Cette semaine doit \u00eatre approuv\u00e9e avant de g\u00e9n\u00e9rer une facture approuv\u00e9e")
 
     meta_result = await db.execute(select(ScheduleApprovalMeta).where(ScheduleApprovalMeta.approval_id == approval.id))
     approval_meta = meta_result.scalar_one_or_none()
 
     cr = await db.execute(select(Client).where(Client.id == effective_client_id))
     client = cr.scalar_one_or_none()
-    client_name = client.name if client else 'Non assignÃ©'
+    client_name = client.name if client else "Non assign\u00e9"
 
     scheds_r = await db.execute(select(Schedule).where(Schedule.employee_id == employee_id, Schedule.date >= ps, Schedule.date <= pe, Schedule.status != 'cancelled').order_by(Schedule.date))
     raw_scheds = scheds_r.scalars().all()
     scheds = [s for s in raw_scheds if (getattr(s, 'client_id', None) == effective_client_id) or (not getattr(s, 'client_id', None) and getattr(employee, 'client_id', None) == effective_client_id)]
     if not scheds:
-        raise HTTPException(400, 'Aucun quart trouvÃ© pour cette pÃ©riode')
+        raise HTTPException(400, "Aucun quart trouv\u00e9 pour cette p\u00e9riode")
 
     position_rates = await get_position_rate_lookup(db)
-    rate = get_rate_for_title(employee.position or 'Infirmier(Ã¨re)', position_rates=position_rates)
+    rate = get_rate_for_title(employee.position or "Infirmier(\u00e8re)", position_rates=position_rates)
     include_tax = not is_tax_exempt(client_name)
     service_lines = []
     raw_total_hours = 0.0
@@ -157,9 +157,9 @@ async def _create_invoice_from_approved(data: dict, db: AsyncSession, user, auto
             (sum(float(line.get('service_amount', 0) or 0) for line in service_lines) / raw_total_hours),
             2,
         ) if raw_total_hours > 0 else get_rate_for_title(employee.position or '', position_rates=position_rates)
-        extra_lines.append({'description': f"Ajustement heures approuvÃ©es ({approved_hours:.2f}h approuvÃ©es vs {raw_total_hours:.2f}h planifiÃ©es)", 'quantity': delta_hours, 'amount': round(delta_hours * adjustment_rate, 2), 'hours_delta': delta_hours, 'rate': adjustment_rate, 'type': 'approved_hours_adjustment'})
+        extra_lines.append({'description': f"Ajustement heures approuv\u00e9es ({approved_hours:.2f}h approuv\u00e9es vs {raw_total_hours:.2f}h planifi\u00e9es)", 'quantity': delta_hours, 'amount': round(delta_hours * adjustment_rate, 2), 'hours_delta': delta_hours, 'rate': adjustment_rate, 'type': 'approved_hours_adjustment'})
 
-    invoice = Invoice(id=str(uuid.uuid4()), number=await generate_invoice_number(db), date=date.today(), period_start=ps, period_end=pe, client_id=client.id if client else effective_client_id, client_name=client_name, client_address=client.address if client else '', client_email=getattr(client, 'email', '') if client else '', client_phone=getattr(client, 'phone', '') if client else '', employee_id=employee_id, employee_name=employee.name or '', employee_title=employee.position or '', include_tax=include_tax, status='validated', validated_at=datetime.utcnow(), lines=service_lines, accommodation_lines=accom_lines, expense_lines=expense_lines, extra_lines=extra_lines, notes=f"Facture approuvÃ©e gÃ©nÃ©rÃ©e depuis l'horaire validÃ©. Heures approuvÃ©es: {approved_hours:.2f}h. Heures planifiÃ©es: {raw_total_hours:.2f}h.")
+    invoice = Invoice(id=str(uuid.uuid4()), number=await generate_invoice_number(db), date=date.today(), period_start=ps, period_end=pe, client_id=client.id if client else effective_client_id, client_name=client_name, client_address=client.address if client else '', client_email=getattr(client, 'email', '') if client else '', client_phone=getattr(client, 'phone', '') if client else '', employee_id=employee_id, employee_name=employee.name or '', employee_title=employee.position or '', include_tax=include_tax, status='validated', validated_at=datetime.utcnow(), lines=service_lines, accommodation_lines=accom_lines, expense_lines=expense_lines, extra_lines=extra_lines, notes=f"Facture approuv\u00e9e g\u00e9n\u00e9r\u00e9e depuis l'horaire valid\u00e9. Heures approuv\u00e9es: {approved_hours:.2f}h. Heures planifi\u00e9es: {raw_total_hours:.2f}h.")
     invoice = recalculate_invoice(invoice)
     db.add(invoice)
     await db.flush()
@@ -171,9 +171,9 @@ async def _create_invoice_from_approved(data: dict, db: AsyncSession, user, auto
     if applicable_accom_ids:
         accom_atts_r = await db.execute(select(AccommodationAttachment).where(AccommodationAttachment.accommodation_id.in_(applicable_accom_ids)).order_by(AccommodationAttachment.created_at))
         for src in accom_atts_r.scalars().all():
-            db.add(InvoiceAttachment(invoice_id=invoice.id, filename=src.filename, original_filename=src.original_filename, file_type=src.file_type, file_size=src.file_size, file_data=src.file_data, category='hebergement', description=src.description or "PiÃ¨ce d'hÃ©bergement", uploaded_by=src.uploaded_by))
+            db.add(InvoiceAttachment(invoice_id=invoice.id, filename=src.filename, original_filename=src.original_filename, file_type=src.file_type, file_size=src.file_size, file_data=src.file_data, category='hebergement', description=src.description or "Pi\u00e8ce d'h\u00e9bergement", uploaded_by=src.uploaded_by))
 
-    db.add(InvoiceAuditLog(invoice_id=invoice.id, action='created', new_status='validated', user_email=getattr(user, 'email', ''), details=f"Facture approuvÃ©e gÃ©nÃ©rÃ©e â€” {employee.name} / {client_name} / {ps} â†’ {pe} / {approved_hours:.2f}h approuvÃ©es / {raw_total_hours:.2f}h planifiÃ©es"))
+    db.add(InvoiceAuditLog(invoice_id=invoice.id, action='created', new_status='validated', user_email=getattr(user, 'email', ''), details=f"Facture approuv\u00e9e g\u00e9n\u00e9r\u00e9e - {employee.name} / {client_name} / {ps} -> {pe} / {approved_hours:.2f}h approuv\u00e9es / {raw_total_hours:.2f}h planifi\u00e9es"))
 
     if auto_commit:
         await db.commit()

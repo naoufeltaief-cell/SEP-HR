@@ -296,10 +296,31 @@ def _get_logo_image(max_width=1.6 * inch, max_height=0.6 * inch):
     return None
 
 
+# Repair legacy UTF-8 text that was previously decoded as latin-1/cp1252.
+def _repair_mojibake_text(value: str) -> str:
+    text = str(value or "")
+    markers = ("Ã", "Â", "â€™", "â€œ", "â€", "â€¢", "â€“", "â€”")
+    if not any(marker in text for marker in markers):
+        return text
+
+    repaired = text
+    for _ in range(2):
+        try:
+            candidate = repaired.encode("latin-1").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            break
+        if candidate == repaired:
+            break
+        repaired = candidate
+        if not any(marker in repaired for marker in markers):
+            break
+    return repaired.replace("\xa0", " ")
+
+
 def _safe_text(value, default=""):
     if value is None:
         return default
-    text = str(value).strip()
+    text = _repair_mojibake_text(value).strip()
     return text if text else default
 
 

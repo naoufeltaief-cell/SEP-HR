@@ -19,13 +19,13 @@ from ..models.models_invoice import (
 from ..models.models import Employee, Client, Schedule, Accommodation, ScheduleCatalogItem
 
 RATES = {
-    "Infirmier(Ã¨re)": 86.23,
-    "InfirmiÃ¨re": 86.23,
+    "Infirmier(\u00e8re)": 86.23,
+    "Infirmi\u00e8re": 86.23,
     "Infirmier": 86.23,
     "Inf. auxiliaire": 57.18,
-    "InfirmiÃ¨re auxiliaire": 57.18,
+    "Infirmi\u00e8re auxiliaire": 57.18,
     "PAB": 50.35,
-    "PrÃ©posÃ© aux bÃ©nÃ©ficiaires": 50.35,
+    "Pr\u00e9pos\u00e9 aux b\u00e9n\u00e9ficiaires": 50.35,
 }
 GARDE_RATE = 86.23
 KM_RATE = 0.525
@@ -35,11 +35,11 @@ TPS_RATE = 0.05
 TVQ_RATE = 0.09975
 TPS_NUMBER = "714564891RT0001"
 TVQ_NUMBER = "1225765936TQ0001"
-TAX_EXEMPT_CLIENTS = ["Centre de SantÃ© Inuulitsivik", "Conseil Cri de la SantÃ©", "Conseil Cri de la santÃ©"]
+TAX_EXEMPT_CLIENTS = ["Centre de Sant\u00e9 Inuulitsivik", "Conseil Cri de la Sant\u00e9", "Conseil Cri de la sant\u00e9"]
 COMPANY_INFO = {
     "name": "Soins Expert Plus",
-    "legal": "9437-7827 QuÃ©bec Inc.",
-    "address": "10745 Avenue Lausanne\nMontrÃ©al QC H1H 5B4",
+    "legal": "9437-7827 Qu\u00e9bec Inc.",
+    "address": "10745 Avenue Lausanne\nMontr\u00e9al QC H1H 5B4",
     "phone": "(438) 230-0061",
     "email": "paie@soins-expert-plus.com",
     "tps_number": TPS_NUMBER,
@@ -160,7 +160,7 @@ def get_rate_for_title(title: str, position_rates: Optional[Dict[str, float]] = 
                 return rate
     for key, rate in RATES.items():
         if key.lower() in (title or "").lower(): return rate
-    return RATES["Infirmier(Ã¨re)"]
+    return RATES["Infirmier(\u00e8re)"]
 def _normalize_hint_text(*values: Any) -> str:
     raw = " ".join(str(value or "") for value in values).lower()
     raw = unicodedata.normalize("NFKD", raw)
@@ -230,8 +230,8 @@ def invoice_pause_to_schedule_hours(pause_value: Any) -> float:
 
 def build_shift_expense_description(expense_type: str, shift_date: Any = None, schedule_notes: str = "") -> str:
     base = {
-        "km": "KilomÃ©trage",
-        "deplacement": "DÃ©placement",
+        "km": "Kilom\u00e9trage",
+        "deplacement": "D\u00e9placement",
         "autre": "Autres frais",
     }.get((expense_type or "").strip().lower(), "Frais")
     note = " ".join(strip_system_note_tags(schedule_notes).split())

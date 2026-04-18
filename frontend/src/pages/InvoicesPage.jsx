@@ -418,7 +418,15 @@ export default function InvoicesPage() {
         method: 'POST',
         body: JSON.stringify({ to_email: toEmail || null })
       });
-      setSuccess(res.message || 'Test courriel OK');
+      const deliveryBits = [];
+      if (res.transport) deliveryBits.push(`transport: ${res.transport}`);
+      if (res.from_email) deliveryBits.push(`depuis: ${res.from_email}`);
+      if (res.message_id) deliveryBits.push(`message_id: ${res.message_id}`);
+      if (res.thread_id) deliveryBits.push(`thread_id: ${res.thread_id}`);
+      if (res.verified_labels?.length) deliveryBits.push(`labels: ${res.verified_labels.join(',')}`);
+      setSuccess(
+        res.message || `Test courriel OK${deliveryBits.length ? ` (${deliveryBits.join(' | ')})` : ''}`
+      );
     } catch (e) {
       setError(e.message);
     }

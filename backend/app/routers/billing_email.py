@@ -22,7 +22,6 @@ from ..services.billing_gmail_oauth import (
     send_via_connected_billing_gmail,
     store_billing_gmail_tokens,
 )
-from ..services.email_service import test_billing_email_connection
 
 router = APIRouter()
 
@@ -172,16 +171,29 @@ async def billing_email_test(
             ),
         )
         if not delivery:
-            delivery = await test_billing_email_connection(to_email)
+            status = await get_billing_gmail_status(db)
+            if not status.get("configured"):
+                raise HTTPException(
+                    500,
+                    "Google OAuth n'est pas configure sur le serveur. "
+                    "Ajoutez BILLING_GMAIL_CLIENT_ID et BILLING_GMAIL_CLIENT_SECRET sur Render.",
+                )
+            raise HTTPException(
+                400,
+                f"Aucune connexion Gmail active pour la facturation. "
+                f"Connectez {BILLING_SENDER_EMAIL} dans l'onglet Facturation, puis reessayez.",
+            )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"Test courriel echoue: {str(e)}")
+        raise HTTPException(500, f"Test Gmail echoue: {str(e)}")
 
     return {
         **delivery,
         "message": (
-            f"Test courriel OK. Envoye de {delivery.get('from_email', BILLING_SENDER_EMAIL)} "
+            f"Test Gmail OK. Envoye de {delivery.get('from_email', BILLING_SENDER_EMAIL)} "
             f"vers {to_email} via {delivery.get('transport', 'unknown')}."
         ),
     }
